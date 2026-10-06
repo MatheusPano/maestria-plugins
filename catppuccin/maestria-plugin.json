@@ -1,0 +1,16 @@
+{
+  "id": "maestria.catppuccin",
+  "name": "Catppuccin",
+  "version": "1.0.0",
+  "description": "Os temas Catppuccin Mocha, Macchiato e Latte, com o destaque no mauve.",
+  "icon": "icons/catppuccin.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "contributes": {
+    "themes": [
+      { "path": "themes/mocha.json" },
+      { "path": "themes/macchiato.json" },
+      { "path": "themes/latte.json" }
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "maestria.pomodoro-dart",
+  "name": "Pomodoro (Dart)",
+  "version": "1.4.0",
+  "description": "O pomodoro em Dart, compilado num binário nativo: o mesmo painel flutuante, a mesma aba e a mesma animação do plugin em node, sem precisar do node. Um foco, as pausas curta e longa, os tempos pra ajustar, notificação, som e o tempo seguindo com o app fechado.",
+  "icon": "clock",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": ["sh", "run.sh"],
+  "activationEvents": ["onStartup"],
+  "permissions": ["notifications"],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      { "id": "alternar", "title": "pomodoro: iniciar/pausar", "icon": "play", "key": "meta+alt+o" },
+      { "id": "painel", "title": "pomodoro: mostrar/esconder o painel", "icon": "open", "key": "meta+alt+shift+o" },
+      { "id": "pular", "title": "pomodoro: pular pra próxima fase", "icon": "step-over" },
+      { "id": "zerar", "title": "pomodoro: zerar o ciclo", "icon": "restart" }
+    ]
+  }
+}

@@ -1,0 +1,78 @@
+// O painel do pomodoro, montado pelo plugin com os widgets do Flutter: a
+// Maestria só desenha. Pequeno de propósito (228×58): mora por cima dos painéis,
+// no canto que você escolher arrastando.
+//
+// Os dados chegam em `data` (`phase`, `running`, `clock`, `label`, `progress`,
+// `color`, `menu`) e as cores do tema em `data.theme`. Todo clique vira `event "act"` com
+// a ação em `a` (ou `action`, quando vem do menu).
+
+import core.widgets;
+import core.material;
+import maestria;
+
+widget root = Padding(
+  padding: [10.0, 8.0, 4.0, 8.0],
+  child: Row(
+    children: [
+      Ring(),
+      SizedBox(width: 10.0),
+      Expanded(
+        child: Column(
+          mainAxisAlignment: "center",
+          crossAxisAlignment: "start",
+          children: [
+            Text(
+              text: data.clock,
+              maxLines: 1,
+              style: {
+                fontFamily: data.theme.mono,
+                fontSize: 19.0,
+                height: 1.15,
+                fontWeight: "w600",
+                color: switch data.running { true: data.theme.fg, default: data.theme.dim },
+              },
+            ),
+            Text(
+              text: data.label,
+              maxLines: 1,
+              overflow: "ellipsis",
+              style: { fontSize: 10.5, height: 1.25, color: data.theme.faint },
+            ),
+          ],
+        ),
+      ),
+      IconButton(
+        icon: switch data.running { true: "pause", default: "play" },
+        tooltip: switch data.running { true: "pausar", default: "iniciar" },
+        color: data.theme.fg,
+        onPressed: event "act" { a: "alternar" },
+      ),
+      IconButton(icon: "step-over", tooltip: "pular pra próxima fase", onPressed: event "act" { a: "pular" }),
+      MenuButton(icon: "more", tooltip: "mais", menu: data.menu, onMenu: event "act" {}),
+    ],
+  ),
+);
+
+// O anel da fase, na cor que você escolheu pra ela na aba.
+widget Ring = SizedBox(
+  width: 40.0,
+  height: 40.0,
+  child: Stack(
+    fit: "expand",
+    children: [
+      CircularProgressIndicator(
+        value: data.progress,
+        strokeWidth: 3.5,
+        color: data.color,
+        backgroundColor: data.theme.active,
+      ),
+      Center(
+        child: Glyph(
+          icon: switch data.phase { "focus": "clock", default: "pause" },
+          size: 15.0,
+          color: data.color,
+        ),
+      ),
+    ],
+  ),
+);

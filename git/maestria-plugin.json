@@ -1,0 +1,63 @@
+{
+  "id": "maestria.git",
+  "name": "Git",
+  "version": "1.2.1",
+  "description": "O controle de código do VS Code numa janela: a branch, o quanto ela está à frente ou atrás, as mudanças separadas em preparadas e não preparadas, o diff de cada arquivo, commit, fetch, pull, push e os últimos commits — numa janela ou na aba da lateral.",
+  "icon": "icons/git.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:painel",
+    "onCommand:repos",
+    "onCommand:branch"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      {
+        "id": "painel",
+        "title": "git: mudanças…",
+        "key": "meta+shift+g"
+      },
+      {
+        "id": "repos",
+        "title": "git: escolher repositório…",
+        "icon": "icons/git.svg",
+        "sidebar": true
+      },
+      {
+        "id": "branch",
+        "title": "git: trocar de branch…"
+      }
+    ],
+    "settings": [
+      {
+        "id": "smartCommit",
+        "type": "boolean",
+        "default": true,
+        "title": "commit sem nada preparado leva tudo",
+        "description": "o smart commit do VS Code: sem arquivo preparado, o commit prepara todas as mudanças antes (inclusive os arquivos novos)."
+      },
+      {
+        "id": "poll",
+        "type": "number",
+        "default": 2,
+        "title": "conferir mudanças a cada (segundos)",
+        "description": "enquanto a janela está aberta. 0 desliga: aí só atualiza pelo botão ou depois de uma ação."
+      },
+      {
+        "id": "commits",
+        "type": "number",
+        "default": 15,
+        "title": "commits recentes mostrados"
+      }
+    ]
+  }
+}

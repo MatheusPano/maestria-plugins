@@ -1,0 +1,97 @@
+{
+  "id": "maestria.docker",
+  "name": "Docker",
+  "version": "1.1.0",
+  "description": "Os containers como no OrbStack, na aba da lateral: os projetos do compose com a seta, o cubo colorido de cada imagem, parar, subir e remover sempre à mão. A janela de cada container tem Info, Stats ao vivo, os logs coloridos e um terminal dentro dele; a de cada projeto, os logs de todos juntos. Imagens, volumes e disco numa janela à parte.",
+  "icon": "icons/docker.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:containers",
+    "onCommand:terminal",
+    "onCommand:logs",
+    "onCommand:compose"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      {
+        "id": "containers",
+        "title": "docker: containers, imagens e volumes…",
+        "key": "meta+alt+c"
+      },
+      {
+        "id": "terminal",
+        "title": "docker: terminal num container…"
+      },
+      {
+        "id": "logs",
+        "title": "docker: logs de um container…"
+      },
+      {
+        "id": "compose",
+        "title": "docker: projetos do compose…"
+      }
+    ],
+    "settings": [
+      {
+        "id": "stopped",
+        "type": "boolean",
+        "default": true,
+        "title": "mostrar os containers parados",
+        "description": "desligado, a lista fica só com quem está no ar (e os projetos sem nada no ar somem)."
+      },
+      {
+        "id": "stats",
+        "type": "boolean",
+        "default": true,
+        "title": "CPU e memória ao vivo na janela do container",
+        "description": "um docker stats seguindo enquanto a aba Stats de um container no ar está aberta."
+      },
+      {
+        "id": "tail",
+        "type": "number",
+        "default": 500,
+        "group": "logs",
+        "title": "linhas do fim do log ao abrir",
+        "description": "o --tail do docker logs. 0 começa do agora."
+      },
+      {
+        "id": "max",
+        "type": "number",
+        "default": 5000,
+        "group": "logs",
+        "title": "linhas guardadas na janela"
+      },
+      {
+        "id": "timestamps",
+        "type": "boolean",
+        "default": false,
+        "group": "logs",
+        "title": "hora em cada linha",
+        "description": "a hora do docker na frente de cada linha."
+      },
+      {
+        "id": "shell",
+        "type": "string",
+        "default": "",
+        "title": "shell do terminal no container",
+        "description": "vazio: o bash quando o container tem, senão o sh. Ex.: zsh, ash, /bin/fish"
+      },
+      {
+        "id": "binary",
+        "type": "string",
+        "default": "docker",
+        "title": "programa",
+        "description": "o cli que roda. Troque por um caminho absoluto (~/.orbstack/bin/docker) se o docker não estiver no PATH. O contexto (OrbStack, colima, Docker Desktop) se escolhe no menu da lista."
+      }
+    ]
+  }
+}

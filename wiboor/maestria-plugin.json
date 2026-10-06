@@ -1,0 +1,81 @@
+{
+  "id": "maestria.wiboor",
+  "name": "Wiboor",
+  "version": "1.9.0",
+  "description": "As tarefas do Wiboor num quadro Kanban, pela API pública: não iniciadas, em andamento, pausadas e finalizadas, com o prazo, o checklist e os comentários em cada cartão, e iniciar, pausar e finalizar no próprio cartão. \"Trabalhar nesta tarefa\" cria a worktree dela (feature/TASK#… ou hotfix/BUG#…), abre o claude lá com a tarefa no prompt e a inicia no Wiboor; daí em diante o cartão mostra o que a sessão está fazendo e o botão vai pra ela. A janela de cada tarefa tem a descrição, o checklist, os comentários e um rascunho de comentário escrito pelo claude a partir do que mudou na worktree. O ícone na faixa é uma tela só do Wiboor: a fila na lateral e o quadro ocupando os painéis, com as tarefas abrindo ao lado dele; o ícone das sessões devolve a grade que estava lá. A aba da lateral é a sua fila. E com o switch \"criar a task no Wiboor\" ligado no cartão de uma tarefa sugerida pelo claude, qualquer saída dele (worktree, sessão nova ou fazer aqui) abre antes a tarefa nova já preenchida com a sugestão; criada, a Maestria segue com a saída escolhida, já com o número da tarefa.",
+  "icon": "icons/wiboor.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:quadro",
+    "onCommand:abrir",
+    "onCommand:nova",
+    "onCommand:branch",
+    "onSuggestion"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "screen": {
+      "home": "quadro"
+    },
+    "suggestions": {
+      "label": "criar a task no Wiboor"
+    },
+    "commands": [
+      {
+        "id": "quadro",
+        "title": "wiboor: o quadro",
+        "key": "meta+alt+k"
+      },
+      {
+        "id": "abrir",
+        "title": "wiboor: abrir uma tarefa sua…"
+      },
+      {
+        "id": "nova",
+        "title": "wiboor: nova tarefa…"
+      },
+      {
+        "id": "branch",
+        "title": "wiboor: a tarefa da branch deste painel"
+      }
+    ],
+    "settings": [
+      {
+        "id": "autoStart",
+        "type": "boolean",
+        "default": true,
+        "title": "iniciar a tarefa no Wiboor ao trabalhar nela",
+        "description": "\"trabalhar nesta tarefa\" também dá o start nela (menos em tarefa de curso e na que já está em andamento)."
+      },
+      {
+        "id": "detailModal",
+        "type": "boolean",
+        "default": true,
+        "title": "abrir a tarefa num modal",
+        "description": "a tarefa abre por cima do quadro; o \"abrir como painel\" do modal a põe na grade. Desligado, ela abre direto como painel."
+      },
+      {
+        "id": "finishedDays",
+        "type": "number",
+        "default": 7,
+        "title": "dias de finalizadas no quadro",
+        "description": "a coluna Finalizadas mostra o que acabou nesses últimos dias. 0 tira a coluna."
+      },
+      {
+        "id": "refresh",
+        "type": "number",
+        "default": 60,
+        "title": "atualizar sozinho a cada (segundos)",
+        "description": "só enquanto o quadro ou a aba estão abertos. 0 desliga; menos de 15 vale 15."
+      }
+    ]
+  }
+}

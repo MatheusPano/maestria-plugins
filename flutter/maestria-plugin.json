@@ -1,0 +1,153 @@
+{
+  "id": "maestria.flutter",
+  "name": "Flutter",
+  "version": "1.5.0",
+  "description": "Central de debug do Flutter como a do VS Code: configurações do launch.json, aparelho (abre emulador), barra de debug (pausar, step, hot reload, hot restart, parar), debug console, o DevTools numa janela da Maestria (frames e jank, CPU, memória e rede) e uma aba na lateral com os projetos e a barra em ícones.",
+  "icon": "icons/flutter.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:central",
+    "onCommand:iniciar",
+    "onCommand:parar",
+    "onCommand:reload",
+    "onCommand:restart",
+    "onCommand:pausar",
+    "onCommand:over",
+    "onCommand:into",
+    "onCommand:out",
+    "onCommand:devtools",
+    "onCommand:devtools-navegador"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      {
+        "id": "central",
+        "title": "flutter: central de debug…",
+        "key": "meta+shift+d",
+        "icon": "icons/flutter.svg",
+        "sidebar": true
+      },
+      {
+        "id": "iniciar",
+        "title": "flutter: iniciar / continuar",
+        "key": "f5"
+      },
+      {
+        "id": "parar",
+        "title": "flutter: parar",
+        "key": "shift+f5"
+      },
+      {
+        "id": "reload",
+        "title": "flutter: hot reload",
+        "key": "meta+alt+r"
+      },
+      {
+        "id": "restart",
+        "title": "flutter: hot restart",
+        "key": "meta+shift+f5"
+      },
+      {
+        "id": "pausar",
+        "title": "flutter: pausar",
+        "key": "f6"
+      },
+      {
+        "id": "over",
+        "title": "flutter: step over",
+        "key": "f10"
+      },
+      {
+        "id": "into",
+        "title": "flutter: step into",
+        "key": "f11"
+      },
+      {
+        "id": "out",
+        "title": "flutter: step out",
+        "key": "shift+f11"
+      },
+      {
+        "id": "devtools",
+        "title": "flutter: DevTools (desempenho, CPU, memória e rede)",
+        "key": "meta+alt+t"
+      },
+      {
+        "id": "devtools-navegador",
+        "title": "flutter: abrir o DevTools no navegador"
+      }
+    ],
+    "settings": [
+      {
+        "id": "colors.app",
+        "group": "cores do console",
+        "type": "color",
+        "default": "",
+        "title": "log do app",
+        "description": "print e debugPrint. Hex (#4FC1FF), um nome do tema (red, green, yellow, accent, purple, dim, faint) ou vazio pra cor do texto."
+      },
+      {
+        "id": "colors.developer",
+        "group": "cores do console",
+        "type": "color",
+        "default": "",
+        "title": "log() do dart:developer",
+        "description": "o [nome] mensagem que o VS Code mostra."
+      },
+      {
+        "id": "colors.native",
+        "group": "cores do console",
+        "type": "color",
+        "default": "dim",
+        "title": "log nativo",
+        "description": "as linhas do Android (D/Tag(123): …) que o flutter repassa. As de erro (E/, F/) usam a cor de erro."
+      },
+      {
+        "id": "colors.warning",
+        "group": "cores do console",
+        "type": "color",
+        "default": "yellow",
+        "title": "aviso",
+        "description": "log() com level WARNING (900) e o depurador que não conectou."
+      },
+      {
+        "id": "colors.error",
+        "group": "cores do console",
+        "type": "color",
+        "default": "red",
+        "title": "erro",
+        "description": "stderr, exceções, log() SEVERE (1000) e o error/stackTrace deles."
+      },
+      {
+        "id": "colors.success",
+        "group": "cores do console",
+        "type": "color",
+        "default": "green",
+        "title": "hot reload e restart",
+        "description": "a confirmação de que recarregou."
+      },
+      {
+        "id": "colors.tool",
+        "group": "cores do console",
+        "type": "color",
+        "default": "accent",
+        "title": "mensagens da central",
+        "description": "o comando que rodou, o app que saiu, o DevTools."
+      },
+      {
+        "id": "colors.build",
+        "group": "cores do console",
+        "type": "color",
+        "default": "faint",
+        "title": "saída do build",
+        "description": "gradle, xcodebuild, pod e o progresso do flutter."
+      }
+    ]
+  }
+}

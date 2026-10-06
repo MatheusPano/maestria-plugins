@@ -1,0 +1,928 @@
+// O DevTools dentro da Maestria: desempenho (os frames), CPU, memória e rede
+// do app que a central está rodando. O plugin manda os dados já contados em
+// `data.head` e na aba da vez (`data.perf`, `data.cpu`, `data.mem`, `data.net`);
+// as cores vêm do tema em `data.theme`. Todo clique vira `event "act"` com a
+// ação em `a`.
+//
+// As alturas das barras são `flex` (inteiros): pelo json um 12.0 chega como
+// inteiro, e o rfw lê tamanho como double — flex é inteiro por natureza.
+
+import core.widgets;
+import maestria;
+
+widget root = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Head(),
+    Expanded(
+      child: switch data.head.live {
+        true: switch data.head.tab {
+          "cpu": Cpu(),
+          "mem": Mem(),
+          "net": Net(),
+          default: Perf(),
+        },
+        default: Offline(),
+      },
+    ),
+  ],
+);
+
+// --- o topo: o estado da conexão, as abas e o DevTools do navegador ---------
+
+widget Head = Container(
+  padding: [14.0, 10.0, 10.0, 0.0],
+  decoration: { type: "box", border: [{ style: "none" }, { style: "none" }, { style: "none" }, { color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Container(
+            width: 8.0,
+            height: 8.0,
+            decoration: {
+              type: "box",
+              shape: "circle",
+              color: switch data.head.dot {
+                "green": data.theme.green,
+                "yellow": data.theme.yellow,
+                "red": data.theme.red,
+                default: data.theme.faint,
+              },
+            },
+          ),
+          SizedBox(width: 8.0),
+          Expanded(
+            child: Text(text: data.head.status, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim }),
+          ),
+          IconButton(icon: "globe", tooltip: "abrir o DevTools completo no navegador", onPressed: event "act" { a: "navegador" }),
+        ],
+      ),
+      SizedBox(height: 6.0),
+      Wrap(
+        children: [
+          ...for t in data.head.tabs:
+            Tab(tab: t),
+        ],
+      ),
+    ],
+  ),
+);
+
+widget Tab = Pressable(
+  onTap: event "act" { a: args.tab.action },
+  hoverColor: data.theme.hover,
+  radius: 6.0,
+  child: Container(
+    padding: [10.0, 7.0, 10.0, 7.0],
+    decoration: {
+      type: "box",
+      border: [{ style: "none" }, { style: "none" }, { style: "none" }, { color: switch args.tab.active { true: data.theme.accent, default: 0x00000000 }, width: 2.0 }],
+    },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Glyph(icon: args.tab.icon, size: 14.0, color: switch args.tab.active { true: data.theme.accent, default: data.theme.dim }),
+        SizedBox(width: 6.0),
+        Text(
+          text: args.tab.label,
+          style: {
+            fontSize: 12.5,
+            fontWeight: switch args.tab.active { true: "w600", default: "w400" },
+            color: switch args.tab.active { true: data.theme.fg, default: data.theme.dim },
+          },
+        ),
+      ],
+    ),
+  ),
+);
+
+widget Offline = Center(
+  child: Padding(
+    padding: [24.0, 24.0, 24.0, 24.0],
+    child: Column(
+      mainAxisSize: "min",
+      children: [
+        Glyph(icon: "devtools", size: 30.0, color: data.theme.faint),
+        SizedBox(height: 12.0),
+        Text(text: data.head.offline, textAlign: "center", style: { fontSize: 13.0, color: data.theme.dim }),
+      ],
+    ),
+  ),
+);
+
+// --- as peças --------------------------------------------------------------
+
+widget Card = Container(
+  padding: [12.0, 10.0, 12.0, 12.0],
+  decoration: {
+    type: "box",
+    color: data.theme.sidebar,
+    borderRadius: [{ x: 8.0 }],
+    border: [{ color: data.theme.border, width: 1.0 }],
+  },
+  child: args.child,
+);
+
+widget CardTitle = Text(text: args.text, style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg });
+
+widget Note = Text(text: args.text, style: { fontSize: 11.5, color: data.theme.faint, height: 1.35 });
+
+// Um aviso de uma linha só, que some quando vem vazio: o modo debug.
+widget Warn = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 0.0, 10.0],
+    child: Container(
+      padding: [10.0, 7.0, 10.0, 7.0],
+      decoration: { type: "box", borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.yellow, width: 1.0 }] },
+      child: Row(
+        children: [
+          Glyph(icon: "warning", size: 14.0, color: data.theme.yellow),
+          SizedBox(width: 8.0),
+          Expanded(child: Text(text: args.text, style: { fontSize: 11.5, color: data.theme.dim, height: 1.35 })),
+        ],
+      ),
+    ),
+  ),
+};
+
+// Os números de cima: um rótulo pequeno e o valor em mono, na cor do tom.
+widget Stats = Wrap(
+  spacing: 8.0,
+  runSpacing: 8.0,
+  children: [
+    ...for s in args.items:
+      Tooltip(
+        message: s.hint,
+        child: Container(
+          width: 128.0,
+          padding: [10.0, 8.0, 10.0, 8.0],
+          decoration: {
+            type: "box",
+            color: data.theme.sidebar,
+            borderRadius: [{ x: 8.0 }],
+            border: [{ color: data.theme.border, width: 1.0 }],
+          },
+          child: Column(
+            crossAxisAlignment: "start",
+            children: [
+              Text(text: s.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+              SizedBox(height: 3.0),
+              Text(
+                text: s.value,
+                maxLines: 1,
+                overflow: "ellipsis",
+                style: {
+                  fontFamily: data.theme.mono,
+                  fontSize: 15.0,
+                  fontWeight: "w600",
+                  color: switch s.tone {
+                    "red": data.theme.red,
+                    "green": data.theme.green,
+                    "yellow": data.theme.yellow,
+                    "blue": data.theme.blue,
+                    "cyan": data.theme.cyan,
+                    default: data.theme.fg,
+                  },
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+  ],
+);
+
+// Um botão de texto. `primary` é o cheio, na cor de destaque.
+widget Button = Pressable(
+  onTap: event "act" { a: args.action },
+  radius: 6.0,
+  color: switch args.primary { true: data.theme.accent, default: data.theme.active },
+  hoverColor: switch args.primary { true: data.theme.accent, default: data.theme.hover },
+  padding: [10.0, 5.0, 10.0, 5.0],
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Glyph(icon: args.icon, size: 13.0, color: switch args.primary { true: data.theme.onAccent, default: data.theme.fg }),
+      SizedBox(width: 6.0),
+      Text(
+        text: args.label,
+        style: { fontSize: 12.0, fontWeight: "w500", color: switch args.primary { true: data.theme.onAccent, default: data.theme.fg } },
+      ),
+    ],
+  ),
+);
+
+// O controle segmentado: opções lado a lado, a escolhida acesa.
+widget Segmented = Container(
+  padding: [2.0, 2.0, 2.0, 2.0],
+  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 7.0 }] },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      ...for o in args.options:
+        Pressable(
+          onTap: event "act" { a: o.action },
+          radius: 5.0,
+          color: switch o.active { true: data.theme.bg, default: 0x00000000 },
+          hoverColor: switch o.active { true: data.theme.bg, default: data.theme.hover },
+          padding: [9.0, 3.0, 9.0, 3.0],
+          child: Text(
+            text: o.label,
+            style: { fontSize: 11.5, color: switch o.active { true: data.theme.fg, default: data.theme.dim } },
+          ),
+        ),
+    ],
+  ),
+);
+
+// Um quadradinho de legenda.
+widget Key = Row(
+  mainAxisSize: "min",
+  children: [
+    Container(width: 9.0, height: 9.0, decoration: { type: "box", color: args.color, borderRadius: [{ x: 2.0 }] }),
+    SizedBox(width: 5.0),
+    Flexible(child: Text(text: args.text, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.dim })),
+    SizedBox(width: 12.0),
+  ],
+);
+
+// Um interruptor com o rótulo: as extensões do Flutter que mudam o app na tela.
+widget Toggle = Tooltip(
+  message: args.t.hint,
+  child: Pressable(
+    onTap: event "act" { a: args.t.action },
+    radius: 6.0,
+    hoverColor: data.theme.hover,
+    padding: [6.0, 5.0, 10.0, 5.0],
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Container(
+          width: 26.0,
+          height: 15.0,
+          padding: [2.0, 2.0, 2.0, 2.0],
+          alignment: switch args.t.on { true: { x: 1.0, y: 0.0 }, default: { x: -1.0, y: 0.0 } },
+          decoration: {
+            type: "box",
+            borderRadius: [{ x: 8.0 }],
+            color: switch args.t.on { true: data.theme.accent, default: data.theme.active },
+          },
+          child: Container(
+            width: 11.0,
+            height: 11.0,
+            decoration: {
+              type: "box",
+              shape: "circle",
+              color: switch args.t.on { true: data.theme.onAccent, default: data.theme.dim },
+            },
+          ),
+        ),
+        SizedBox(width: 8.0),
+        Text(text: args.t.label, style: { fontSize: 12.0, color: data.theme.fg }),
+      ],
+    ),
+  ),
+);
+
+// --- desempenho ------------------------------------------------------------
+
+widget Perf = ListView(
+  padding: [14.0, 12.0, 14.0, 16.0],
+  children: [
+    Warn(text: data.perf.warn),
+    Stats(items: data.perf.stats),
+    SizedBox(height: 12.0),
+    Card(
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Wrap(
+                  runSpacing: 4.0,
+                  crossAxisAlignment: "center",
+                  children: [
+                    CardTitle(text: "Frames"),
+                    SizedBox(width: 12.0),
+                    Key(color: data.theme.blue, text: "build (UI)"),
+                    Key(color: data.theme.cyan, text: "raster (GPU)"),
+                    Key(color: data.theme.red, text: "jank"),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: switch data.perf.recording { true: "pause", default: "play" },
+                tooltip: switch data.perf.recording { true: "pausar a gravação dos frames", default: "voltar a gravar os frames" },
+                onPressed: event "act" { a: "gravar-frames" },
+              ),
+              IconButton(icon: "clear", tooltip: "limpar os frames", onPressed: event "act" { a: "limpar-frames" }),
+            ],
+          ),
+          SizedBox(height: 8.0),
+          FrameChart(),
+          SizedBox(height: 8.0),
+          Text(text: data.perf.detail, style: { fontSize: 12.0, color: data.theme.fg, height: 1.4 }),
+          SizedBox(height: 2.0),
+          Note(text: data.perf.hint),
+        ],
+      ),
+    ),
+    SizedBox(height: 12.0),
+    Card(
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          CardTitle(text: "No app"),
+          SizedBox(height: 4.0),
+          Note(text: data.perf.togglesNote),
+          SizedBox(height: 6.0),
+          Wrap(
+            spacing: 4.0,
+            runSpacing: 2.0,
+            children: [
+              ...for t in data.perf.toggles:
+                Toggle(t: t),
+            ],
+          ),
+        ],
+      ),
+    ),
+    SizedBox(height: 12.0),
+    Card(
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          CardTitle(text: "Os frames mais lentos"),
+          SizedBox(height: 6.0),
+          ...for w in data.perf.worst:
+            Pressable(
+              onTap: event "act" { a: w.action },
+              radius: 6.0,
+              hoverColor: data.theme.hover,
+              color: switch w.sel { true: data.theme.active, default: 0x00000000 },
+              padding: [6.0, 5.0, 6.0, 5.0],
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 84.0,
+                    child: Text(text: w.total, style: { fontFamily: data.theme.mono, fontSize: 12.0, fontWeight: "w600", color: data.theme.red }),
+                  ),
+                  SizedBox(
+                    width: 90.0,
+                    child: Text(text: w.name, style: { fontFamily: data.theme.mono, fontSize: 12.0, color: data.theme.dim }),
+                  ),
+                  Expanded(child: Text(text: w.split, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim })),
+                ],
+              ),
+            ),
+          switch data.perf.worstEmpty {
+            "": SizedBox(),
+            default: Note(text: data.perf.worstEmpty),
+          },
+        ],
+      ),
+    ),
+  ],
+);
+
+// O gráfico: duas barras por frame (build e raster), o mais novo à direita.
+// A linha do meio é o orçamento de um frame — a escala vai até o dobro dele,
+// e os rótulos ficam numa coluna à direita, fora das barras.
+widget FrameChart = SizedBox(
+  height: 150.0,
+  child: Row(
+    crossAxisAlignment: "stretch",
+    children: [
+      Expanded(
+        child: Stack(
+          children: [
+            Positioned(
+              start: 0.0,
+              end: 0.0,
+              top: 0.0,
+              bottom: 0.0,
+              child: Column(
+                crossAxisAlignment: "stretch",
+                children: [
+                  Expanded(child: SizedBox()),
+                  Container(height: 1.0, color: data.theme.faint),
+                  Expanded(child: SizedBox()),
+                ],
+              ),
+            ),
+            Positioned(
+              start: 0.0,
+              end: 0.0,
+              top: 0.0,
+              bottom: 0.0,
+              child: ListView(
+                scrollDirection: "horizontal",
+                reverse: true,
+                itemExtent: 9.0,
+                children: [
+                  ...for f in data.perf.bars:
+                    FrameBar(f: f),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      SizedBox(width: 6.0),
+      SizedBox(
+        width: 48.0,
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            ScaleLabel(text: data.perf.scaleTop),
+            Expanded(child: SizedBox()),
+            ScaleLabel(text: data.perf.scaleMid),
+            Expanded(child: SizedBox()),
+            ScaleLabel(text: "0"),
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
+widget ScaleLabel = Text(text: args.text, maxLines: 1, style: { fontFamily: data.theme.mono, fontSize: 10.0, color: data.theme.faint });
+
+widget FrameBar = GestureDetector(
+  onTap: event "act" { a: args.f.action },
+  behavior: "opaque",
+  child: Tooltip(
+    message: args.f.tip,
+    child: Container(
+      padding: [1.0, 0.0, 1.0, 0.0],
+      color: switch args.f.sel { true: data.theme.active, default: 0x00000000 },
+      child: Row(
+        crossAxisAlignment: "stretch",
+        children: [
+          Bar(top: args.f.bt, fill: args.f.b, tone: args.f.bc),
+          SizedBox(width: 1.0),
+          Bar(top: args.f.rt, fill: args.f.r, tone: args.f.rc),
+        ],
+      ),
+    ),
+  ),
+);
+
+widget Bar = SizedBox(
+  width: 3.0,
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Expanded(flex: args.top, child: SizedBox()),
+      Expanded(
+        flex: args.fill,
+        child: Container(
+          decoration: {
+            type: "box",
+            borderRadius: [{ x: 1.0 }, { x: 1.0 }, { x: 0.0 }, { x: 0.0 }],
+            color: switch args.tone { "red": data.theme.red, "cyan": data.theme.cyan, default: data.theme.blue },
+          },
+        ),
+      ),
+    ],
+  ),
+);
+
+// --- CPU -------------------------------------------------------------------
+
+widget Cpu = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [14.0, 12.0, 14.0, 0.0],
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Warn(text: data.cpu.warn),
+          Row(
+            children: [
+              Button(action: "cpu", icon: data.cpu.buttonIcon, label: data.cpu.button, primary: data.cpu.primary),
+              SizedBox(width: 10.0),
+              Expanded(
+                child: Text(text: data.cpu.status, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim }),
+              ),
+            ],
+          ),
+          SizedBox(height: 10.0),
+          Wrap(
+            spacing: 8.0,
+            runSpacing: 6.0,
+            children: [
+              Segmented(options: data.cpu.filters),
+              Segmented(options: data.cpu.sorts),
+            ],
+          ),
+          SizedBox(height: 10.0),
+        ],
+      ),
+    ),
+    Container(
+      padding: [14.0, 5.0, 14.0, 5.0],
+      decoration: { type: "box", border: [{ style: "none" }, { color: data.theme.border, width: 1.0 }, { style: "none" }, { color: data.theme.border, width: 1.0 }] },
+      child: Row(
+        children: [
+          SizedBox(width: 92.0, child: Text(text: "próprio", style: { fontSize: 11.0, color: data.theme.faint })),
+          SizedBox(width: 92.0, child: Text(text: "total", style: { fontSize: 11.0, color: data.theme.faint })),
+          Expanded(child: Text(text: "função", style: { fontSize: 11.0, color: data.theme.faint })),
+        ],
+      ),
+    ),
+    Expanded(
+      child: switch data.cpu.empty {
+        "": ListView(
+          padding: [0.0, 2.0, 0.0, 12.0],
+          children: [
+            ...for r in data.cpu.rows:
+              CpuRow(r: r),
+          ],
+        ),
+        default: Padding(padding: [14.0, 12.0, 14.0, 12.0], child: Note(text: data.cpu.empty)),
+      },
+    ),
+  ],
+);
+
+widget CpuRow = Pressable(
+  onTap: event "act" { a: args.r.action },
+  hoverColor: data.theme.hover,
+  padding: [14.0, 4.0, 14.0, 4.0],
+  child: Row(
+    children: [
+      Pct(text: args.r.self, fill: args.r.selfFill, rest: args.r.selfRest, strong: args.r.bySelf),
+      Pct(text: args.r.total, fill: args.r.totalFill, rest: args.r.totalRest, strong: args.r.byTotal),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: args.r.name, maxLines: 1, overflow: "ellipsis", style: { fontFamily: data.theme.mono, fontSize: 12.0, color: data.theme.fg }),
+            Text(text: args.r.where, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
+// Um percentual com a barrinha embaixo (o flex dela é o valor, de 0 a 1000).
+widget Pct = SizedBox(
+  width: 92.0,
+  child: Padding(
+    padding: [0.0, 0.0, 14.0, 0.0],
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Text(
+          text: args.text,
+          style: {
+            fontFamily: data.theme.mono,
+            fontSize: 12.0,
+            fontWeight: switch args.strong { true: "w600", default: "w400" },
+            color: switch args.strong { true: data.theme.fg, default: data.theme.dim },
+          },
+        ),
+        SizedBox(height: 2.0),
+        SizedBox(
+          height: 3.0,
+          child: Row(
+            crossAxisAlignment: "stretch",
+            children: [
+              Expanded(
+                flex: args.fill,
+                child: Container(
+                  decoration: {
+                    type: "box",
+                    borderRadius: [{ x: 1.5 }],
+                    color: switch args.strong { true: data.theme.accent, default: data.theme.faint },
+                  },
+                ),
+              ),
+              Expanded(flex: args.rest, child: SizedBox()),
+            ],
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
+// --- memória ---------------------------------------------------------------
+
+widget Mem = ListView(
+  padding: [14.0, 12.0, 14.0, 16.0],
+  children: [
+    Stats(items: data.mem.stats),
+    SizedBox(height: 12.0),
+    Card(
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Row(
+            children: [
+              Expanded(child: CardTitle(text: "Heap do Dart")),
+              Text(text: data.mem.scale, style: { fontFamily: data.theme.mono, fontSize: 10.5, color: data.theme.faint }),
+            ],
+          ),
+          SizedBox(height: 4.0),
+          Wrap(
+            runSpacing: 4.0,
+            children: [
+              Key(color: data.theme.blue, text: "usado"),
+              Key(color: data.theme.cyan, text: "externo"),
+              Key(color: data.theme.active, text: "capacidade"),
+              Key(color: data.theme.yellow, text: "GC"),
+            ],
+          ),
+          SizedBox(height: 8.0),
+          SizedBox(
+            height: 120.0,
+            child: Row(
+              crossAxisAlignment: "stretch",
+              children: [
+                ...for s in data.mem.samples:
+                  Expanded(child: MemBar(s: s)),
+              ],
+            ),
+          ),
+          SizedBox(height: 4.0),
+          Row(
+            children: [
+              Note(text: data.mem.from),
+              Expanded(child: SizedBox()),
+              Note(text: "agora"),
+            ],
+          ),
+        ],
+      ),
+    ),
+    SizedBox(height: 12.0),
+    Card(
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Row(
+            children: [
+              Expanded(child: CardTitle(text: "Objetos na memória, por classe")),
+              IconButton(icon: "refresh", tooltip: "contar de novo", onPressed: event "act" { a: "classes" }),
+            ],
+          ),
+          SizedBox(height: 4.0),
+          Wrap(
+            spacing: 8.0,
+            runSpacing: 6.0,
+            crossAxisAlignment: "center",
+            children: [
+              Segmented(options: data.mem.filters),
+              Button(action: "gc", icon: "trash", label: "forçar GC e contar", primary: false),
+              Button(action: "marcar", icon: data.mem.markIcon, label: data.mem.mark, primary: data.mem.marked),
+            ],
+          ),
+          SizedBox(height: 6.0),
+          Note(text: data.mem.note),
+          SizedBox(height: 6.0),
+          Container(
+            padding: [6.0, 4.0, 6.0, 4.0],
+            decoration: { type: "box", border: [{ style: "none" }, { style: "none" }, { style: "none" }, { color: data.theme.border, width: 1.0 }] },
+            child: Row(
+              children: [
+                Expanded(child: Text(text: "classe", style: { fontSize: 11.0, color: data.theme.faint })),
+                SizedBox(width: 90.0, child: Text(text: "instâncias", textAlign: "end", style: { fontSize: 11.0, color: data.theme.faint })),
+                SizedBox(width: 90.0, child: Text(text: "tamanho", textAlign: "end", style: { fontSize: 11.0, color: data.theme.faint })),
+                SizedBox(width: 100.0, child: Text(text: data.mem.deltaHead, textAlign: "end", style: { fontSize: 11.0, color: data.theme.faint })),
+              ],
+            ),
+          ),
+          ...for c in data.mem.classes:
+            Pressable(
+              onTap: event "act" { a: c.action },
+              radius: 4.0,
+              hoverColor: data.theme.hover,
+              padding: [6.0, 4.0, 6.0, 4.0],
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: "start",
+                      children: [
+                        Text(text: c.name, maxLines: 1, overflow: "ellipsis", style: { fontFamily: data.theme.mono, fontSize: 12.0, color: data.theme.fg }),
+                        Text(text: c.lib, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+                      ],
+                    ),
+                  ),
+                  SizedBox(width: 90.0, child: Text(text: c.count, textAlign: "end", style: { fontFamily: data.theme.mono, fontSize: 12.0, color: data.theme.dim })),
+                  SizedBox(width: 90.0, child: Text(text: c.size, textAlign: "end", style: { fontFamily: data.theme.mono, fontSize: 12.0, color: data.theme.fg })),
+                  SizedBox(
+                    width: 100.0,
+                    child: Column(
+                      crossAxisAlignment: "end",
+                      children: [
+                        Text(
+                          text: c.delta,
+                          maxLines: 1,
+                          style: {
+                            fontFamily: data.theme.mono,
+                            fontSize: 12.0,
+                            color: switch c.tone { "red": data.theme.red, "green": data.theme.green, default: data.theme.faint },
+                          },
+                        ),
+                        Text(text: c.deltaCount, maxLines: 1, style: { fontFamily: data.theme.mono, fontSize: 11.0, color: data.theme.faint }),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    ),
+  ],
+);
+
+// Um segundo de memória: de baixo pra cima o usado, o externo e o que sobra
+// da capacidade; a faixa amarela em cima diz que houve GC naquele segundo.
+widget MemBar = Tooltip(
+  message: args.s.tip,
+  child: Padding(
+    padding: [0.5, 0.0, 0.5, 0.0],
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Expanded(flex: args.s.empty, child: SizedBox()),
+        switch args.s.gc {
+          true: Container(height: 2.0, color: data.theme.yellow),
+          default: SizedBox(),
+        },
+        Expanded(flex: args.s.free, child: Container(color: data.theme.active)),
+        Expanded(flex: args.s.ext, child: Container(color: data.theme.cyan)),
+        Expanded(flex: args.s.used, child: Container(color: data.theme.blue)),
+      ],
+    ),
+  ),
+);
+
+// --- rede ------------------------------------------------------------------
+
+widget Net = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [14.0, 10.0, 10.0, 8.0],
+      child: Row(
+        children: [
+          Expanded(child: Text(text: data.net.status, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim })),
+          IconButton(
+            icon: switch data.net.paused { true: "play", default: "pause" },
+            tooltip: switch data.net.paused { true: "voltar a gravar", default: "pausar a gravação" },
+            onPressed: event "act" { a: "rede-pausar" },
+          ),
+          IconButton(icon: "clear", tooltip: "limpar a lista", onPressed: event "act" { a: "rede-limpar" }),
+        ],
+      ),
+    ),
+    Container(
+      padding: [14.0, 5.0, 14.0, 5.0],
+      decoration: { type: "box", border: [{ style: "none" }, { color: data.theme.border, width: 1.0 }, { style: "none" }, { color: data.theme.border, width: 1.0 }] },
+      child: Row(
+        children: [
+          SizedBox(width: 52.0, child: Text(text: "método", style: { fontSize: 11.0, color: data.theme.faint })),
+          SizedBox(width: 40.0, child: Text(text: "status", style: { fontSize: 11.0, color: data.theme.faint })),
+          Expanded(child: Text(text: "endereço", style: { fontSize: 11.0, color: data.theme.faint })),
+          SizedBox(width: 64.0, child: Text(text: "tempo", textAlign: "end", style: { fontSize: 11.0, color: data.theme.faint })),
+          SizedBox(width: 64.0, child: Text(text: "tamanho", textAlign: "end", style: { fontSize: 11.0, color: data.theme.faint })),
+        ],
+      ),
+    ),
+    Expanded(
+      child: Row(
+        crossAxisAlignment: "stretch",
+        children: [
+          Expanded(
+            flex: 3,
+            child: switch data.net.empty {
+              "": ListView(
+                children: [
+                  ...for r in data.net.rows:
+                    NetRow(r: r),
+                ],
+              ),
+              default: Padding(padding: [14.0, 12.0, 14.0, 12.0], child: Note(text: data.net.empty)),
+            },
+          ),
+          switch data.net.open {
+            true: Container(width: 1.0, color: data.theme.border),
+            default: SizedBox(),
+          },
+          switch data.net.open {
+            true: Expanded(flex: 2, child: NetDetail()),
+            default: SizedBox(),
+          },
+        ],
+      ),
+    ),
+  ],
+);
+
+widget NetRow = Pressable(
+  onTap: event "act" { a: args.r.action },
+  hoverColor: data.theme.hover,
+  color: switch args.r.sel { true: data.theme.active, default: 0x00000000 },
+  padding: [14.0, 5.0, 14.0, 5.0],
+  child: Row(
+    children: [
+      SizedBox(width: 52.0, child: Text(text: args.r.method, style: { fontFamily: data.theme.mono, fontSize: 11.5, fontWeight: "w600", color: data.theme.dim })),
+      SizedBox(
+        width: 40.0,
+        child: Text(
+          text: args.r.status,
+          style: {
+            fontFamily: data.theme.mono,
+            fontSize: 11.5,
+            fontWeight: "w600",
+            color: switch args.r.tone {
+              "green": data.theme.green,
+              "yellow": data.theme.yellow,
+              "red": data.theme.red,
+              "accent": data.theme.accent,
+              default: data.theme.faint,
+            },
+          },
+        ),
+      ),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: args.r.path, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.fg }),
+            Text(text: args.r.host, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      SizedBox(width: 64.0, child: Text(text: args.r.time, textAlign: "end", style: { fontFamily: data.theme.mono, fontSize: 11.5, color: data.theme.dim })),
+      SizedBox(width: 64.0, child: Text(text: args.r.size, textAlign: "end", style: { fontFamily: data.theme.mono, fontSize: 11.5, color: data.theme.dim })),
+    ],
+  ),
+);
+
+// O pedido aberto: o resumo, e cada parte (cabeçalhos, corpo) com o botão de copiar.
+widget NetDetail = ListView(
+  padding: [12.0, 10.0, 12.0, 16.0],
+  children: [
+    Row(
+      children: [
+        Expanded(child: Text(text: data.net.detail.title, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg })),
+        IconButton(icon: "terminal", tooltip: "copiar como curl", onPressed: event "act" { a: "rede-curl" }),
+        Tooltip(
+          message: "fechar",
+          child: Pressable(
+            onTap: event "act" { a: "rede-fechar" },
+            radius: 6.0,
+            hoverColor: data.theme.hover,
+            padding: [5.0, 5.0, 5.0, 5.0],
+            child: Glyph(icon: "icons/close.svg", size: 14.0, color: data.theme.dim),
+          ),
+        ),
+      ],
+    ),
+    SizedBox(height: 6.0),
+    ...for kv in data.net.detail.kv:
+      Padding(
+        padding: [0.0, 1.0, 0.0, 1.0],
+        child: Row(
+          crossAxisAlignment: "start",
+          children: [
+            SizedBox(width: 78.0, child: Text(text: kv.k, style: { fontSize: 11.5, color: data.theme.faint })),
+            Expanded(child: Text(text: kv.v, style: { fontSize: 11.5, color: switch kv.tone { "red": data.theme.red, default: data.theme.fg } })),
+          ],
+        ),
+      ),
+    ...for s in data.net.detail.sections:
+      Padding(
+        padding: [0.0, 12.0, 0.0, 0.0],
+        child: Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            Row(
+              children: [
+                Expanded(child: Text(text: s.title, style: { fontSize: 11.5, fontWeight: "w600", color: data.theme.dim })),
+                IconButton(icon: "copy", tooltip: "copiar", size: 14.0, extent: 22.0, onPressed: event "act" { a: s.action }),
+              ],
+            ),
+            SizedBox(height: 4.0),
+            Container(
+              padding: [8.0, 6.0, 8.0, 6.0],
+              decoration: { type: "box", color: data.theme.canvas, borderRadius: [{ x: 6.0 }] },
+              child: Text(text: s.text, style: { fontFamily: data.theme.mono, fontSize: 11.0, color: data.theme.fg, height: 1.4 }),
+            ),
+          ],
+        ),
+      ),
+  ],
+);

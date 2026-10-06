@@ -1,0 +1,360 @@
+// A aba do pomodoro na lateral: o relógio grande, os controles e os tempos.
+// Montada pelo plugin com os widgets do Flutter; a Maestria só desenha.
+//
+// Os dados chegam em `data` (`phase`, `running`, `clock`, `label`, `progress`,
+// `color`, `today`, `dots`, `phases`, `presets`, `steppers`, `toggles`, `panel`,
+// `anim`) e as cores do
+// tema em `data.theme`. Todo clique vira `event "act"` com a ação em `a` (e o
+// `id` do que foi clicado, quando é uma linha de uma lista).
+
+import core.widgets;
+import core.material;
+import maestria;
+
+widget root = ListView(
+  padding: [14.0, 12.0, 14.0, 20.0],
+  children: [
+    Segmented(items: data.phases, action: "fase"),
+    SizedBox(height: 18.0),
+    Center(child: Dial()),
+    SizedBox(height: 14.0),
+    Controls(),
+    SizedBox(height: 14.0),
+    Today(),
+    SizedBox(height: 22.0),
+    Ruler(text: "tempos"),
+    SizedBox(height: 8.0),
+    Row(
+      children: [
+        ...for p in data.presets:
+          Expanded(child: Padding(padding: [0.0, 0.0, 6.0, 0.0], child: Preset(p: p))),
+      ],
+    ),
+    SizedBox(height: 6.0),
+    ...for row in data.steppers:
+      Stepper(row: row),
+    SizedBox(height: 18.0),
+    Ruler(text: "ao acabar a fase"),
+    SizedBox(height: 4.0),
+    ...for t in data.toggles:
+      Toggle(t: t),
+    SizedBox(height: 18.0),
+    Ruler(text: "animação"),
+    SizedBox(height: 8.0),
+    Segmented(items: data.anim.phases, action: "cena"),
+    SizedBox(height: 12.0),
+    Caption(text: "ícone"),
+    SizedBox(height: 6.0),
+    Wrap(
+      spacing: 6.0,
+      runSpacing: 6.0,
+      children: [
+        ...for i in data.anim.icons:
+          IconChip(i: i),
+      ],
+    ),
+    SizedBox(height: 12.0),
+    Caption(text: "cor"),
+    SizedBox(height: 6.0),
+    Wrap(
+      spacing: 5.0,
+      runSpacing: 6.0,
+      children: [
+        ...for c in data.anim.colors:
+          Swatch(c: c),
+      ],
+    ),
+    SizedBox(height: 6.0),
+    ...for t in data.anim.toggles:
+      Toggle(t: t),
+    SizedBox(height: 2.0),
+    Pressable(
+      radius: 6.0,
+      hoverColor: data.theme.hover,
+      onTap: event "act" { a: "testar" },
+      child: Padding(
+        padding: [2.0, 7.0, 2.0, 7.0],
+        child: Row(
+          children: [
+            Glyph(icon: "play", size: 13.0, color: data.anim.color),
+            SizedBox(width: 8.0),
+            Text(text: data.anim.test, style: { fontSize: 12.5, color: data.anim.color }),
+          ],
+        ),
+      ),
+    ),
+    SizedBox(height: 18.0),
+    Ruler(text: "painel"),
+    SizedBox(height: 4.0),
+    ...for t in data.panel:
+      Toggle(t: t),
+  ],
+);
+
+// --- o relógio ---------------------------------------------------------------------
+
+// Foco, pausa curta e pausa longa num controle segmentado. No topo, o clique
+// pula pra fase; na animação, escolhe qual fase você está editando.
+widget Segmented = Container(
+  padding: [3.0, 3.0, 3.0, 3.0],
+  decoration: { type: "box", color: data.theme.canvas, borderRadius: [{ x: 8.0 }] },
+  child: Row(
+    children: [
+      ...for p in args.items:
+        Expanded(
+          child: Pressable(
+            radius: 6.0,
+            color: switch p.active { true: data.theme.active, default: 0x00000000 },
+            hoverColor: data.theme.hover,
+            onTap: event "act" { a: args.action, id: p.id },
+            child: Padding(
+              padding: [0.0, 6.0, 0.0, 6.0],
+              child: Center(
+                child: Text(
+                  text: p.label,
+                  maxLines: 1,
+                  style: {
+                    fontSize: 11.5,
+                    fontWeight: switch p.active { true: "w600", default: "w400" },
+                    color: switch p.active { true: data.theme.fg, default: data.theme.dim },
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+    ],
+  ),
+);
+
+widget Dial = SizedBox(
+  width: 150.0,
+  height: 150.0,
+  child: Stack(
+    fit: "expand",
+    children: [
+      CircularProgressIndicator(
+        value: data.progress,
+        strokeWidth: 6.0,
+        color: data.color,
+        backgroundColor: data.theme.active,
+      ),
+      Center(
+        child: Column(
+          mainAxisSize: "min",
+          children: [
+            Text(
+              text: data.clock,
+              style: {
+                fontFamily: data.theme.mono,
+                fontSize: 32.0,
+                height: 1.1,
+                fontWeight: "w600",
+                color: switch data.running { true: data.theme.fg, default: data.theme.dim },
+              },
+            ),
+            SizedBox(height: 2.0),
+            Text(text: data.label, maxLines: 1, style: { fontSize: 11.0, height: 1.2, color: data.theme.faint }),
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
+widget Controls = Row(
+  mainAxisAlignment: "center",
+  children: [
+    IconButton(icon: "restart", tooltip: "zerar o ciclo", size: 17.0, extent: 34.0, onPressed: event "act" { a: "zerar" }),
+    SizedBox(width: 14.0),
+    Pressable(
+      radius: 22.0,
+      color: data.color,
+      hoverColor: data.theme.accent,
+      onTap: event "act" { a: "alternar" },
+      child: SizedBox(
+        width: 44.0,
+        height: 44.0,
+        child: Center(
+          child: Glyph(icon: switch data.running { true: "pause", default: "play" }, size: 20.0, color: data.theme.canvas),
+        ),
+      ),
+    ),
+    SizedBox(width: 14.0),
+    IconButton(icon: "step-over", tooltip: "pular pra próxima fase", size: 17.0, extent: 34.0, onPressed: event "act" { a: "pular" }),
+  ],
+);
+
+// Os focos do ciclo em bolinhas, e quantos saíram hoje.
+widget Today = Column(
+  children: [
+    Row(
+      mainAxisAlignment: "center",
+      children: [
+        ...for d in data.dots:
+          Padding(
+            padding: [3.0, 0.0, 3.0, 0.0],
+            child: Container(
+              width: 7.0,
+              height: 7.0,
+              decoration: {
+                type: "box",
+                color: switch d { true: data.focusColor, default: data.theme.active },
+                borderRadius: [{ x: 4.0 }],
+              },
+            ),
+          ),
+      ],
+    ),
+    SizedBox(height: 6.0),
+    Text(text: data.today, style: { fontSize: 11.0, color: data.theme.faint }),
+  ],
+);
+
+// --- os tempos ---------------------------------------------------------------------
+
+widget Ruler = Row(
+  children: [
+    Text(text: args.text, style: { fontSize: 10.5, color: data.theme.faint, letterSpacing: 0.4 }),
+    SizedBox(width: 8.0),
+    Expanded(child: Container(height: 1.0, color: data.theme.border)),
+  ],
+);
+
+// "25 · 5": foco e pausa curta de uma vez. Aceso quando é o que está valendo.
+widget Preset = Pressable(
+  radius: 6.0,
+  color: switch args.p.active { true: data.theme.active, default: data.theme.canvas },
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: "preset", id: args.p.id },
+  child: Padding(
+    padding: [0.0, 6.0, 0.0, 6.0],
+    child: Center(
+      child: Text(
+        text: args.p.label,
+        style: {
+          fontFamily: data.theme.mono,
+          fontSize: 11.5,
+          color: switch args.p.active { true: data.theme.fg, default: data.theme.dim },
+        },
+      ),
+    ),
+  ),
+);
+
+widget Stepper = SizedBox(
+  height: 32.0,
+  child: Row(
+    children: [
+      Expanded(child: Text(text: args.row.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, color: data.theme.dim })),
+      IconButton(icon: "remove", tooltip: "menos", disabled: args.row.atMin, onPressed: event "act" { a: "menos", id: args.row.id }),
+      SizedBox(
+        width: 62.0,
+        child: Center(
+          child: Text(text: args.row.value, style: { fontFamily: data.theme.mono, fontSize: 12.0, color: data.theme.fg }),
+        ),
+      ),
+      IconButton(icon: "add", tooltip: "mais", disabled: args.row.atMax, onPressed: event "act" { a: "mais", id: args.row.id }),
+    ],
+  ),
+);
+
+// Um interruptor desenhado: o trilho acende na cor de destaque e a bolinha vai
+// pro lado.
+widget Toggle = Pressable(
+  radius: 6.0,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: "toggle", id: args.t.id },
+  child: Padding(
+    padding: [2.0, 7.0, 2.0, 7.0],
+    child: Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: "start",
+            children: [
+              Text(text: args.t.label, style: { fontSize: 12.5, color: data.theme.dim }),
+              ...for h in args.t.hint:
+                Text(text: h, style: { fontSize: 10.5, color: data.theme.faint }),
+            ],
+          ),
+        ),
+        SizedBox(width: 10.0),
+        Container(
+          width: 28.0,
+          height: 16.0,
+          padding: [2.0, 2.0, 2.0, 2.0],
+          decoration: {
+            type: "box",
+            color: switch args.t.on { true: data.theme.accent, default: data.theme.active },
+            borderRadius: [{ x: 8.0 }],
+          },
+          child: Align(
+            alignment: switch args.t.on { true: { x: 1.0, y: 0.0 }, default: { x: -1.0, y: 0.0 } },
+            child: Container(
+              width: 12.0,
+              height: 12.0,
+              decoration: {
+                type: "box",
+                color: switch args.t.on { true: data.theme.onAccent, default: data.theme.dim },
+                borderRadius: [{ x: 6.0 }],
+              },
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
+// --- a animação --------------------------------------------------------------------
+
+widget Caption = Text(text: args.text, style: { fontSize: 11.0, color: data.theme.faint });
+
+// Um desenho pra escolher: aceso, com a borda na cor da fase.
+widget IconChip = Tooltip(
+  message: args.i.label,
+  child: Pressable(
+    radius: 8.0,
+    color: switch args.i.active { true: data.theme.active, default: data.theme.canvas },
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: "icone", id: args.i.id },
+    child: Container(
+      width: 38.0,
+      height: 38.0,
+      decoration: {
+        type: "box",
+        borderRadius: [{ x: 8.0 }],
+        border: [{ color: switch args.i.active { true: data.anim.color, default: 0x00000000 }, width: 1.5 }],
+      },
+      child: Center(child: Text(text: args.i.emoji, style: { fontSize: 18.0 })),
+    ),
+  ),
+);
+
+// Uma cor pra escolher: a bolinha, e o visto na escolhida.
+widget Swatch = Tooltip(
+  message: args.c.label,
+  child: Pressable(
+    radius: 14.0,
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: "cor", id: args.c.id },
+    child: Padding(
+      padding: [2.0, 2.0, 2.0, 2.0],
+      child: Container(
+        width: 22.0,
+        height: 22.0,
+        decoration: {
+          type: "box",
+          color: args.c.value,
+          borderRadius: [{ x: 11.0 }],
+          border: [{ color: switch args.c.active { true: data.theme.fg, default: 0x00000000 }, width: 2.0 }],
+        },
+        child: switch args.c.active {
+          true: Center(child: Glyph(icon: "check", size: 12.0, color: data.theme.canvas)),
+          default: SizedBox(),
+        },
+      ),
+    ),
+  ),
+);

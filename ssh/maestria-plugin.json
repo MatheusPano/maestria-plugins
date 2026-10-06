@@ -1,0 +1,70 @@
+{
+  "id": "maestria.ssh",
+  "name": "SSH",
+  "version": "1.3.0",
+  "description": "Os seus hosts de SSH salvos, como no Termius: clicou, abriu um terminal já conectado. Mostra também os hosts do ~/.ssh/config. O ícone na faixa é uma tela só do SSH, como o cofre do Termius: os grupos e os hosts em cartões, e cada conexão abre ao lado da grade.",
+  "icon": "icons/server.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:hosts",
+    "onCommand:conectar"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "screen": {
+      "home": "hosts"
+    },
+    "commands": [
+      {
+        "id": "hosts",
+        "title": "ssh: hosts…",
+        "key": "meta+alt+s",
+        "icon": "icons/server.svg",
+        "sidebar": true
+      },
+      {
+        "id": "conectar",
+        "title": "ssh: conectar a um host…",
+        "key": "meta+shift+s"
+      }
+    ],
+    "settings": [
+      {
+        "id": "sshConfig",
+        "type": "boolean",
+        "default": true,
+        "title": "mostrar os hosts do ~/.ssh/config",
+        "description": "os Host sem curinga do seu config (e dos Include dele) aparecem numa seção própria, só pra conectar."
+      },
+      {
+        "id": "binary",
+        "type": "string",
+        "default": "ssh",
+        "title": "programa",
+        "description": "o ssh que roda. Troque por mosh, autossh -M 0 ou um caminho absoluto."
+      },
+      {
+        "id": "timeout",
+        "type": "number",
+        "default": 10,
+        "title": "desistir de conectar depois de (segundos)",
+        "description": "o ConnectTimeout do ssh. Sem ele, um host fora do alcance deixa o terminal parado por mais de um minuto sem dizer nada. 0 deixa o padrão do ssh."
+      },
+      {
+        "id": "extra",
+        "type": "string",
+        "default": "",
+        "title": "opções pra todos os hosts",
+        "description": "entram antes das de cada host. Ex.: -o ServerAliveInterval=30"
+      }
+    ]
+  }
+}

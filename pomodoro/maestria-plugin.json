@@ -1,0 +1,21 @@
+{
+  "id": "maestria.pomodoro",
+  "name": "Pomodoro",
+  "version": "1.4.0",
+  "description": "Um pomodoro num painel pequeno que flutua por cima da janela: o anel da fase, o tempo que falta, iniciar/pausar e pular. Arraste pra onde quiser; perto de uma borda ele gruda nela, e o lugar fica guardado. A aba da lateral tem o relógio grande, as fases, os focos do dia e os tempos pra ajustar (foco, pausas, quando vem a longa), com atalhos 25·5, 50·10 e 90·20. Notificação, som e uma animação grande por cima de tudo no fim de cada fase; o tempo segue contando com o app fechado.",
+  "icon": "clock",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": ["node", "main.js"],
+  "activationEvents": ["onStartup"],
+  "permissions": ["notifications"],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      { "id": "alternar", "title": "pomodoro: iniciar/pausar", "icon": "play", "key": "meta+alt+o" },
+      { "id": "painel", "title": "pomodoro: mostrar/esconder o painel", "icon": "open", "key": "meta+alt+shift+o" },
+      { "id": "pular", "title": "pomodoro: pular pra próxima fase", "icon": "step-over" },
+      { "id": "zerar", "title": "pomodoro: zerar o ciclo", "icon": "restart" }
+    ]
+  }
+}

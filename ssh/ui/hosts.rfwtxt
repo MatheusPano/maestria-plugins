@@ -1,0 +1,272 @@
+// A janela de hosts, como o cofre do Termius: os grupos em cartões, e embaixo
+// os hosts em cartões, numa grade que ganha colunas com a largura. A Maestria
+// só desenha. Os dados chegam em `data` (`data.head`, `data.crumb`,
+// `data.sections`) e as cores do tema em `data.theme`. Todo clique vira
+// `event "act"` com a ação em `a` (ou `action`, quando vem de um menu).
+//
+// Cada cartão (`Tile`) é um grupo ou um host: `title`, `sub`, `icon`, `tone` (a
+// cor do quadrado), `status` ("" | "green" | "red": a bolinha no canto do
+// quadrado), `badge`, `action`, `menu` e `edit` (a ação do lápis; "" sem lápis).
+
+import core.widgets;
+import maestria;
+
+widget root = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Head(),
+    Toolbar(),
+    Expanded(
+      child: ListView(
+        padding: [18.0, 2.0, 18.0, 18.0],
+        children: [
+          Crumb(),
+          ...for s in data.sections:
+            Section(s: s),
+          Padding(
+            padding: [2.0, 14.0, 2.0, 0.0],
+            child: Text(text: data.hint, style: { fontSize: 11.0, color: data.theme.faint, height: 1.4 }),
+          ),
+        ],
+      ),
+    ),
+  ],
+);
+
+// --- o topo -------------------------------------------------------------------------
+
+widget Head = Padding(
+  padding: [18.0, 14.0, 12.0, 10.0],
+  child: Row(
+    children: [
+      Container(
+        width: 34.0,
+        height: 34.0,
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+        child: Center(child: Glyph(icon: "server", size: 18.0, color: data.theme.accent)),
+      ),
+      SizedBox(width: 12.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: data.head.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.5, fontWeight: "w700", color: data.theme.fg }),
+            SizedBox(height: 2.0),
+            Text(text: data.head.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      IconButton(icon: "search", tooltip: "conectar a um host pelo nome", onPressed: event "act" { a: "buscar" }),
+      IconButton(icon: "refresh", tooltip: "reler os hosts", onPressed: event "act" { a: "atualizar" }),
+    ],
+  ),
+);
+
+// A barra do "NEW HOST" do Termius, embaixo do título. Wrap e não Row: numa
+// janela estreita os botões descem em vez de estourar.
+widget Toolbar = Padding(
+  padding: [18.0, 0.0, 18.0, 14.0],
+  child: Wrap(
+    spacing: 8.0,
+    runSpacing: 8.0,
+    children: [
+      Action(label: "novo host", icon: "add", a: data.head.newHost, primary: true),
+      Action(label: "novo grupo", icon: "folder", a: "novo-grupo", primary: false),
+    ],
+  ),
+);
+
+// Um botão de texto do topo: o de destaque na cor de destaque, o outro discreto.
+widget Action = Pressable(
+  radius: 8.0,
+  color: switch args.primary { true: data.theme.accent, default: data.theme.active },
+  hoverColor: switch args.primary { true: data.theme.accent, default: data.theme.hover },
+  padding: [10.0, 6.0, 12.0, 6.0],
+  onTap: event "act" { a: args.a },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Glyph(icon: args.icon, size: 15.0, color: switch args.primary { true: data.theme.onAccent, default: data.theme.dim }),
+      SizedBox(width: 5.0),
+      Text(
+        text: args.label,
+        style: {
+          fontSize: 12.0,
+          fontWeight: "w600",
+          color: switch args.primary { true: data.theme.onAccent, default: data.theme.fg },
+        },
+      ),
+    ],
+  ),
+);
+
+// Dentro de um grupo: "Hosts › AWS", com o "Hosts" de volta e o menu do grupo.
+widget Crumb = switch data.crumb.group {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 0.0, 12.0],
+    child: Row(
+      children: [
+        Pressable(
+          radius: 6.0,
+          hoverColor: data.theme.hover,
+          padding: [6.0, 3.0, 6.0, 3.0],
+          onTap: event "act" { a: "raiz" },
+          child: Text(text: "Hosts", style: { fontSize: 12.5, color: data.theme.dim }),
+        ),
+        Glyph(icon: "chevron", size: 15.0, color: data.theme.faint),
+        Padding(
+          padding: [6.0, 0.0, 4.0, 0.0],
+          child: Text(text: data.crumb.group, style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+        ),
+        MenuButton(icon: "more", tooltip: "o grupo", menu: data.crumb.menu, onMenu: event "act" {}),
+      ],
+    ),
+  ),
+};
+
+// --- as grades -------------------------------------------------------------------
+
+widget Section = Padding(
+  padding: [0.0, 4.0, 0.0, 14.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Padding(
+        padding: [2.0, 0.0, 0.0, 10.0],
+        child: Row(
+          children: [
+            Text(text: args.s.title, style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg }),
+            SizedBox(width: 7.0),
+            Text(text: args.s.count, style: { fontSize: 11.5, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      switch args.s.empty {
+        "": GridView(
+          shrinkWrap: true,
+          primary: false,
+          gridDelegate: {
+            type: "maxCrossAxisExtent",
+            maxCrossAxisExtent: 320.0,
+            mainAxisExtent: 58.0,
+            mainAxisSpacing: 10.0,
+            crossAxisSpacing: 10.0,
+          },
+          children: [
+            ...for t in args.s.items:
+              Tile(t: t),
+          ],
+        ),
+        default: Container(
+          padding: [14.0, 14.0, 14.0, 14.0],
+          decoration: {
+            type: "box",
+            borderRadius: [{ x: 10.0 }],
+            border: [{ color: data.theme.border, width: 1.0 }],
+          },
+          child: Text(text: args.s.empty, style: { fontSize: 12.0, color: data.theme.faint }),
+        ),
+      },
+    ],
+  ),
+);
+
+widget Tile = Container(
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 10.0 }],
+    border: [{ color: data.theme.border, width: 1.0 }],
+  },
+  clipBehavior: "antiAlias",
+  child: Pressable(
+    color: data.theme.sidebar,
+    hoverColor: data.theme.hover,
+    padding: [10.0, 0.0, 6.0, 0.0],
+    onTap: event "act" { a: args.t.action },
+    menu: args.t.menu,
+    onMenu: event "act" {},
+    child: Row(
+      children: [
+        Avatar(t: args.t),
+        SizedBox(width: 11.0),
+        Expanded(
+          child: Column(
+            mainAxisAlignment: "center",
+            crossAxisAlignment: "start",
+            children: [
+              Text(text: args.t.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg }),
+              SizedBox(height: 2.0),
+              Text(
+                text: args.t.sub,
+                maxLines: 1,
+                overflow: "ellipsis",
+                style: {
+                  fontSize: 11.0,
+                  color: switch args.t.status { "green": data.theme.green, "red": data.theme.red, default: data.theme.faint },
+                },
+              ),
+            ],
+          ),
+        ),
+        switch args.t.edit {
+          "": SizedBox(width: 4.0),
+          default: IconButton(icon: "edit", tooltip: "editar", size: 14.0, color: data.theme.faint, onPressed: event "act" { a: args.t.edit }),
+        },
+      ],
+    ),
+  ),
+);
+
+// O quadrado colorido do Termius, com a bolinha de conectado (ou de caído) no canto.
+widget Avatar = SizedBox(
+  width: 36.0,
+  height: 36.0,
+  child: Stack(
+    children: [
+      Container(
+        width: 34.0,
+        height: 34.0,
+        decoration: {
+          type: "box",
+          borderRadius: [{ x: 8.0 }],
+          color: switch args.t.tone {
+            "accent": data.theme.accent,
+            "blue": data.theme.blue,
+            "cyan": data.theme.cyan,
+            "green": data.theme.green,
+            "yellow": data.theme.yellow,
+            "red": data.theme.red,
+            "purple": data.theme.purple,
+            "magenta": data.theme.magenta,
+            default: data.theme.active,
+          },
+        },
+        child: Center(
+          child: Glyph(
+            icon: args.t.icon,
+            size: 17.0,
+            color: switch args.t.tone { "faint": data.theme.dim, default: 0xFFFFFFFF },
+          ),
+        ),
+      ),
+      switch args.t.status {
+        "": SizedBox(),
+        default: Positioned(
+          right: 0.0,
+          bottom: 0.0,
+          child: Container(
+            width: 11.0,
+            height: 11.0,
+            decoration: {
+              type: "box",
+              shape: "circle",
+              color: switch args.t.status { "green": data.theme.green, default: data.theme.red },
+              border: [{ color: data.theme.sidebar, width: 2.0 }],
+            },
+          ),
+        ),
+      },
+    ],
+  ),
+);

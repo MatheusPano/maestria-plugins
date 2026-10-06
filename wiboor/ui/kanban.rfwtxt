@@ -1,0 +1,865 @@
+// O quadro do Wiboor, montado pelo plugin com os widgets do Flutter: a Maestria
+// só desenha. Os dados chegam em `data` (`data.head`, `data.stats`, `data.cols`,
+// `data.notice`, `data.drag`) e as cores do tema em `data.theme`. Todo clique
+// vira `event "act"` com a ação em `a` (ou `action`, quando vem de um menu), e
+// soltar um cartão numa coluna vira `event "drop"` com `payload` (o id da
+// tarefa) e `to` (o estado da coluna).
+//
+// `data.drag` diz se esta Maestria tem o `Draggable` e o `DropTarget` (o
+// `rfw: 2` do initialize). Sem eles, os ramos que os usam nunca são montados.
+
+import core.widgets;
+import maestria;
+
+widget root = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Head(),
+    Toolbar(),
+    Notice(text: data.notice.text, tone: data.notice.tone, retry: data.notice.retry),
+    // As colunas no meio quando cabem; quando não cabem, a rolagem de lado. O
+    // `Align` dá folga, a rolagem fica do tamanho da fileira (até a largura
+    // toda) e o `stretch` dá a altura inteira a cada coluna.
+    Expanded(
+      child: Align(
+        alignment: { x: 0.0, y: -1.0 },
+        child: SingleChildScrollView(
+          scrollDirection: "horizontal",
+          primary: false,
+          padding: [12.0, 6.0, 12.0, 16.0],
+          child: Row(
+            mainAxisSize: "min",
+            crossAxisAlignment: "stretch",
+            children: [
+              ...for col in data.cols:
+                Lane(col: col),
+            ],
+          ),
+        ),
+      ),
+    ),
+  ],
+);
+
+// --- o topo -----------------------------------------------------------------------
+
+widget Head = Padding(
+  padding: [18.0, 14.0, 12.0, 6.0],
+  child: Row(
+    children: [
+      Container(
+        width: 34.0,
+        height: 34.0,
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+        child: Center(child: Glyph(icon: "icons/wiboor.svg", size: 18.0, color: data.theme.accent)),
+      ),
+      SizedBox(width: 12.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: data.head.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.5, fontWeight: "w700", color: data.theme.fg }),
+            SizedBox(height: 2.0),
+            Text(text: data.head.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      IconButton(icon: "search", tooltip: "achar uma tarefa do quadro", onPressed: event "act" { a: "buscar" }),
+      MenuButton(icon: "filter", tooltip: "de quem e de qual espaço", menu: data.head.menu, onMenu: event "act" {}),
+      IconButton(icon: "refresh", tooltip: "atualizar", disabled: data.head.busy, onPressed: event "act" { a: "atualizar" }),
+      IconButton(icon: "settings", tooltip: "personalizar o quadro", onPressed: event "act" { a: "personalizar" }),
+      SizedBox(width: 6.0),
+      Pressable(
+        radius: 8.0,
+        color: data.theme.accent,
+        hoverColor: data.theme.accent,
+        padding: [10.0, 6.0, 12.0, 6.0],
+        onTap: event "act" { a: "nova" },
+        child: Row(
+          mainAxisSize: "min",
+          children: [
+            Glyph(icon: "add", size: 15.0, color: data.theme.onAccent),
+            SizedBox(width: 4.0),
+            Text(text: "nova tarefa", style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.onAccent }),
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
+// Embaixo do título: de quem é o quadro, à vista, e os números em pílulas que
+// filtram. Quebra a linha quando a janela é estreita.
+widget Toolbar = Padding(
+  padding: [18.0, 6.0, 18.0, 12.0],
+  child: Wrap(
+    spacing: 8.0,
+    runSpacing: 8.0,
+    crossAxisAlignment: "center",
+    children: [
+      Scopes(),
+      ...for s in data.stats:
+        Pill(pill: s),
+      // Lendo um filtro novo: as pílulas de mentira, pra a barra não pular.
+      ...for w in switch data.statsSkeleton { true: [78.0, 112.0, 96.0], default: [] }:
+        PillBone(width: w),
+    ],
+  ),
+);
+
+widget PillBone = Container(
+  width: args.width,
+  height: 24.0,
+  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 20.0 }] },
+);
+
+// Minhas · que pedi · outra pessoa · um espaço. Um espaço soma com os outros:
+// "minhas" e "Produto" acesos são as suas em Produto.
+widget Scopes = Container(
+  padding: [3.0, 3.0, 3.0, 3.0],
+  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+  // Wrap e não Row: numa janela estreita os botões descem em vez de estourar.
+  child: Wrap(
+    children: [
+      ...for s in data.head.scopes:
+        Scope(s: s),
+    ],
+  ),
+);
+
+widget Scope = Pressable(
+  radius: 7.0,
+  color: switch args.s.active { true: data.theme.bg, default: 0x00000000 },
+  hoverColor: switch args.s.active { true: data.theme.bg, default: data.theme.hover },
+  padding: [10.0, 4.0, 10.0, 4.0],
+  onTap: event "act" { a: args.s.action },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Glyph(icon: args.s.icon, size: 12.0, color: switch args.s.active { true: data.theme.accent, default: data.theme.faint }),
+      SizedBox(width: 5.0),
+      Text(
+        text: args.s.label,
+        maxLines: 1,
+        style: {
+          fontSize: 12.0,
+          fontWeight: switch args.s.active { true: "w600", default: "w500" },
+          color: switch args.s.active { true: data.theme.fg, default: data.theme.dim },
+        },
+      ),
+    ],
+  ),
+);
+
+// Um número do quadro que também é filtro: acesa, ela ganha o fundo e a borda
+// de um cartão, e o x diz que o clique tira.
+widget Pill = Container(
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 20.0 }],
+    border: [{ color: switch args.pill.active { true: data.theme.border, default: 0x00000000 }, width: 1.0 }],
+  },
+  child: Pressable(
+    radius: 20.0,
+    color: switch args.pill.active { true: data.theme.bg, default: data.theme.active },
+    hoverColor: data.theme.hover,
+    padding: [10.0, 4.0, 10.0, 4.0],
+    onTap: event "act" { a: args.pill.action },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Dot(tone: args.pill.tone, size: 7.0),
+        SizedBox(width: 6.0),
+        Text(
+          text: args.pill.text,
+          style: {
+            fontSize: 11.5,
+            fontWeight: switch args.pill.active { true: "w600", default: "w500" },
+            color: switch args.pill.active { true: data.theme.fg, default: data.theme.dim },
+          },
+        ),
+        switch args.pill.active {
+          true: Padding(padding: [5.0, 0.0, 0.0, 0.0], child: Glyph(icon: "clear", size: 10.0, color: data.theme.faint)),
+          default: SizedBox(),
+        },
+      ],
+    ),
+  ),
+);
+
+// Um recado em cima das colunas: um erro da API, uma ação rodando. O erro de
+// leitura traz o "tentar de novo".
+widget Notice = switch args.text {
+  "": SizedBox(),
+  default: Container(
+    margin: [16.0, 0.0, 16.0, 10.0],
+    padding: [12.0, 6.0, 8.0, 6.0],
+    decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 8.0 }] },
+    child: Row(
+      children: [
+        Glyph(
+          icon: switch args.tone { "red": "error", default: "clock" },
+          size: 13.0,
+          color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.faint },
+        ),
+        SizedBox(width: 8.0),
+        Expanded(
+          child: Padding(
+            padding: [0.0, 2.0, 0.0, 2.0],
+            child: Text(
+              text: args.text,
+              style: {
+                fontSize: 12.0,
+                color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.dim },
+              },
+            ),
+          ),
+        ),
+        switch args.retry {
+          true: Pressable(
+            radius: 6.0,
+            hoverColor: data.theme.hover,
+            padding: [8.0, 3.0, 8.0, 3.0],
+            onTap: event "act" { a: "atualizar" },
+            child: Row(
+              mainAxisSize: "min",
+              children: [
+                Glyph(icon: "refresh", size: 12.0, color: data.theme.accent),
+                SizedBox(width: 5.0),
+                Text(text: "tentar de novo", style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.accent }),
+              ],
+            ),
+          ),
+          default: SizedBox(),
+        },
+      ],
+    ),
+  ),
+};
+
+// --- as cores por nome ----------------------------------------------------------------
+
+// Não dá pra devolver uma cor de um widget: cada lugar que pinta por nome repete o switch.
+widget Dot = Container(
+  width: args.size,
+  height: args.size,
+  decoration: {
+    type: "box",
+    shape: "circle",
+    color: switch args.tone {
+      "accent": data.theme.accent,
+      "yellow": data.theme.yellow,
+      "green": data.theme.green,
+      "red": data.theme.red,
+      "purple": data.theme.purple,
+      "magenta": data.theme.magenta,
+      "blue": data.theme.blue,
+      "cyan": data.theme.cyan,
+      default: data.theme.faint,
+    },
+  },
+);
+
+// --- a coluna -----------------------------------------------------------------------------
+
+// A largura da coluna, do jeito que a pessoa escolheu.
+widget Wide = SizedBox(
+  width: switch data.layout.width { "narrow": 280.0, "wide": 400.0, default: 340.0 },
+  child: args.child,
+);
+
+// Com arrastar, a coluna é dois alvos, um dentro do outro: o de dentro (o `id`,
+// o estado) recebe os cartões; o de fora (o `slot`) recebe outra coluna, que
+// vem pra este lugar. O arraste vai pro primeiro, de dentro pra fora, que aceita.
+//
+// A largura vem de fora dos alvos, e não só de dentro: na Maestria 2.4.0 o
+// `DropTarget` põe o filho num Stack só de posicionados, que na lista
+// horizontal ganha largura infinita -- e as colunas não apareciam.
+widget Lane = Padding(
+  padding: [8.0, 0.0, 8.0, 0.0],
+  child: SizedBox(
+    width: switch args.col.collapsed {
+      true: 52.0,
+      default: switch data.layout.width { "narrow": 280.0, "wide": 400.0, default: 340.0 },
+    },
+    child: switch data.drag {
+      true: DropTarget(
+        id: args.col.slot,
+        hint: "solte pra pôr a coluna aqui",
+        radius: 12.0,
+        onDrop: event "drop" {},
+        child: DropTarget(
+          id: args.col.id,
+          hint: args.col.hint,
+          radius: 12.0,
+          onDrop: event "drop" {},
+          child: LaneShape(col: args.col),
+        ),
+      ),
+      default: LaneShape(col: args.col),
+    },
+  ),
+);
+
+widget LaneShape = switch args.col.collapsed {
+  true: Folded(col: args.col),
+  default: Wide(child: LaneBody(col: args.col)),
+};
+
+// Com arrastar, a coluna inteira é a alça: pega por qualquer canto que não seja
+// um cartão (o cabeçalho, o vão entre eles, o fundo), ela sai inteira e fica
+// apagada no lugar. O cartão é um `Draggable` dentro deste e ganha o arraste
+// que começa nele, então arrastar um cartão continua levando só o cartão.
+widget LaneBody = switch data.drag {
+  true: Draggable(
+    payload: args.col.slot,
+    targets: args.col.slots,
+    width: switch data.layout.width { "narrow": 280.0, "wide": 400.0, default: 340.0 },
+    child: LaneBox(col: args.col),
+    feedback: LaneGhost(col: args.col),
+  ),
+  default: LaneBox(col: args.col),
+};
+
+widget LaneBox = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 12.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  clipBehavior: "antiAlias",
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      LaneStripe(col: args.col),
+      LaneHead(col: args.col),
+      Expanded(
+        child: switch args.col.skeleton {
+          true: Skeletons(),
+          default: switch args.col.count {
+            "0": Empty(col: args.col),
+            default: ListView(
+              padding: [12.0, 2.0, 12.0, 12.0],
+              children: [
+                ...for card in args.col.cards:
+                  DragCard(card: card),
+              ],
+            ),
+          },
+        },
+      ),
+    ],
+  ),
+);
+
+// A coluna no ar. Lá no Overlay ninguém dá altura, então nada de `Expanded` nem
+// lista: o cabeçalho e os primeiros cartões (`peek`) empilhados, e quantos
+// ficaram de fora (`more`).
+widget LaneGhost = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 12.0 }], border: [{ color: data.theme.accent, width: 1.5 }] },
+  clipBehavior: "antiAlias",
+  child: Column(
+    mainAxisSize: "min",
+    crossAxisAlignment: "stretch",
+    children: [
+      LaneStripe(col: args.col),
+      LaneHead(col: args.col),
+      Padding(
+        padding: [12.0, 2.0, 12.0, 0.0],
+        child: Column(
+          mainAxisSize: "min",
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for card in args.col.peek:
+              Padding(padding: [0.0, 0.0, 0.0, 12.0], child: Card(card: card)),
+          ],
+        ),
+      ),
+      switch args.col.more {
+        "": SizedBox(),
+        default: Padding(
+          padding: [16.0, 0.0, 16.0, 12.0],
+          child: Text(text: args.col.more, style: { fontSize: 11.0, color: data.theme.faint }),
+        ),
+      },
+    ],
+  ),
+);
+
+// A faixa da cor do estado, no alto.
+widget LaneStripe = Container(
+  height: 3.0,
+  color: switch args.col.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.border },
+);
+
+widget LaneHead = Padding(
+  padding: [16.0, 11.0, 8.0, 10.0],
+  child: Row(
+    children: [
+      Glyph(
+        icon: args.col.icon,
+        size: 15.0,
+        color: switch args.col.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.faint },
+      ),
+      SizedBox(width: 8.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: args.col.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg }),
+            switch args.col.sortLabel {
+              "": SizedBox(),
+              default: Text(text: args.col.sortLabel, maxLines: 1, overflow: "ellipsis", style: { fontSize: 10.5, color: data.theme.faint }),
+            },
+          ],
+        ),
+      ),
+      Container(
+        padding: [8.0, 2.0, 8.0, 2.0],
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 10.0 }] },
+        child: Text(text: args.col.count, style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.dim }),
+      ),
+      SizedBox(width: 2.0),
+      MenuButton(icon: "more", tooltip: "a coluna", menu: args.col.menu, onMenu: event "act" {}),
+    ],
+  ),
+);
+
+// A coluna recolhida: uma faixa estreita com o desenho, quantas e o nome em pé.
+// O clique abre de novo; os cartões ainda caem nela.
+widget Folded = Container(
+  width: 52.0,
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 12.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  clipBehavior: "antiAlias",
+  child: Pressable(
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: args.col.toggle },
+    menu: args.col.menu,
+    onMenu: event "act" {},
+    child: Column(
+      children: [
+        Container(
+          height: 3.0,
+          color: switch args.col.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.border },
+        ),
+        SizedBox(height: 12.0),
+        Glyph(
+          icon: args.col.icon,
+          size: 15.0,
+          color: switch args.col.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.faint },
+        ),
+        SizedBox(height: 8.0),
+        Container(
+          padding: [6.0, 2.0, 6.0, 2.0],
+          decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 10.0 }] },
+          child: Text(text: args.col.count, style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.dim }),
+        ),
+        SizedBox(
+          width: 52.0,
+          height: 240.0,
+          child: Stack(
+            children: [
+              // Girado de lado: o rfw gira só o desenho, então a caixa do texto
+              // fica deitada e centrada, e o giro a põe em pé no meio da faixa.
+              Positioned(
+                start: -84.0,
+                top: 110.0,
+                width: 220.0,
+                height: 20.0,
+                child: Rotation(
+                  turns: 0.25,
+                  child: Text(text: args.col.label, maxLines: 1, style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
+// Lendo (a primeira vez, ou um filtro ainda não visto): cartões de mentira no
+// desenho dos de verdade -- o tipo e o número, o título em duas linhas, o
+// espaço, e o rodapé com a bolinha, o prazo e os botões --, pra coluna não
+// piscar de vazia pra cheia nem mudar de altura quando os cartões chegam.
+widget Skeletons = Padding(
+  padding: [12.0, 2.0, 12.0, 12.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Skeleton(title: 0.9, line: 0.55, sub: 0.5),
+      Skeleton(title: 0.75, line: 0.0, sub: 0.4),
+      Skeleton(title: 0.85, line: 0.35, sub: 0.6),
+    ],
+  ),
+);
+
+widget Skeleton = Padding(
+  padding: [0.0, 0.0, 0.0, 12.0],
+  child: Container(
+    padding: [17.0, 13.0, 12.0, 12.0],
+    decoration: { type: "box", color: data.theme.bg, borderRadius: [{ x: 10.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Row(
+          children: [
+            Block(width: 46.0, height: 17.0, radius: 5.0),
+            SizedBox(width: 7.0),
+            Block(width: 42.0, height: 9.0, radius: 4.0),
+            Spacer(),
+            Block(width: 16.0, height: 9.0, radius: 4.0),
+          ],
+        ),
+        SizedBox(height: 12.0),
+        Bone(width: args.title, height: 12.0),
+        switch args.line {
+          0.0: SizedBox(),
+          default: Padding(padding: [0.0, 7.0, 0.0, 0.0], child: Bone(width: args.line, height: 12.0)),
+        },
+        SizedBox(height: 9.0),
+        Bone(width: args.sub, height: 8.0),
+        SizedBox(height: 14.0),
+        Row(
+          children: [
+            Container(width: 22.0, height: 22.0, decoration: { type: "box", shape: "circle", color: data.theme.active }),
+            SizedBox(width: 8.0),
+            Block(width: 64.0, height: 20.0, radius: 10.0),
+            Spacer(),
+            Block(width: 15.0, height: 15.0, radius: 4.0),
+            SizedBox(width: 9.0),
+            Block(width: 15.0, height: 15.0, radius: 4.0),
+            SizedBox(width: 4.0),
+          ],
+        ),
+      ],
+    ),
+  ),
+);
+
+// Um pedaço de tamanho fixo de um cartão de mentira.
+widget Block = Container(
+  width: args.width,
+  height: args.height,
+  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: args.radius }] },
+);
+
+widget Bone = Align(
+  alignment: { x: -1.0, y: 0.0 },
+  child: FractionallySizedBox(
+    widthFactor: args.width,
+    child: Container(
+      height: args.height,
+      decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 4.0 }] },
+    ),
+  ),
+);
+
+// A coluna vazia: o desenho do estado e, onde dá pra soltar, o convite.
+widget Empty = Padding(
+  padding: [16.0, 28.0, 16.0, 16.0],
+  child: Column(
+    children: [
+      Container(
+        width: 44.0,
+        height: 44.0,
+        decoration: { type: "box", shape: "circle", color: data.theme.active },
+        child: Center(child: Glyph(icon: args.col.icon, size: 20.0, color: data.theme.faint)),
+      ),
+      SizedBox(height: 10.0),
+      Text(text: args.col.empty, textAlign: "center", style: { fontSize: 12.0, color: data.theme.dim }),
+      SizedBox(height: 4.0),
+      Text(text: args.col.invite, textAlign: "center", style: { fontSize: 11.0, color: data.theme.faint }),
+    ],
+  ),
+);
+
+// --- o cartão -----------------------------------------------------------------------------
+
+widget DragCard = Padding(
+  padding: [0.0, 0.0, 0.0, 12.0],
+  child: switch data.drag {
+    true: Draggable(
+      payload: args.card.id,
+      targets: args.card.targets,
+      disabled: args.card.fixed,
+      // O cartão no ar com a largura do que ficou na coluna (ela menos os 12 de cada lado).
+      width: switch data.layout.width { "narrow": 256.0, "wide": 376.0, default: 316.0 },
+      child: Card(card: args.card),
+    ),
+    default: Card(card: args.card),
+  },
+);
+
+widget Card = Container(
+  decoration: {
+    type: "box",
+    color: data.theme.bg,
+    borderRadius: [{ x: 10.0 }],
+    border: [{ color: switch args.card.running { true: data.theme.accent, default: data.theme.border }, width: switch args.card.running { true: 1.5, default: 1.0 } }],
+  },
+  clipBehavior: "antiAlias",
+  child: Pressable(
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: args.card.action },
+    menu: args.card.menu,
+    onMenu: event "act" {},
+    child: IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: "stretch",
+        children: [
+          // A listra da prioridade: vermelha de 8 pra cima, amarela de 6.
+          Container(
+            width: 3.0,
+            color: switch args.card.prioTone { "red": data.theme.red, "yellow": data.theme.yellow, default: 0x00000000 },
+          ),
+          Expanded(
+            child: Padding(
+              padding: [14.0, 13.0, 12.0, 12.0],
+              child: Column(
+                crossAxisAlignment: "stretch",
+                children: [
+                  Row(
+                    children: [
+                      Kind(kind: args.card.kind),
+                      SizedBox(width: 7.0),
+                      Text(text: args.card.num, style: { fontSize: 11.0, color: data.theme.faint, fontFamily: data.theme.mono }),
+                      Spacer(),
+                      Prio(text: args.card.prio, tone: args.card.prioTone),
+                    ],
+                  ),
+                  SizedBox(height: 10.0),
+                  Text(text: args.card.title, maxLines: 4, overflow: "ellipsis", style: { fontSize: 14.0, fontWeight: "w500", color: data.theme.fg, height: 1.32 }),
+                  switch args.card.sub {
+                    "": SizedBox(),
+                    default: Padding(
+                      padding: [0.0, 6.0, 0.0, 0.0],
+                      child: Text(text: args.card.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+                    ),
+                  },
+                  Bar(bar: args.card.bar),
+                  Claude(text: args.card.claude.text, tone: args.card.claude.tone, action: args.card.claude.action),
+                  SizedBox(height: 12.0),
+                  // O rodapé: o que é informação quebra a linha quando não cabe; os
+                  // botões ficam à direita, sempre.
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          crossAxisAlignment: "center",
+                          runSpacing: 4.0,
+                          children: [
+                            Who(who: args.card.who),
+                            Due(text: args.card.due, tone: args.card.dueTone),
+                            Meta(icon: "task", text: args.card.checks),
+                            Meta(icon: "icons/comment.svg", text: args.card.comments),
+                            Meta(icon: "icons/attach.svg", text: args.card.files),
+                          ],
+                        ),
+                      ),
+                      ...for act in args.card.acts:
+                        // O próximo passo da tarefa na cor de destaque.
+                        IconButton(
+                          icon: act.icon,
+                          tooltip: act.tooltip,
+                          size: 15.0,
+                          extent: 24.0,
+                          color: switch act.primary { true: data.theme.accent, default: data.theme.dim },
+                          onPressed: event "act" { a: act.action },
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
+
+widget Kind = Container(
+  padding: [6.0, 2.0, 6.0, 2.0],
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 5.0 }],
+    color: data.theme.active,
+  },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Glyph(icon: switch args.kind { "BUG": "bug", default: "task" }, size: 11.0, color: switch args.kind { "BUG": data.theme.red, default: data.theme.accent }),
+      SizedBox(width: 4.0),
+      Text(
+        text: args.kind,
+        style: { fontSize: 9.5, fontWeight: "w700", letterSpacing: 0.5, color: switch args.kind { "BUG": data.theme.red, default: data.theme.accent } },
+      ),
+    ],
+  ),
+);
+
+widget Prio = switch args.text {
+  "": SizedBox(),
+  default: Tooltip(
+    message: "prioridade",
+    child: Text(
+      text: args.text,
+      style: {
+        fontSize: 11.0,
+        fontWeight: "w700",
+        color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, default: data.theme.faint },
+      },
+    ),
+  ),
+};
+
+// A barra do checklist (ou do curso): quanto já foi.
+widget Bar = switch args.bar.show {
+  true: Padding(
+    padding: [0.0, 9.0, 0.0, 0.0],
+    child: Row(
+      children: [
+        Expanded(
+          child: Container(
+            height: 4.0,
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 2.0 }] },
+            child: Align(
+              alignment: { x: -1.0, y: 0.0 },
+              child: FractionallySizedBox(
+                widthFactor: args.bar.value,
+                heightFactor: 1.0,
+                child: Container(
+                  decoration: {
+                    type: "box",
+                    borderRadius: [{ x: 2.0 }],
+                    color: switch args.bar.done { true: data.theme.green, default: data.theme.accent },
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+        SizedBox(width: 8.0),
+        Text(text: args.bar.label, style: { fontSize: 10.5, color: data.theme.faint }),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// Quem pediu (ou quem faz), nas iniciais, numa bolinha com a cor da pessoa.
+widget Who = switch args.who.initials {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 8.0, 0.0],
+    child: Tooltip(
+      message: args.who.name,
+      child: Container(
+        width: 22.0,
+        height: 22.0,
+        decoration: {
+          type: "box",
+          shape: "circle",
+          color: switch args.who.tone {
+            "blue": data.theme.blue,
+            "purple": data.theme.purple,
+            "green": data.theme.green,
+            "yellow": data.theme.yellow,
+            "cyan": data.theme.cyan,
+            "magenta": data.theme.magenta,
+            "red": data.theme.red,
+            default: data.theme.accent,
+          },
+        },
+        child: Center(child: Text(text: args.who.initials, style: { fontSize: 9.0, fontWeight: "w700", color: data.theme.canvas })),
+      ),
+    ),
+  ),
+};
+
+// O prazo numa pílula: vermelha quando venceu, amarela hoje e amanhã, verde
+// na data em que uma finalizada acabou.
+widget Due = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 8.0, 0.0],
+    child: Container(
+      padding: [7.0, 2.0, 8.0, 2.0],
+      decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 10.0 }] },
+      child: Row(
+        mainAxisSize: "min",
+        children: [
+          Glyph(
+            icon: switch args.tone { "green": "check", default: "calendar" },
+            size: 11.0,
+            color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.faint },
+          ),
+          SizedBox(width: 4.0),
+          Text(
+            text: args.text,
+            style: {
+              fontSize: 11.0,
+              fontWeight: switch args.tone { "red": "w600", "yellow": "w600", default: "w500" },
+              color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, default: data.theme.dim },
+            },
+          ),
+        ],
+      ),
+    ),
+  ),
+};
+
+// Um pedaço do rodapé do cartão: o desenho e o número, ou nada quando não há.
+widget Meta = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 9.0, 0.0],
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Glyph(icon: args.icon, size: 12.0, color: data.theme.faint),
+        SizedBox(width: 3.0),
+        Text(text: args.text, style: { fontSize: 11.0, color: data.theme.faint }),
+      ],
+    ),
+  ),
+};
+
+// A sessão do claude que está na tarefa: a bolinha e o que ela está fazendo,
+// na cor que a lateral usa (pensando, permissão, pergunta, ocioso…). O clique
+// vai pra ela.
+widget Claude = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 9.0, 0.0, 0.0],
+    child: Pressable(
+      radius: 7.0,
+      color: data.theme.active,
+      hoverColor: data.theme.hover,
+      padding: [8.0, 5.0, 6.0, 5.0],
+      onTap: event "act" { a: args.action },
+      child: Row(
+        children: [
+          Glyph(
+            icon: "terminal",
+            size: 13.0,
+            color: switch args.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, "red": data.theme.red, "purple": data.theme.purple, default: data.theme.dim },
+          ),
+          SizedBox(width: 7.0),
+          Expanded(
+            child: Text(
+              text: args.text,
+              maxLines: 1,
+              overflow: "ellipsis",
+              style: {
+                fontSize: 11.5,
+                fontWeight: "w600",
+                color: switch args.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, "red": data.theme.red, "purple": data.theme.purple, default: data.theme.dim },
+              },
+            ),
+          ),
+          SizedBox(width: 4.0),
+          Glyph(icon: "open", size: 12.0, color: data.theme.faint),
+        ],
+      ),
+    ),
+  ),
+};

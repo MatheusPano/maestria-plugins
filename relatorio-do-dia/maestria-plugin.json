@@ -1,0 +1,35 @@
+{
+  "id": "maestria.relatorio-do-dia",
+  "name": "Relatório do dia",
+  "version": "1.2.0",
+  "description": "Os commits, o trabalho sem commit e as sessões de um dia ou de um período, contados pelo claude como uma daily.",
+  "icon": "report",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:relatorio",
+    "onCommand:hoje"
+  ],
+  "permissions": [
+    "hooks"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      {
+        "id": "relatorio",
+        "title": "relatório do dia…",
+        "key": "meta+shift+r",
+        "icon": "receipt"
+      },
+      {
+        "id": "hoje",
+        "title": "relatório de hoje"
+      }
+    ]
+  }
+}
