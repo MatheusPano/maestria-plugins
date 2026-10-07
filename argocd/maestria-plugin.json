@@ -1,0 +1,155 @@
+{
+  "id": "maestria.argocd",
+  "name": "ArgoCD",
+  "version": "1.0.0",
+  "description": "O ArgoCD dos seus clusters numa tela própria: as apps em cartões, o grafo de recursos de cada app como no Argo, e cada recurso com logs ao vivo, eventos e manifesto. Só lê, sincroniza (sem prune) e dá refresh. A UI completa abre no navegador já logada.",
+  "author": "Lucas",
+  "maestria": 1,
+  "icon": "icons/argo.svg",
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:clusters",
+    "onCommand:argo",
+    "onCommand:navegador",
+    "onCommand:kubeconfig"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      {
+        "id": "clusters",
+        "title": "argocd: clusters"
+      },
+      {
+        "id": "argo",
+        "title": "argocd: abrir cluster…",
+        "key": "meta+alt+a"
+      },
+      {
+        "id": "navegador",
+        "title": "argocd: abrir cluster no navegador…"
+      },
+      {
+        "id": "kubeconfig",
+        "title": "argocd: sincronizar kubeconfigs do rancher"
+      }
+    ],
+    "settings": [
+      {
+        "id": "open",
+        "type": "select",
+        "default": "maestria",
+        "title": "clique num cluster abre",
+        "options": [
+          {
+            "value": "maestria",
+            "label": "no maestria"
+          },
+          {
+            "value": "browser",
+            "label": "no navegador"
+          }
+        ]
+      },
+      {
+        "id": "refresh",
+        "type": "number",
+        "default": 5,
+        "title": "atualizar as janelas a cada (segundos)"
+      },
+      {
+        "id": "kubeDir",
+        "type": "string",
+        "default": "~/.kube/clusters",
+        "group": "clusters",
+        "title": "pasta dos kubeconfigs",
+        "description": "um arquivo por cluster (nome.yaml, .yml ou .kubeconfig); o nome do arquivo é o nome do cluster."
+      },
+      {
+        "id": "rancherUrl",
+        "type": "string",
+        "default": "",
+        "group": "clusters",
+        "title": "URL do Rancher",
+        "description": "opcional: com ela, \"sincronizar kubeconfig\" loga no Rancher e baixa os kubeconfigs de todos os clusters pra pasta acima. A senha é pedida no terminal e nunca é gravada."
+      },
+      {
+        "id": "rancherUser",
+        "type": "string",
+        "default": "",
+        "group": "clusters",
+        "title": "usuário do Rancher",
+        "description": "opcional: sem ele, o terminal pergunta (e lembra o último)."
+      },
+      {
+        "id": "rancherRemember",
+        "type": "boolean",
+        "default": false,
+        "group": "clusters",
+        "title": "lembrar a senha do Rancher",
+        "description": "ligado, a senha que você digitar na sincronização vai pro chaveiro do sistema (gnome-keyring no Linux, com o secret-tool; Keychain no macOS) e as próximas rodam sozinhas. Desligar apaga a senha de lá."
+      },
+      {
+        "id": "rancherInsecure",
+        "type": "boolean",
+        "default": false,
+        "group": "clusters",
+        "title": "aceitar o certificado do Rancher sem validar",
+        "description": "pra um Rancher com certificado próprio."
+      },
+      {
+        "id": "namespace",
+        "type": "string",
+        "default": "argocd",
+        "title": "namespace do argocd",
+        "group": "argocd"
+      },
+      {
+        "id": "username",
+        "type": "string",
+        "default": "admin",
+        "title": "usuário do argocd",
+        "description": "o login automático no argocd de cada cluster usa a senha do secret argocd-initial-admin-secret dele.",
+        "group": "argocd"
+      },
+      {
+        "id": "kubectl",
+        "type": "string",
+        "default": "kubectl",
+        "title": "programa kubectl",
+        "group": "argocd"
+      },
+      {
+        "id": "tail",
+        "type": "number",
+        "default": 500,
+        "group": "logs",
+        "title": "linhas do fim do log ao abrir"
+      },
+      {
+        "id": "maxLines",
+        "type": "number",
+        "default": 5000,
+        "group": "logs",
+        "title": "linhas guardadas na janela"
+      },
+      {
+        "id": "tlsDir",
+        "type": "string",
+        "default": "",
+        "group": "navegador",
+        "title": "pasta do certificado local ou da CA",
+        "description": "opcional: uma pasta com localhost.crt e localhost.key válidos pra *.argo.localhost, ou com a CA em que o navegador confia (ca.pem + ca.key, ou o rootCA do mkcert) — aí o plugin gera o certificado sozinho. Com ela, o navegador abre https://<cluster>.argo.localhost sem aviso; sem ela, abre https://localhost com o certificado do argocd."
+      }
+    ],
+    "screen": {
+      "home": "clusters"
+    }
+  }
+}

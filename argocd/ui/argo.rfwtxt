@@ -1,0 +1,349 @@
+import core.widgets;
+import maestria;
+
+widget home = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Head(),
+    Stats(),
+    Notice(text: data.notice.text, tone: data.notice.tone),
+    Expanded(
+      child: SingleChildScrollView(
+        primary: false,
+        padding: [18.0, 0.0, 18.0, 18.0],
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Crumb(),
+            Wrap(
+              spacing: 12.0,
+              runSpacing: 12.0,
+              children: [
+                ...for c in data.clusters:
+                  ClusterTile(c: c),
+                ...for app in data.apps:
+                  Tile(app: app),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  ],
+);
+
+widget tree = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Head(),
+    Stats(),
+    Notice(text: data.notice.text, tone: data.notice.tone),
+    Expanded(
+      child: SingleChildScrollView(
+        primary: false,
+        child: SingleChildScrollView(
+          primary: false,
+          scrollDirection: "horizontal",
+          padding: [18.0, 6.0, 18.0, 18.0],
+          child: SizedBox(
+            width: data.graph.w,
+            height: data.graph.h,
+            child: Stack(
+              children: [
+                Svg(svg: data.graph.svg, width: data.graph.w, height: data.graph.h),
+                ...for n in data.graph.nodes:
+                  Positioned(start: n.x, top: n.y, child: Node(n: n)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  ],
+);
+
+widget Head = Padding(
+  padding: [18.0, 14.0, 12.0, 6.0],
+  child: Row(
+    children: [
+      Container(
+        width: 34.0,
+        height: 34.0,
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+        child: Center(child: Glyph(icon: "icons/argo.svg", size: 19.0, color: data.theme.accent)),
+      ),
+      SizedBox(width: 12.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: data.head.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.5, fontWeight: "w700", color: data.theme.fg }),
+            SizedBox(height: 2.0),
+            Text(text: data.head.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      ...for b in data.head.buttons:
+        IconButton(icon: b.icon, tooltip: b.tip, color: switch b.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, "red": data.theme.red, "purple": data.theme.purple, "faint": data.theme.faint, default: data.theme.dim }, onPressed: event "act" { a: b.a }),
+    ],
+  ),
+);
+
+widget Stats = Padding(
+  padding: [18.0, 4.0, 18.0, 10.0],
+  child: Row(
+    children: [
+      ...for s in data.stats:
+        Padding(
+          padding: [0.0, 0.0, 8.0, 0.0],
+          child: Pressable(
+            radius: 20.0,
+            color: data.theme.active,
+            hoverColor: data.theme.hover,
+            padding: [10.0, 4.0, 10.0, 4.0],
+            onTap: event "act" { a: s.a },
+            child: Row(
+              mainAxisSize: "min",
+              children: [
+                Dot(tone: s.tone, size: 7.0),
+                SizedBox(width: 6.0),
+                Text(text: s.text, style: { fontSize: 11.5, fontWeight: "w500", color: data.theme.dim }),
+              ],
+            ),
+          ),
+        ),
+    ],
+  ),
+);
+
+widget Notice = switch args.text {
+  "": SizedBox(),
+  default: Container(
+    margin: [16.0, 0.0, 16.0, 10.0],
+    padding: [12.0, 8.0, 12.0, 8.0],
+    decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 8.0 }] },
+    child: Text(
+      text: args.text,
+      style: {
+        fontSize: 12.0,
+        color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.dim },
+      },
+    ),
+  ),
+};
+
+
+widget Dot = switch args.tone {
+  "none": SizedBox(width: args.size, height: args.size),
+  default: Container(
+    width: args.size,
+    height: args.size,
+    decoration: {
+      type: "box",
+      shape: "circle",
+      color: switch args.tone { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, "red": data.theme.red, "purple": data.theme.purple, default: data.theme.faint },
+    },
+  ),
+};
+
+widget Pill = Container(
+  padding: [8.0, 3.0, 9.0, 3.0],
+  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 20.0 }] },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Dot(tone: args.tone, size: 7.0),
+      SizedBox(width: 5.0),
+      Text(text: args.text, style: { fontSize: 11.0, fontWeight: "w500", color: data.theme.dim }),
+    ],
+  ),
+);
+
+widget Node = Pressable(
+  radius: 10.0,
+  color: switch args.n.sel { true: data.theme.active, default: data.theme.bg },
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.n.a },
+  child: Container(
+    width: 236.0,
+    height: 52.0,
+    padding: [7.0, 6.0, 10.0, 6.0],
+    decoration: {
+      type: "box",
+      borderRadius: [{ x: 10.0 }],
+      border: [{ width: 1.2, color: switch args.n.health { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, "red": data.theme.red, "purple": data.theme.purple, default: data.theme.border } }],
+    },
+    child: Row(
+      children: [
+        Container(
+          width: 38.0,
+          height: 38.0,
+          decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 8.0 }] },
+          child: Center(child: Text(text: args.n.abbr, maxLines: 1, style: { fontSize: 10.0, fontWeight: "w700", color: data.theme.dim })),
+        ),
+        SizedBox(width: 9.0),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: "start",
+            mainAxisAlignment: "center",
+            children: [
+              Text(text: args.n.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+              SizedBox(height: 2.0),
+              Text(text: args.n.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 10.5, color: data.theme.faint }),
+            ],
+          ),
+        ),
+        SizedBox(width: 6.0),
+        Column(
+          mainAxisAlignment: "center",
+          children: [
+            Dot(tone: args.n.health, size: 8.0),
+            SizedBox(height: 5.0),
+            Dot(tone: args.n.sync, size: 8.0),
+          ],
+        ),
+      ],
+    ),
+  ),
+);
+
+widget Tile = Pressable(
+  radius: 12.0,
+  color: data.theme.bg,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.app.a },
+  child: Container(
+    width: 320.0,
+    padding: [14.0, 12.0, 10.0, 10.0],
+    decoration: {
+      type: "box",
+      borderRadius: [{ x: 12.0 }],
+      border: [{ width: 1.2, color: switch args.app.health { "yellow": data.theme.yellow, "green": data.theme.border, "red": data.theme.red, "purple": data.theme.purple, default: data.theme.border } }],
+    },
+    child: Column(
+      crossAxisAlignment: "start",
+      children: [
+        Row(
+          children: [
+            Glyph(icon: args.app.icon, size: 16.0, color: switch args.app.health { "accent": data.theme.accent, "yellow": data.theme.yellow, "green": data.theme.green, "red": data.theme.red, "purple": data.theme.purple, "faint": data.theme.faint, default: data.theme.dim }),
+            SizedBox(width: 8.0),
+            Expanded(child: Text(text: args.app.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 14.0, fontWeight: "w700", color: data.theme.fg })),
+          ],
+        ),
+        SizedBox(height: 8.0),
+        Row(
+          children: [
+            Pill(text: args.app.healthText, tone: args.app.health),
+            SizedBox(width: 6.0),
+            Pill(text: args.app.syncText, tone: args.app.sync),
+            SizedBox(width: 6.0),
+            switch args.app.op {
+              "": SizedBox(),
+              default: Pill(text: args.app.op, tone: args.app.opTone),
+            },
+          ],
+        ),
+        SizedBox(height: 10.0),
+        ...for row in args.app.rows:
+          Padding(
+            padding: [0.0, 0.0, 0.0, 3.0],
+            child: Row(
+              children: [
+                SizedBox(width: 74.0, child: Text(text: row.k, style: { fontSize: 11.0, color: data.theme.faint })),
+                Expanded(child: Text(text: row.v, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.dim })),
+              ],
+            ),
+          ),
+        SizedBox(height: 6.0),
+        Row(
+          children: [
+            Spacer(),
+            IconButton(icon: "sync", tooltip: "sincronizar", onPressed: event "act" { a: args.app.sync_a }),
+            IconButton(icon: "refresh", tooltip: "refresh", onPressed: event "act" { a: args.app.refresh_a }),
+            IconButton(icon: "globe", tooltip: "abrir no navegador", onPressed: event "act" { a: args.app.browser_a }),
+          ],
+        ),
+      ],
+    ),
+  ),
+);
+
+widget Crumb = switch data.crumb.cluster {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 0.0, 12.0],
+    child: Row(
+      children: [
+        Pressable(
+          radius: 6.0,
+          hoverColor: data.theme.hover,
+          padding: [6.0, 3.0, 6.0, 3.0],
+          onTap: event "act" { a: "home" },
+          child: Text(text: "Clusters", style: { fontSize: 12.5, fontWeight: "w500", color: data.theme.accent }),
+        ),
+        Padding(padding: [4.0, 0.0, 4.0, 0.0], child: Text(text: "›", style: { fontSize: 13.0, color: data.theme.faint })),
+        Text(text: data.crumb.cluster, style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+      ],
+    ),
+  ),
+};
+
+widget ClusterTile = Pressable(
+  radius: 12.0,
+  color: data.theme.bg,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.c.a },
+  child: Container(
+    width: 260.0,
+    padding: [12.0, 12.0, 8.0, 10.0],
+    decoration: { type: "box", borderRadius: [{ x: 12.0 }], border: [{ width: 1.0, color: data.theme.border }] },
+    child: Column(
+      crossAxisAlignment: "start",
+      children: [
+        Row(
+          children: [
+            Stack(
+              children: [
+                Container(
+                  width: 38.0,
+                  height: 38.0,
+                  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+                  child: Center(child: Glyph(icon: "icons/argo.svg", size: 20.0, color: switch args.c.status { "green": data.theme.accent, default: data.theme.faint })),
+                ),
+                Positioned(
+                  end: 0.0,
+                  bottom: 0.0,
+                  child: Dot(tone: args.c.status, size: 10.0),
+                ),
+              ],
+            ),
+            SizedBox(width: 10.0),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: "start",
+                children: [
+                  Text(text: args.c.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 14.0, fontWeight: "w700", color: data.theme.fg }),
+                  SizedBox(height: 2.0),
+                  Text(
+                    text: args.c.sub,
+                    maxLines: 2,
+                    overflow: "ellipsis",
+                    style: { fontSize: 11.0, color: switch args.c.subTone { "red": data.theme.red, "yellow": data.theme.yellow, default: data.theme.faint } },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 6.0),
+        Row(
+          children: [
+            Spacer(),
+            ...for b in args.c.buttons:
+              IconButton(icon: b.icon, tooltip: b.tip, onPressed: event "act" { a: b.a }),
+          ],
+        ),
+      ],
+    ),
+  ),
+);
