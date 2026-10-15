@@ -312,7 +312,7 @@ widget Head = Padding(
         ),
       SizedBox(width: 6.0),
       Anchored(id: "chamar", child: IconButton(icon: "add", tooltip: "chamar um claude", onPressed: event "act" { a: "chamar" })),
-      Anchored(id: "daily", child: IconButton(icon: "calendar", tooltip: "daily: a última (ou outra) pra ler, e o fazer a daily, que junta todo mundo na sala de reunião", onPressed: event "act" { a: "daily" })),
+      Anchored(id: "daily", child: IconButton(icon: "calendar", tooltip: "daily: a da vez (ou uma que já foi, pelo relógio) e o fazer a daily, que junta todo mundo na sala de reunião", onPressed: event "act" { a: "daily" })),
       IconButton(
         icon: "check",
         tooltip: "selecionar bonecos pra mandar a mesma mensagem a vários",

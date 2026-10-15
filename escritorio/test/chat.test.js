@@ -58,6 +58,8 @@ test('o pedido sai sem o que a Maestria e o Claude Code põem em volta', () => {
     text: 'olha:\n[texto colado]',
   });
   assert.strictEqual(chat.cleanPrompt('Caveat: The messages below were generated'), null);
+  // O aviso de um comando em segundo plano que terminou: entra como pedido, mas não é de ninguém.
+  assert.strictEqual(chat.cleanPrompt('<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>'), null);
   assert.deepStrictEqual(chat.cleanPrompt('<command-name>/model</command-name><command-args>opus</command-args>'), {
     cmd: '/model opus',
   });
@@ -70,13 +72,41 @@ test('o arquivo vem do hook, ou do sessionId e da pasta da sessão', () => {
   assert.match(chat.projectDir('/Volumes/Dev/repo_x.y'), /-Volumes-Dev-repo-x-y$/);
 });
 
-test('só o fim de um arquivo grande é lido, e a linha cortada do começo some', () => {
+test('o limite fica com as últimas mensagens de um arquivo grande', () => {
   const big = [];
   for (let i = 0; i < 4000; i++) big.push(user(`pedido ${i} ${'x'.repeat(300)}`));
   const file = transcript(big);
   const items = chat.conversation(file, { limit: 5 });
   assert.strictEqual(items.length, 5);
   assert.match(items[4].text, /^pedido 3999 /);
+});
+
+test('a saída enorme das ferramentas não esconde o começo da conversa', () => {
+  const entries = [user('primeiro pedido')];
+  for (let i = 0; i < 12; i++) {
+    entries.push(assistant([{ type: 'tool_use', id: `t${i}`, name: 'Read', input: { file_path: `/r/f${i}.js` } }]));
+    entries.push(user([{ type: 'tool_result', tool_use_id: `t${i}`, content: 'x'.repeat(400 * 1024) }]));
+  }
+  entries.push(assistant([{ type: 'text', text: 'Li tudo.' }]));
+  const items = chat.conversation(transcript(entries));
+  assert.deepStrictEqual(
+    items.map((m) => m.who),
+    ['you', 'tool', 'claude'],
+  );
+  assert.strictEqual(items[0].text, 'primeiro pedido');
+});
+
+test('o que é escrito depois no arquivo aparece, inclusive a linha que estava pela metade', () => {
+  const file = transcript([user('oi')]);
+  assert.strictEqual(chat.conversation(file).length, 1);
+  const line = JSON.stringify(assistant([{ type: 'text', text: 'Olá!' }]));
+  fs.appendFileSync(file, line.slice(0, 20));
+  assert.strictEqual(chat.conversation(file).length, 1);
+  fs.appendFileSync(file, `${line.slice(20)}\n`);
+  assert.deepStrictEqual(
+    chat.conversation(file).map((m) => m.text),
+    ['oi', 'Olá!'],
+  );
 });
 
 test('a pergunta do AskUserQuestion aparece com as opções, e depois com a escolha marcada', () => {

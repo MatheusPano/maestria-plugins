@@ -88,14 +88,23 @@ function periodOf(now, { time = '', weekends = false } = {}) {
 
 const DAYS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
 
-/** "segunda 14:00", ou "hoje 09:30"; com [date] a mais, "segunda 13/10 14:00". */
-function when(date, now = Date.now(), { full = false } = {}) {
+/**
+ * "segunda 14:00", ou "hoje 09:30" (e "ontem", "amanhã"); com [full], a data a
+ * mais ("segunda 13/10 14:00"); sem [time], só o dia ("hoje", "segunda 13/10").
+ */
+function when(date, now = Date.now(), { full = false, time = true } = {}) {
   const d = new Date(date);
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const today = new Date(now).toDateString() === d.toDateString();
-  if (today) return `hoje ${hm}`;
+  const hm = time ? ` ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+  const near = (days) => {
+    const x = new Date(now);
+    x.setDate(x.getDate() + days);
+    return x.toDateString() === d.toDateString();
+  };
+  if (near(0)) return `hoje${hm}`;
+  if (near(-1)) return `ontem${hm}`;
+  if (near(1)) return `amanhã${hm}`;
   const dm = full ? ` ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}` : '';
-  return `${DAYS[d.getDay()]}${dm} ${hm}`;
+  return `${DAYS[d.getDay()]}${dm}${hm}`;
 }
 
 // --- as conversas -------------------------------------------------------------------
@@ -104,9 +113,10 @@ function when(date, now = Date.now(), { full = false } = {}) {
  * As conversas com atividade no período, cada uma resumida em texto:
  * `[{ sessionId, cwd, branch, title, prompts, digest, last }]`, das mais
  * movimentadas pras menos. [skip] são pastas de projeto a ignorar (a da
- * própria daily).
+ * própria daily); [outside], as pastas cujas conversas (as delas e as de
+ * dentro delas) ficam fora da daily.
  */
-async function conversations({ from, to }, { root = ROOT, skip = [] } = {}) {
+async function conversations({ from, to }, { root = ROOT, skip = [], outside = [] } = {}) {
   const out = [];
   let projects = [];
   try {
@@ -134,11 +144,46 @@ async function conversations({ from, to }, { root = ROOT, skip = [] } = {}) {
       }
       if (st.mtimeMs < from) continue;
       const c = await digestOf(file, { from, to });
-      if (c) out.push({ sessionId: f.slice(0, -'.jsonl'.length), ...c });
+      if (c && !within(c.cwd, outside)) out.push({ sessionId: f.slice(0, -'.jsonl'.length), ...c });
     }
   }
   out.sort((a, b) => b.weight - a.weight);
   return out.slice(0, MAX_CONVERSATIONS);
+}
+
+const cwds = new Map();
+
+/**
+ * A pasta da conversa [sessionId], lida do arquivo dela (o começo basta). Os
+ * resumos guardados antes de terem a pasta de cada trabalho usam isso.
+ */
+function cwdOf(sessionId, { root = ROOT } = {}) {
+  if (!sessionId) return '';
+  if (cwds.has(sessionId)) return cwds.get(sessionId);
+  let cwd = '';
+  try {
+    for (const p of fs.readdirSync(root)) {
+      const file = path.join(root, p, `${sessionId}.jsonl`);
+      if (!fs.existsSync(file)) continue;
+      const fd = fs.openSync(file, 'r');
+      const buf = Buffer.alloc(64 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      const m = /"cwd":"((?:[^"\\]|\\.)*)"/.exec(buf.toString('utf8', 0, n));
+      if (m) cwd = JSON.parse(`"${m[1]}"`);
+      break;
+    }
+  } catch {
+    // Sem a pasta: o trabalho fica na daily.
+  }
+  cwds.set(sessionId, cwd);
+  return cwd;
+}
+
+/** [cwd] é uma das [folders], ou fica dentro de uma delas? */
+function within(cwd, folders) {
+  if (!cwd) return false;
+  return folders.some((f) => f && (cwd === f || cwd.startsWith(f.endsWith(path.sep) ? f : f + path.sep)));
 }
 
 /** O que uma conversa fez no período, em texto curto; null se ela não fez nada nele. */
@@ -350,9 +395,27 @@ function latest(dataDir, before = Infinity) {
   return list(dataDir).find((s) => s.at < before) || null;
 }
 
+/**
+ * A daily de que [s] é -- um resumo guardado ou um período (`periodOf`): o
+ * horário dela, ou o começo do dia sem horário configurado. Os resumos
+ * refeitos pra mesma daily têm a mesma.
+ */
+function keyOf(s) {
+  const p = s && s.period ? s.period : s;
+  return (p && (p.slot || p.from)) || (s && s.at) || 0;
+}
+
+/** Os resumos guardados, um por daily (o mais novo de cada), das mais novas pras mais velhas. */
+function dailies(dataDir) {
+  const seen = new Set();
+  return list(dataDir)
+    .filter((s) => !seen.has(keyOf(s)) && seen.add(keyOf(s)))
+    .sort((a, b) => keyOf(b) - keyOf(a));
+}
+
 /** A pasta de projeto (no `~/.claude/projects`) de [cwd]: a daily não lê a própria. */
 function projectName(cwd) {
   return String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
 }
 
-module.exports = { parseTime, periodOf, when, conversations, digestOf, promptOf, ask, parseSummary, save, list, latest, projectName };
+module.exports = { parseTime, periodOf, when, conversations, digestOf, promptOf, ask, parseSummary, save, list, latest, keyOf, dailies, within, cwdOf, projectName };

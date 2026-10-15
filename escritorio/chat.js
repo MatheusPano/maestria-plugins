@@ -6,8 +6,9 @@
 // `transcript_path` de qualquer hook; antes do primeiro hook (o plugin subiu
 // com a sessão já aberta), sai do `sessionId` e da pasta da sessão.
 //
-// Só o fim do arquivo é lido -- uma conversa longa passa de alguns MB, e a
-// janela mostra as últimas mensagens.
+// Uma conversa longa passa de dezenas de MB, quase tudo saída de ferramenta
+// (os arquivos lidos, os comandos). O arquivo é lido uma vez inteiro, guardando
+// só o que a janela usa, e depois só o que cresceu desde a última leitura.
 
 'use strict';
 
@@ -17,6 +18,8 @@ const path = require('path');
 const { describe, clip } = require('./world');
 
 const TAIL_BYTES = 768 * 1024;
+const CHUNK_BYTES = 4 * 1024 * 1024;
+const CACHED_FILES = 8;
 
 /** A pasta do projeto do jeito que o Claude Code a nomeia: tudo que não é letra ou número vira `-`. */
 function projectDir(cwd) {
@@ -57,7 +60,7 @@ function cleanPrompt(text) {
     const args = (t.match(/<command-args>([\s\S]*?)<\/command-args>/) || [])[1];
     return { cmd: `${command[1]}${args && args.trim() ? ` ${args.trim()}` : ''}` };
   }
-  if (/^\s*<(local-command-stdout|local-command-stderr|command-message|bash-stdout|bash-stderr)/.test(t)) return null;
+  if (/^\s*<(local-command-stdout|local-command-stderr|command-message|bash-stdout|bash-stderr|task-notification)/.test(t)) return null;
   if (/^\s*Caveat: The messages below/.test(t)) return null;
   t = t
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
@@ -68,12 +71,89 @@ function cleanPrompt(text) {
 }
 
 /**
+ * O que a janela usa de uma entrada da transcrição, já enxuto: `you`, `cmd`,
+ * `claude`, `tool` (só o rótulo), `ask` (a pergunta) e `answer` (o tool_result
+ * de uma pergunta). O resto -- a saída das ferramentas, o thinking -- fica pra trás.
+ */
+function eventsOf(e) {
+  if (!e || e.isSidechain || e.isMeta || !e.message) return [];
+  const content = e.message.content;
+  const out = [];
+  if (e.type === 'user') {
+    if (typeof content === 'string') {
+      const p = cleanPrompt(content);
+      if (p && p.cmd) out.push({ k: 'cmd', text: p.cmd });
+      else if (p) out.push({ k: 'you', text: p.text });
+    } else if (Array.isArray(content)) {
+      const answers = e.toolUseResult && typeof e.toolUseResult.answers === 'object' ? e.toolUseResult.answers : null;
+      for (const c of content) {
+        if (c.type === 'tool_result' && c.tool_use_id) out.push({ k: 'answer', id: c.tool_use_id, error: !!c.is_error, answers });
+      }
+      if (content.some((c) => c.type === 'tool_result')) return out;
+      const text = content
+        .map((c) => (c.type === 'text' ? (cleanPrompt(c.text) || {}).text || '' : c.type === 'image' ? '[imagem]' : ''))
+        .filter(Boolean)
+        .join('\n');
+      if (text) out.push({ k: 'you', text });
+    }
+  } else if (e.type === 'assistant' && Array.isArray(content)) {
+    for (const c of content) {
+      if (c.type === 'text' && c.text && c.text.trim()) out.push({ k: 'claude', text: c.text.trim() });
+      else if (c.type === 'tool_use' && c.name === 'AskUserQuestion') out.push({ k: 'ask', id: c.id, input: c.input || {} });
+      else if (c.type === 'tool_use') out.push({ k: 'tool', text: describe(c.name, c.input || {}).label });
+    }
+  }
+  return out;
+}
+
+const cache = new Map(); // arquivo -> { ino, offset, rest, events }
+
+/**
+ * Os eventos da conversa inteira de [file]. Fica guardado por arquivo e só o
+ * que cresceu é lido de novo; um arquivo trocado (outro inode, ou menor) é
+ * relido do zero. A última linha, se ainda não terminou, espera a próxima vez.
+ */
+function eventsIn(file) {
+  const st = fs.statSync(file);
+  let c = cache.get(file);
+  if (!c || c.ino !== st.ino || st.size < c.offset) c = { ino: st.ino, offset: 0, rest: Buffer.alloc(0), events: [] };
+  cache.delete(file);
+  cache.set(file, c);
+  while (cache.size > CACHED_FILES) cache.delete(cache.keys().next().value);
+  if (st.size === c.offset) return c.events;
+  const fd = fs.openSync(file, 'r');
+  try {
+    while (c.offset < st.size) {
+      const buf = Buffer.alloc(Math.min(CHUNK_BYTES, st.size - c.offset));
+      const n = fs.readSync(fd, buf, 0, buf.length, c.offset);
+      if (n <= 0) break;
+      c.offset += n;
+      const data = c.rest.length ? Buffer.concat([c.rest, buf.subarray(0, n)]) : buf.subarray(0, n);
+      const end = data.lastIndexOf(0x0a);
+      c.rest = end < 0 ? Buffer.from(data) : Buffer.from(data.subarray(end + 1));
+      if (end < 0) continue;
+      for (const line of data.subarray(0, end).toString('utf8').split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          c.events.push(...eventsOf(JSON.parse(line)));
+        } catch {
+          // linha quebrada: fica de fora
+        }
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return c.events;
+}
+
+/**
  * As mensagens da conversa, da mais antiga pra mais nova: `you` (o pedido),
  * `claude` (a resposta), `tool` (as ferramentas daquele trecho, numa linha só),
  * `cmd` (um comando, como o `/compact`) e `ask` (uma pergunta do
  * `AskUserQuestion`, com as opções e, depois de respondida, a escolha).
  */
-function conversation(file, { limit = 40 } = {}) {
+function conversation(file, { limit = 120 } = {}) {
   const items = [];
   const push = (who, text) => {
     const last = items[items.length - 1];
@@ -88,42 +168,15 @@ function conversation(file, { limit = 40 } = {}) {
     items.push(who === 'tool' ? { who, tools: [text] } : { who, text });
   };
   const asks = new Map(); // id do tool_use -> a pergunta, pra marcar a resposta
-  for (const line of tailLines(file)) {
-    let e;
-    try {
-      e = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!e || e.isSidechain || e.isMeta || !e.message) continue;
-    const content = e.message.content;
-    if (e.type === 'user') {
-      if (typeof content === 'string') {
-        const p = cleanPrompt(content);
-        if (p && p.cmd) push('cmd', p.cmd);
-        else if (p) push('you', p.text);
-      } else if (Array.isArray(content)) {
-        for (const c of content) {
-          const ask = c.type === 'tool_result' && asks.get(c.tool_use_id);
-          if (ask) answer(ask, c, e.toolUseResult);
-        }
-        if (content.some((c) => c.type === 'tool_result')) continue;
-        const text = content
-          .map((c) => (c.type === 'text' ? (cleanPrompt(c.text) || {}).text || '' : c.type === 'image' ? '[imagem]' : ''))
-          .filter(Boolean)
-          .join('\n');
-        if (text) push('you', text);
-      }
-    } else if (e.type === 'assistant' && Array.isArray(content)) {
-      for (const c of content) {
-        if (c.type === 'text' && c.text && c.text.trim()) push('claude', c.text.trim());
-        else if (c.type === 'tool_use' && c.name === 'AskUserQuestion') {
-          const ask = askOf(c.input || {}, c.id);
-          items.push(ask);
-          if (c.id) asks.set(c.id, ask);
-        } else if (c.type === 'tool_use') push('tool', describe(c.name, c.input || {}).label);
-      }
-    }
+  for (const ev of eventsIn(file)) {
+    if (ev.k === 'answer') {
+      const ask = asks.get(ev.id);
+      if (ask) answer(ask, ev);
+    } else if (ev.k === 'ask') {
+      const ask = askOf(ev.input, ev.id);
+      items.push(ask);
+      if (ev.id) asks.set(ev.id, ask);
+    } else push(ev.k, ev.text);
   }
   return items.slice(-limit).map((m) => {
     if (m.who === 'tool') {
@@ -157,13 +210,13 @@ function askOf(input, id) {
  * `toolUseResult.answers` (pergunta -> o rótulo, ou os rótulos separados por
  * vírgula); um erro é a pergunta recusada.
  */
-function answer(ask, result, extra) {
-  if (result.is_error) {
+function answer(ask, ev) {
+  if (ev.error) {
     ask.state = 'declined';
     return;
   }
   ask.state = 'answered';
-  ask.answers = (extra && typeof extra.answers === 'object' && extra.answers) || {};
+  ask.answers = ev.answers || {};
 }
 
 /** A pergunta pra janela: cada opção numerada, com a escolhida marcada. */

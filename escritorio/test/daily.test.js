@@ -60,6 +60,12 @@ test('a conversa vira um resumo curto: pedidos, arquivos, comandos e o fim de ca
   assert.match(c.digest, /token expirava/);
   // A pasta da própria daily é pulada.
   assert.strictEqual((await daily.conversations({ from: 0, to: Infinity }, { root: dir, skip: ['-repo'] })).length, 0);
+  // As pastas fora da daily (e o que fica dentro delas) também.
+  assert.strictEqual((await daily.conversations({ from: 0, to: Infinity }, { root: dir, outside: ['/repo'] })).length, 0);
+  assert.strictEqual((await daily.conversations({ from: 0, to: Infinity }, { root: dir, outside: ['/rep'] })).length, 1, 'só a pasta inteira, não o começo do nome');
+  assert.ok(daily.within('/repo/.claude/worktrees/x', ['/repo']));
+  assert.ok(!daily.within('/repo-2', ['/repo']));
+  assert.ok(!daily.within('', ['/repo']));
   fs.rmSync(dir, { recursive: true });
 });
 
@@ -74,8 +80,31 @@ test('o resumo é lido mesmo com cercas e texto em volta, e fica guardado', () =
   assert.strictEqual(daily.latest(dir).daily, 'hoje');
   assert.strictEqual(daily.latest(dir, at(2026, 10, 14, 0)).at, at(2026, 10, 13, 14));
   assert.deepStrictEqual(daily.list(dir).map((x) => x.at), [at(2026, 10, 14, 14), at(2026, 10, 13, 14)], 'o "ver outra daily": as mais novas primeiro');
-  assert.strictEqual(daily.when(at(2026, 10, 13, 14), at(2026, 10, 14, 15), { full: true }), 'terça 13/10 14:00');
+  assert.strictEqual(daily.when(at(2026, 10, 12, 14), at(2026, 10, 14, 15), { full: true }), 'segunda 12/10 14:00');
+  assert.strictEqual(daily.when(at(2026, 10, 13, 14), at(2026, 10, 14, 15), { full: true }), 'ontem 14:00');
+  assert.strictEqual(daily.when(at(2026, 10, 15, 14), at(2026, 10, 14, 15)), 'amanhã 14:00');
   assert.strictEqual(daily.when(at(2026, 10, 14, 9, 5), at(2026, 10, 14, 15), { full: true }), 'hoje 09:05');
+  assert.strictEqual(daily.when(at(2026, 10, 12, 0), at(2026, 10, 14, 15), { full: true, time: false }), 'segunda 12/10');
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('os resumos refeitos pra mesma daily contam como uma só', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'daily-'));
+  const opts = { time: '14:00' };
+  const s = { items: [], resolvido: [], daily: '' };
+  // Terça: a da daily de terça. Quarta: um antes e dois depois da daily das 14h, todos dela.
+  for (const t of [at(2026, 10, 13, 13, 50), at(2026, 10, 14, 10, 36), at(2026, 10, 14, 14, 2), at(2026, 10, 14, 14, 35)]) {
+    daily.save(dir, { at: t, period: daily.periodOf(t, opts), ...s });
+  }
+  const all = daily.dailies(dir);
+  assert.deepStrictEqual(all.map((x) => x.at), [at(2026, 10, 14, 14, 35), at(2026, 10, 13, 13, 50)], 'uma por daily, a versão mais nova');
+  // Quinta de manhã, a da vez é a de quinta: a de quarta já foi.
+  assert.notStrictEqual(daily.keyOf(all[0]), daily.keyOf(daily.periodOf(at(2026, 10, 15, 10), opts)));
+  // Quarta 15h (a daily acabou de passar): ainda é a de quarta.
+  assert.strictEqual(daily.keyOf(all[0]), daily.keyOf(daily.periodOf(at(2026, 10, 14, 15), opts)));
+  // Sem horário, a do dia; sem período nenhum, a hora do resumo.
+  assert.strictEqual(daily.keyOf(daily.periodOf(at(2026, 10, 14, 18), {})), at(2026, 10, 14, 0));
+  assert.strictEqual(daily.keyOf({ at: 5 }), 5);
   fs.rmSync(dir, { recursive: true });
 });
 

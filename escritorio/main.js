@@ -92,7 +92,7 @@ const state = {
   // contar).
   // `perm`: a permissão aberta que dá pra responder daqui; `answeredPerm`, a
   // última respondida (até o status mudar).
-  chat: { open: false, tabId: null, sent: 0, pending: [], problem: '', timer: null, images: 0, ask: null, picks: {}, done: {}, cursor: 0, answered: '', perm: null, answeredPerm: '' },
+  chat: { open: false, tabId: null, sent: 0, pending: [], problem: '', timer: null, images: 0, naming: false, ask: null, picks: {}, done: {}, cursor: 0, answered: '', perm: null, answeredPerm: '' },
   markdown: false, // a Maestria tem o `Markdown` (`markdown: 1`)
   keys: false, // e o `terminal.sendKeys` (`keys: 1`), que responde as perguntas
   arrows: false, // e o `onArrow` do `TextInput` (`arrows: 1`): as setas andam pelas opções
@@ -121,7 +121,8 @@ const state = {
   daily: { open: false, running: false, meet: false, mode: 'daily', period: null, summary: null, convs: [], previous: null, problem: '', note: '', saved: [] },
   dailyAuto: 0,
   morning: '',
-  novo: { open: false, folders: [], chosen: null, room: null, sent: 0, problem: '' },
+  // `tabId`: o claude que a mesa já chamou (ver `prestart`), enquanto você escreve.
+  novo: { open: false, folders: [], chosen: null, room: null, sent: 0, problem: '', images: 0, tabId: null, starting: null },
 };
 
 const world = new World({ settings: state.settings });
@@ -434,6 +435,8 @@ function chatData() {
       allowEmpty: false,
       sent: c.sent,
       inputId: 'chat',
+      canRename: false,
+      naming: { on: false, id: 'nome' },
     };
   }
   const card = world.chatCard(a);
@@ -478,6 +481,9 @@ function chatData() {
     commands: commandsFor(a.cwd),
     sent: c.sent,
     inputId: `chat:${a.tabId}`,
+    // O nome renomeia no clique, ali mesmo (numa Maestria que renomeia pelo plugin).
+    canRename: a.kind === 'claude' && state.rename,
+    naming: { on: c.naming && a.kind === 'claude' && state.rename, id: `nome:${a.tabId}` },
     nav: inboxNav(a),
     ...input,
   };
@@ -864,26 +870,76 @@ function dailySettings() {
   return { time: state.settings.dailyTime || '', weekends: state.settings.dailyWeekends === true };
 }
 
+/**
+ * As pastas fora da daily (a opção "pastas fora da daily"), com as worktrees
+ * delas: o que se faz nelas não entra no resumo nem vai pra reunião.
+ */
+function outsideDaily() {
+  const picked = Array.isArray(state.settings.dailySkip) ? state.settings.dailySkip : [];
+  return picked.flatMap((id) => {
+    const f = world.folders.find((x) => x.id === id);
+    return f ? f.paths : [id];
+  });
+}
+
+/** A daily guardada [s] sem os trabalhos das pastas fora da daily. */
+function withoutOutside(s) {
+  if (!s || !Array.isArray(s.items)) return s;
+  const out = outsideDaily();
+  if (!out.length) return s;
+  return { ...s, items: s.items.filter((it) => !daily.within(it.cwd || daily.cwdOf(it.sessao), out)) };
+}
+
 /** O nome que a conversa [sessionId] tem na Maestria, se ela está aberta. */
 function agentOfSession(sessionId) {
   return world.people().find((a) => a.kind === 'claude' && a.sessionId === sessionId) || null;
 }
 
-/** Os resumos guardados (o "ver outra daily"). */
-function loadSaved() {
-  state.daily.saved = state.dataDir ? daily.list(state.dataDir) : [];
+/** A daily da vez (`daily.periodOf`): a próxima, ou a que acabou de acontecer. */
+function nowPeriod() {
+  return daily.periodOf(Date.now(), dailySettings());
 }
 
-/** Mostra o resumo guardado [s], com o pendente da daily de antes dele. */
+/** Os resumos guardados, um por daily (o "ver outra daily"). */
+function loadSaved() {
+  state.daily.saved = state.dataDir ? daily.dailies(state.dataDir) : [];
+}
+
+/** A última daily guardada antes da daily [key]: o pendente dela é o "da anterior". */
+function dailyBefore(key) {
+  return (state.daily.saved || []).find((x) => daily.keyOf(x) < key) || null;
+}
+
+/**
+ * Mostra o resumo guardado [s], com o pendente da daily de antes dele. Sem [s],
+ * a daily da vez, que ainda não tem resumo: o pendente é o da última.
+ */
 function showSummary(s) {
   const dl = state.daily;
-  Object.assign(dl, { summary: s, convs: [], problem: '', note: '' });
-  dl.previous = s && state.dataDir ? daily.latest(state.dataDir, s.at) : null;
+  Object.assign(dl, { summary: s, convs: [], problem: '', note: '', allPending: false });
+  dl.previous = withoutOutside(dailyBefore(daily.keyOf(s || nowPeriod())));
 }
 
-/** [s] é da daily da vez (feito depois da anterior)? */
+/** A daily da vez: o resumo dela, se já tem; senão, nenhum. */
+function showNext() {
+  const last = (state.daily.saved || [])[0] || null;
+  showSummary(isCurrent(last) ? last : null);
+}
+
+/** [s] é da daily da vez? Um resumo refeito depois da daily ainda é da que passou. */
 function isCurrent(s) {
-  return !!s && s.at >= daily.periodOf(Date.now(), dailySettings()).from;
+  return !!s && daily.keyOf(s) === daily.keyOf(nowPeriod());
+}
+
+/** "hoje 14:00", "quarta 14/10 14:00"; sem horário configurado, o dia ("hoje"). */
+function dailyWhen(p) {
+  if (p && p.slot) return daily.when(p.slot, Date.now(), { full: true });
+  return daily.when((p && p.from) || Date.now(), Date.now(), { full: true, time: false });
+}
+
+/** O período de um resumo guardado (os sem período: o dia em que foi feito). */
+function periodOfSummary(s) {
+  return s.period || { from: s.at };
 }
 
 /**
@@ -895,14 +951,17 @@ function reusable(s) {
   return isCurrent(s) && Date.now() - s.at < 2 * 3600 * 1000;
 }
 
-/** O "daily" do topo: abre a janela na última daily, sem ler nem juntar nada. */
+/**
+ * O "daily" do topo: abre a janela na daily da vez, sem ler nem juntar nada --
+ * o resumo dela, se já tem; senão, o que ficou pendente na última.
+ */
 async function viewDaily(from = 'daily') {
   const dl = state.daily;
   if (!dl.running) {
     loadSaved();
     dl.mode = 'daily';
     dl.title = 'daily';
-    showSummary(dl.saved[0] || null);
+    showNext();
   }
   return openDaily(from);
 }
@@ -917,12 +976,13 @@ async function summarize({ title = 'daily', from = 'daily', auto = false, meet =
   const dl = state.daily;
   if (dl.running) return meet ? null : openDaily(from);
   const period = daily.periodOf(Date.now(), dailySettings());
-  Object.assign(dl, { running: true, meet, mode: 'daily', title, period, summary: null, convs: [], problem: '', note: 'lendo as conversas…' });
-  dl.previous = state.dataDir ? daily.latest(state.dataDir, Date.now()) : null;
+  Object.assign(dl, { running: true, meet, mode: 'daily', title, period, summary: null, convs: [], problem: '', note: 'lendo as conversas…', allPending: false });
+  loadSaved();
+  dl.previous = withoutOutside(dailyBefore(daily.keyOf(period)));
   // Pra reunião, a janela fica fechada: o que se vê são eles na sala.
   if (!meet) await openDaily(from);
   try {
-    dl.convs = await daily.conversations(period, { skip: [daily.projectName(dailyCwd())] });
+    dl.convs = await daily.conversations(period, { skip: [daily.projectName(dailyCwd())], outside: outsideDaily() });
     if (!dl.convs.length) {
       dl.note = '';
       dl.problem = `nenhuma conversa com o Claude Code ${period.label === 'hoje' ? 'hoje' : period.label}`;
@@ -1004,7 +1064,7 @@ async function doDaily() {
     if (dl.convs.length && !world.inDaily()) await gather(dl.convs.map((c) => c.sessionId));
     return;
   }
-  const s = dl.mode === 'manha' ? null : dl.summary;
+  const s = dl.summary;
   if (!reusable(s)) return summarize({ title: 'daily', meet: true });
   if (!s.items.some((it) => agentOfSession(it.sessao)) && state.settings.office === false) {
     return mx.request('window.showBanner', { text: 'ninguém dessa daily está no escritório' }).catch(() => {});
@@ -1024,9 +1084,8 @@ function firstSentence(text) {
 function dailyData() {
   const dl = state.daily;
   const s = dl.summary;
+  const now = Date.now();
   const convOf = (id) => dl.convs.find((c) => c.sessionId === id);
-  const prevPending = dl.previous && Array.isArray(dl.previous.items) ? dl.previous.items.filter((i) => i.pendente) : [];
-  const resolved = s ? s.resolvido || [] : [];
   const items = s
     ? s.items.map((it, i) => {
         const c = convOf(it.sessao) || { cwd: it.cwd, branch: it.branch };
@@ -1047,59 +1106,104 @@ function dailyData() {
         };
       })
     : [];
-  const morning = dl.mode === 'manha';
+  // A da vez (a próxima, ou a que acabou de acontecer) e a da tela, que pode
+  // ser uma que já passou (o "ver outra daily").
+  const period = dl.running ? dl.period : nowPeriod();
+  const next = dailyWhen(period);
+  const past = !dl.running && !!s && !isCurrent(s);
+  const shown = s ? periodOfSummary(s) : period;
+  const since = (p) => (p.slot ? `desde ${daily.when(p.from, now, { full: true })}` : 'do dia');
+  let title = `daily de ${dailyWhen(shown)}`;
+  if (dl.mode === 'manha') title = 'bom dia! ☕';
+  else if (dl.title === 'fim do expediente' && !past) title = 'fim do expediente';
+  let sub;
+  if (dl.running) sub = `escrevendo o resumo · o que foi feito ${since(period)}`;
+  else if (past) sub = `já foi · resumo de ${daily.when(s.at, now, { full: true })}`;
+  else if (s) sub = `resumo de ${daily.when(s.at, now, { full: true })} · o que foi feito ${since(shown)}`;
+  else sub = `ainda sem resumo · conta o que foi feito ${since(period)}`;
+  if (dl.title === 'fim do expediente' && !past && period.slot) sub += ` · a daily é ${next}`;
+  const none = { on: false, text: '', go: { on: false, label: '', action: '' } };
+  // O que ficou pendente na daily anterior (a de antes da da tela): os
+  // resolvidos riscados, no fim, e só os primeiros até pedir o resto.
+  const prev = dl.previous;
+  const resolved = s ? s.resolvido || [] : [];
+  const pend = (prev && Array.isArray(prev.items) ? prev.items.filter((i) => i.pendente) : [])
+    .map((p) => ({
+      nome: p.nome || 'conversa',
+      text: p.pendente,
+      done: resolved.some((r) => r && (p.pendente.includes(r) || r.includes(p.nome))),
+    }))
+    .sort((a, b) => a.done - b.done);
+  const FEW = 5;
+  const done = pend.filter((p) => p.done).length;
+  const pending = pend.length
+    ? {
+        on: true,
+        title: `ficou pendente na daily de ${dailyWhen(periodOfSummary(prev))}${done ? ` · ${done} ${done === 1 ? 'resolvido' : 'resolvidos'}` : ''}`,
+        items: dl.allPending ? pend : pend.slice(0, FEW),
+        more: { on: pend.length > FEW, label: dl.allPending ? 'mostrar menos' : `mais ${pend.length - FEW}` },
+        open: `daily-ver:${prev.at}`,
+      }
+    : { on: false, title: '', items: [], more: { on: false, label: '' }, open: '' };
+  // Sem resumo, o pendente da última é o que tem pra ver: vai no topo. Com
+  // resumo, ele é contexto: vai no fim.
+  const top = !s && !dl.problem;
+  // As dailies guardadas, uma por daily: a da vez em cima, as que já foram
+  // embaixo, a da tela marcada.
   const saved = dl.saved || [];
-  const current = !morning && isCurrent(s);
-  const period = dl.running ? dl.period : daily.periodOf(Date.now(), dailySettings());
-  const slot = period && period.slot ? ` · a daily é ${daily.when(period.slot)}` : '';
-  let sub = '';
-  if (morning) sub = `da última daily (${s ? daily.when(s.at) : ''}): o que ficou pendente e o que foi feito`;
-  else if (dl.running) sub = `${period.label} até agora${slot}`;
-  else if (s) sub = `resumo de ${daily.when(s.at, Date.now(), { full: true })}${current ? slot : ' · de uma daily anterior'}`;
-  else sub = `${period.label} até agora${slot}`;
+  const count = (x) => {
+    const n = Array.isArray(x.items) ? x.items.length : 0;
+    return `${n} ${n === 1 ? 'trabalho' : 'trabalhos'}`;
+  };
+  const cur = saved.find(isCurrent);
+  const older = saved.filter((x) => !isCurrent(x)).slice(0, 12);
   dl.meetingShown = world.inDaily();
   return {
-    title: morning ? 'bom dia! ☕' : dl.title === 'fim do expediente' ? 'fim do expediente' : 'daily',
+    title,
     sub,
     loading: dl.running,
     note: dl.note,
     problem: { on: !!dl.problem, text: dl.problem },
     // Nada na tela: o que cada botão faz.
     empty: {
+      ...none,
       on: !s && !dl.running && !dl.problem,
-      text: `ainda não tem resumo ${period.label === 'hoje' ? 'de hoje' : `${period.label}`}. O "fazer a daily" junta todo mundo na sala de reunião e escreve um enquanto eles chegam (uns 30 s); o ↻ só escreve o resumo, sem reunião.`,
+      text: `ainda não tem resumo desta daily. O "fazer a daily" junta todo mundo na sala de reunião e escreve um enquanto eles chegam (uns 30 s); o ↻ só escreve o resumo, sem reunião.`,
     },
     // Um resumo que o "fazer a daily" não vai contar: ele escreve o da vez.
-    old: {
-      on: !!s && !morning && !dl.running && !reusable(s),
-      text: current
-        ? 'esse resumo tem mais de duas horas: o "fazer a daily" escreve um novo, com o que veio depois dele.'
-        : 'essa é de uma daily anterior: o "fazer a daily" escreve o resumo desta, do que foi feito desde a última.',
-    },
-    previous: {
-      on: !morning && prevPending.length > 0,
-      items: prevPending.map((p) => ({
-        text: `${p.nome}: ${p.pendente}`,
-        done: resolved.some((r) => r && (p.pendente.includes(r) || r.includes(p.nome))),
-      })),
-    },
+    old: past
+      ? {
+          on: true,
+          text: `essa daily já foi. O "fazer a daily" é o da próxima (${next}), com o que foi feito depois dela.`,
+          go: { on: true, label: 'ver a próxima', action: 'daily-proxima' },
+        }
+      : {
+          ...none,
+          on: !!s && !dl.running && !reusable(s),
+          text: 'esse resumo tem mais de duas horas: o "fazer a daily" escreve um novo, com o que veio depois dele.',
+        },
+    pendingTop: top ? pending : { ...pending, on: false },
+    pendingBottom: top ? { ...pending, on: false } : pending,
     items,
     hasItems: items.length > 0,
     text: s ? s.daily : '',
     hasText: !!(s && s.daily),
-    morning,
     configured: !!daily.parseTime(state.settings.dailyTime),
     meeting: dl.meetingShown,
-    // As dailies guardadas, a da tela marcada.
-    history: saved.slice(0, 25).map((x) => {
-      const n = Array.isArray(x.items) ? x.items.length : 0;
-      return {
-        label: `${daily.when(x.at, Date.now(), { full: true })} · ${x.title || 'daily'} · ${n} ${n === 1 ? 'trabalho' : 'trabalhos'}`,
+    history: [
+      {
+        label: `${next} · ${cur ? count(cur) : 'sem resumo ainda'}`,
+        action: 'daily-proxima',
+        icon: !past ? 'check' : '',
+      },
+      { divider: true },
+      ...older.map((x) => ({
+        label: `${dailyWhen(periodOfSummary(x))} · ${count(x)}`,
         action: `daily-ver:${x.at}`,
-        icon: s && s.at === x.at ? 'check' : 'calendar',
-      };
-    }),
-    hasHistory: !dl.running && saved.length > 0,
+        icon: past && s.at === x.at ? 'check' : '',
+      })),
+    ],
+    hasHistory: !dl.running && older.length > 0,
   };
 }
 
@@ -1147,14 +1251,15 @@ function dailySoon() {
 async function goodMorning() {
   const now = new Date();
   const today = now.toDateString();
-  if (now.getHours() < 5 || state.morning === today || !state.dataDir || state.daily.open) return;
+  if (now.getHours() < 5 || state.morning === today || !state.dataDir || state.daily.open || state.daily.running) return;
   state.morning = today;
   savePrefs();
-  const last = daily.latest(state.dataDir, Date.now());
+  loadSaved();
+  const last = state.daily.saved[0];
   // Só se a última é de antes de hoje (e não muito velha).
   if (!last || new Date(last.at).toDateString() === today || Date.now() - last.at > 4 * 24 * 3600 * 1000) return;
-  loadSaved();
-  Object.assign(state.daily, { mode: 'manha', summary: last, period: last.period, convs: [], previous: null, problem: '', note: '' });
+  Object.assign(state.daily, { mode: 'manha', title: 'daily' });
+  showNext();
   await openDaily('daily');
 }
 
@@ -1186,6 +1291,17 @@ async function dailyAction(a, values) {
     dl.mode = 'daily';
     dl.title = s.title || 'daily';
     showSummary(s);
+    return refreshDaily();
+  }
+  if (a === 'daily-proxima') {
+    if (dl.running) return;
+    dl.mode = 'daily';
+    dl.title = 'daily';
+    showNext();
+    return refreshDaily();
+  }
+  if (a === 'daily-pendentes') {
+    dl.allPending = !dl.allPending;
     return refreshDaily();
   }
   if (a === 'daily-wiboor') {
@@ -1435,6 +1551,7 @@ async function openChat(tabId, from = `agente:${tabId}`, { inbox = false } = {})
     c.problem = '';
     c.images = 0;
   }
+  c.naming = false;
   c.tabId = tabId;
   if (!state.rfw) {
     await mx.request('session.focus', { tabId });
@@ -1694,12 +1811,17 @@ async function rename(tabId) {
     prompt: 'vale pra Maestria inteira: a lateral, o cabeçalho e o histórico',
   });
   if (title === null || title === undefined) return;
+  await setName(tabId, title);
+}
+
+/** Põe [title] na sessão de [tabId]: o boneco, a lateral e o chat mudam junto. */
+async function setName(tabId, title) {
   try {
     const r = await mx.request('session.rename', { tabId, title });
     world.renamed(tabId, (r && r.title) || title);
   } catch (e) {
     await mx.request('window.showBanner', { text: `não deu pra renomear: ${e.message}` });
-    return;
+    return refreshChat();
   }
   await changed();
   if (state.chat.open && state.chat.tabId === tabId) {
@@ -1781,6 +1903,14 @@ function novoData() {
     })),
     placeholder: n.chosen ? `o que ele deve fazer em ${n.room ? name(n.chosen) : path.basename(n.chosen)}?` : 'escolha uma pasta aí em cima',
     problem: { on: !!n.problem, text: n.problem || '' },
+    // Da mesa, o print já está no prompt dele; senão, espera ele sentar.
+    attached: {
+      on: n.images > 0,
+      text: n.tabId
+        ? `${n.images === 1 ? 'um print colado' : `${n.images} prints colados`} — vai junto com o pedido`
+        : 'um print colado — vai pro prompt dele junto com o pedido, assim que ele sentar',
+    },
+    allowEmpty: n.images > 0,
     sent: n.sent,
   };
 }
@@ -1789,8 +1919,10 @@ function novoData() {
  * Abre o "chamar um claude", já na pasta de [room] quando veio de uma mesa
  * vazia, crescendo a partir de [from] (a mesa, ou o botão de onde veio).
  */
-async function openNovo(room, from = 'chamar') {
+async function openNovo(room, from = 'chamar', desk = null) {
   const n = state.novo;
+  // O da mesa de antes, se ficou sem pedido: vai embora antes do próximo.
+  await dismiss();
   let folders = [];
   try {
     folders = await mx.request('folders.list');
@@ -1816,6 +1948,7 @@ async function openNovo(room, from = 'chamar') {
   n.chosen = (room && n.folders.find((f) => f.value === room) && room) || n.chosen || (n.folders[0] && n.folders[0].value) || null;
   if (n.chosen && !n.folders.some((f) => f.value === n.chosen)) n.chosen = n.folders[0] ? n.folders[0].value : null;
   n.problem = n.folders.length ? '' : 'nenhuma pasta na lateral da Maestria';
+  n.images = 0;
   // Da mesa de uma sala que está na lateral: a janelinha pequena, só com o pedido.
   n.room = room && n.folders.some((f) => f.value === room) ? room : null;
   const places = n.room ? n.folders.filter((f) => f.repo === n.room).length : 0;
@@ -1830,6 +1963,75 @@ async function openNovo(room, from = 'chamar') {
     data: { novo: novoData(), sprites: state.sprites },
   });
   n.open = true;
+  if (n.room) n.starting = prestart(desk);
+}
+
+/**
+ * Da mesa: o claude já sobe e vem andando até ela enquanto você escreve, e os
+ * prints vão direto pro prompt dele. Sem pedido (a janelinha fechou), ele vai
+ * embora -- por isso só com o `session.close`, e em segundo plano (senão a
+ * sessão tomaria a tela).
+ */
+async function prestart(desk) {
+  const n = state.novo;
+  if (!state.background || !state.closeSessions || !n.chosen) return;
+  try {
+    const { tabId } = await mx.request('session.openClaude', { cwd: n.chosen, background: true });
+    if (!tabId) return;
+    n.tabId = tabId;
+    await sync();
+    // Na mesa que você clicou, se ela ainda estiver livre.
+    const a = ownerOf(tabId);
+    const free = desk && !world.people().some((x) => x !== a && x.desk === desk && !x.leaving);
+    if (a && free && a.room === n.room) a.desk = desk;
+    await changed();
+  } catch (e) {
+    // Não subiu: o pedido abre a sessão do jeito de sempre.
+    mx.log('chamar da mesa:', e.message);
+  }
+}
+
+/** O claude da mesa sem pedido nenhum: fecha a sessão, e ele se despede e sai. */
+async function dismiss() {
+  const n = state.novo;
+  if (n.starting) await n.starting;
+  const tabId = n.tabId;
+  n.tabId = null;
+  n.starting = null;
+  n.images = 0;
+  if (!tabId) return;
+  state.queue.delete(tabId);
+  try {
+    await mx.request('session.close', { tabId });
+  } catch (e) {
+    mx.log('session.close:', e.message);
+    return;
+  }
+  const a = ownerOf(tabId);
+  world.closed(tabId);
+  if (a) world.say(a, 'tchau! 👋', 'white', 4000);
+  await changed();
+}
+
+/** Ainda subindo (ou com a fila andando), o que for pro prompt dele espera a vez. */
+function later(tabId) {
+  const a = ownerOf(tabId);
+  return !a || a.status === 'starting' || state.queue.has(tabId);
+}
+
+/** Um print colado no claude da mesa: vai pro prompt dele, como no chat. */
+async function pasteNovo() {
+  const n = state.novo;
+  const tabId = n.tabId;
+  try {
+    if (later(tabId)) enqueue({ tabId }, { kind: 'paste' });
+    else await mx.request('terminal.pasteClipboard', { tabId });
+    n.images++;
+    n.problem = '';
+  } catch (e) {
+    n.problem = `não deu pra colar o print: ${e.message}`;
+  }
+  await refreshNovo();
 }
 
 async function refreshNovo() {
@@ -1840,14 +2042,24 @@ async function refreshNovo() {
 /** Abre a sessão (em segundo plano, quando dá) e já abre a conversa com ela. */
 async function callClaude(prompt) {
   const n = state.novo;
+  if (n.starting) await n.starting;
+  if (n.tabId) return callMesa(prompt);
   if (!n.chosen) return;
+  const text = String(prompt || '').trim();
   try {
     const params = { cwd: n.chosen };
-    if (prompt && prompt.trim()) params.prompt = prompt.trim();
+    // Com um print, o pedido não vai na abertura: os dois esperam o prompt dele
+    // subir (ver `drain`), o print primeiro, pra seguirem na mesma mensagem.
+    if (text && !n.images) params.prompt = text;
     if (state.background) params.background = true;
     const { tabId } = await mx.request('session.openClaude', params);
+    if (n.images && tabId) {
+      enqueue({ tabId }, { kind: 'paste' });
+      enqueue({ tabId }, { kind: 'send', text });
+    }
     n.sent++;
     n.problem = '';
+    n.images = 0;
     await mx.request('view.close', { viewId: NOVO }).catch(() => {});
     n.open = false;
     await sync();
@@ -1857,6 +2069,31 @@ async function callClaude(prompt) {
     n.problem = `não abriu: ${e.message}`;
     await refreshNovo();
   }
+}
+
+/** O pedido pro claude que a mesa já chamou: ele fica, e a conversa abre. */
+async function callMesa(prompt) {
+  const n = state.novo;
+  const tabId = n.tabId;
+  const text = String(prompt || '').trim();
+  try {
+    if (text || n.images) {
+      if (later(tabId)) enqueue({ tabId }, { kind: 'send', text });
+      else await mx.request('terminal.sendText', { tabId, text, submit: true });
+    }
+  } catch (e) {
+    n.problem = `não deu pra mandar: ${e.message}`;
+    return refreshNovo();
+  }
+  n.tabId = null;
+  n.starting = null;
+  n.sent++;
+  n.problem = '';
+  n.images = 0;
+  await mx.request('view.close', { viewId: NOVO }).catch(() => {});
+  n.open = false;
+  await changed();
+  await openChat(tabId);
 }
 
 // --- o bicho e o zoom, que ficam de uma vez pra outra -------------------------------
@@ -2143,6 +2380,11 @@ mx.onNotification('event', async (e) => {
       // A janelinha fechou: a do chat esquece que estava aberta.
       if (e.viewId === DAILY) closedDaily();
       else if (e.viewId === CHAT) state.chat.open = false;
+      else if (e.viewId === NOVO) {
+        // Fechou sem pedido: o claude que a mesa chamou vai embora.
+        state.novo.open = false;
+        await dismiss();
+      }
       return;
     default:
   }
@@ -2282,7 +2524,7 @@ mx.onNotification('view.action', async ({ viewId, action, values = {} }) => {
     // A mesa vazia: o "chamar" sai dela, já na sala dela.
     const id = a.slice('mesa:'.length);
     const desk = world.plan && world.plan.desks.find((d) => d.id === id);
-    return openNovo(desk ? desk.room : null, `mesa:${id}`);
+    return openNovo(desk ? desk.room : null, `mesa:${id}`, id);
   }
   if (viewId === CHAT) {
     if (a === 'enviar') return send(values.text);
@@ -2294,7 +2536,19 @@ mx.onNotification('view.action', async ({ viewId, action, values = {} }) => {
     if (a === 'seta') return arrow(values.key);
     if (a === 'imagem') return pasteImage();
     if (a === 'casa') return sendHome(state.chat.tabId);
-    if (a === 'renomear') return rename(state.chat.tabId);
+    // O nome no topo vira campo: o enter renomeia, o ✕ deixa como estava.
+    if (a === 'renomear') {
+      if (!state.rename) return rename(state.chat.tabId);
+      state.chat.naming = true;
+      return refreshChat();
+    }
+    if (a === 'nome' || a === 'nome-cancelar') {
+      state.chat.naming = false;
+      const who = ownerOf(state.chat.tabId);
+      const title = String(values.text || '').trim();
+      if (a === 'nome' && who && title && title !== who.name) return setName(who.tabId, title);
+      return refreshChat();
+    }
     if (a === 'descanso' || a === 'voltar') {
       const ok = a === 'descanso' ? world.rest(state.chat.tabId) : world.backToDesk(state.chat.tabId);
       if (!ok) return;
@@ -2316,10 +2570,24 @@ mx.onNotification('view.action', async ({ viewId, action, values = {} }) => {
   }
   if (viewId === NOVO) {
     if (a === 'novo-pasta') {
-      state.novo.chosen = values.v;
+      const n = state.novo;
+      if (values.v === n.chosen) return;
+      // Outra worktree: quem já vinha volta, e vem um claude da pasta nova.
+      const again = n.room && (n.starting || n.tabId);
+      if (again) await dismiss();
+      n.chosen = values.v;
+      if (again) n.starting = prestart(null);
       return refreshNovo();
     }
     if (a === 'novo-ir') return callClaude(values.text);
+    // A área de transferência só é lida quando ele sentar: um print só por vez.
+    if (a === 'novo-imagem') {
+      const n = state.novo;
+      if (n.starting) await n.starting;
+      if (n.tabId) return pasteNovo();
+      n.images = 1;
+      return refreshNovo();
+    }
     if (a === 'novo-vazio') return callClaude('');
     return;
   }

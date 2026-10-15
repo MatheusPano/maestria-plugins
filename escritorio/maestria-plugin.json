@@ -199,6 +199,13 @@
         "description": "opcional. ex.: \"em inglês\", \"cite o número da tarefa\", \"bem informal\"."
       },
       {
+        "id": "dailySkip",
+        "type": "folders",
+        "default": [],
+        "title": "pastas fora da daily",
+        "description": "as conversas nessas pastas (e nas worktrees delas) não entram no resumo da daily nem vão pra reunião, e o que ficou pendente nelas não volta na daily seguinte. ex.: os projetos pessoais."
+      },
+      {
         "id": "rooms",
         "type": "folders",
         "default": [],

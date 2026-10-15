@@ -84,10 +84,13 @@ widget ChatHead = Padding(
         child: Column(
           crossAxisAlignment: "start",
           children: [
-            Text(text: args.c.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+            Name(c: args.c),
             SizedBox(height: 2.0),
-            Text(text: args.c.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
-            ContextBar(x: args.c.ctx),
+            Padding(
+              padding: [5.0, 0.0, 0.0, 0.0],
+              child: Text(text: args.c.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+            ),
+            Padding(padding: [5.0, 0.0, 0.0, 0.0], child: ContextBar(x: args.c.ctx)),
           ],
         ),
       ),
@@ -127,12 +130,47 @@ widget ChatHead = Padding(
       SizedBox(width: 4.0),
       Rest(r: args.c.nap),
       SizedBox(width: 4.0),
-      IconButton(icon: "edit", tooltip: "renomear a conversa", onPressed: event "act" { a: "renomear" }),
       IconButton(icon: "terminal", tooltip: "ir pra sessão (o terminal dele)", onPressed: event "act" { a: "ir" }),
       IconButton(icon: "home", tooltip: "mandar pra casa (fecha a sessão)", onPressed: event "act" { a: "casa" }),
     ],
   ),
 );
+
+// O nome da conversa: o clique troca pelo campo, já com o nome de agora; o
+// enter renomeia (vale pra Maestria inteira) e o ✕ desiste. O texto fica 5
+// pra dentro, pro fundo do hover sobrar dos dois lados -- a linha de baixo e
+// a bateria acompanham.
+widget Name = switch args.c.naming.on {
+  true: Row(
+    children: [
+      Expanded(
+        child: TextInput(
+          id: args.c.naming.id,
+          value: args.c.name,
+          placeholder: "o nome da conversa",
+          sendIcon: "check",
+          autofocus: true,
+          fontSize: 14.0,
+          onSubmit: event "act" { a: "nome" },
+        ),
+      ),
+      IconButton(icon: "close", tooltip: "deixar como está", onPressed: event "act" { a: "nome-cancelar" }),
+    ],
+  ),
+  default: switch args.c.canRename {
+    true: Pressable(
+      radius: 6.0,
+      hoverColor: data.theme.hover,
+      padding: [5.0, 1.0, 5.0, 1.0],
+      onTap: event "act" { a: "renomear" },
+      child: Text(text: args.c.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+    ),
+    default: Padding(
+      padding: [5.0, 1.0, 5.0, 1.0],
+      child: Text(text: args.c.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+    ),
+  },
+};
 
 // Aberta pela caixa de entrada: o próximo que espera você (ou "caixa vazia").
 widget Nav = switch args.n.on {
@@ -696,10 +734,11 @@ widget Lugares = switch data.novo.hasPlaces {
   default: SizedBox(),
 };
 
-// O pedido: o campo e, embaixo, a dica e o "chamar sem pedido".
+// O pedido: o print colado, o campo e, embaixo, a dica e o "chamar sem pedido".
 widget Pedido = Column(
   crossAxisAlignment: "stretch",
   children: [
+    Attached(t: data.novo.attached),
     Padding(
       padding: [14.0, 6.0, 14.0, 6.0],
       child: TextInput(
@@ -710,7 +749,11 @@ widget Pedido = Column(
         autofocus: true,
         clear: data.novo.sent,
         sendIcon: "send",
+        allowEmpty: data.novo.allowEmpty,
         onSubmit: event "act" { a: "novo-ir" },
+        // Também é o que faz o ⌘V colar texto aqui: o campo atende a tecla ele
+        // mesmo, como o do chat.
+        onPasteImage: event "act" { a: "novo-imagem" },
       ),
     ),
     Padding(
@@ -1066,12 +1109,13 @@ widget Mini = switch data.sprites {
 
 // --- a daily ---------------------------------------------------------------------------
 //
-// O resumo pra daily (ou o "bom dia", com o que ficou da última): o que ficou
-// pendente da anterior (riscado quando foi resolvido), um cartão por trabalho
-// -- o que fez, o curioso (💡) e o que falta -- e o texto pronto pra falar,
-// com o copiar. Enquanto o resumo é escrito, o aviso do que está acontecendo.
-// Abrir só mostra (a última, ou outra pelo relógio); o "fazer a daily" é que
-// leva todo mundo pra sala de reunião, e o ↻ escreve um resumo novo sem ela.
+// A daily da vez (ou o "bom dia"): sem resumo ainda, o que ficou pendente na
+// última; com resumo, um cartão por trabalho -- o que fez, o curioso (💡) e o
+// que falta --, o texto pronto pra falar, com o copiar, e no fim o pendente da
+// anterior (riscado quando foi resolvido). Enquanto o resumo é escrito, o
+// aviso do que está acontecendo. Abrir só mostra (a da vez, ou uma que já foi
+// pelo relógio); o "fazer a daily" é que leva todo mundo pra sala de reunião,
+// e o ↻ escreve um resumo novo sem ela.
 
 widget daily = Column(
   crossAxisAlignment: "stretch",
@@ -1097,7 +1141,7 @@ widget daily = Column(
               ],
             ),
           ),
-          // As outras dailies guardadas: só pra ver, sem ler nem juntar nada.
+          // As dailies que já foram: só pra ver, sem ler nem juntar nada.
           switch data.daily.hasHistory {
             true: MenuButton(icon: "clock", tooltip: "ver outra daily", menu: data.daily.history, onMenu: event "act" {}),
             default: SizedBox(),
@@ -1158,10 +1202,11 @@ widget daily = Column(
                 Problem(p: data.daily.problem),
                 DailyHint(h: data.daily.empty),
                 DailyHint(h: data.daily.old),
-                Before(b: data.daily.previous),
+                Before(b: data.daily.pendingTop),
                 ...for it in data.daily.items:
                   DailyItem(it: it),
                 DailyText(d: data.daily),
+                Before(b: data.daily.pendingBottom),
               ],
             ),
           ),
@@ -1187,48 +1232,126 @@ widget DailyNote = switch args.d.loading {
 };
 
 // Um aviso discreto: nada pra mostrar ainda (o que cada botão faz), ou uma
-// daily antiga na tela.
+// daily que já foi na tela (com o "ver a próxima").
 widget DailyHint = switch args.h.on {
   true: Container(
     margin: [0.0, 0.0, 0.0, 12.0],
     padding: [12.0, 9.0, 12.0, 10.0],
     decoration: { type: "box", border: [{ color: data.theme.border, width: 1.0 }], borderRadius: [{ x: 12.0 }] },
     child: Row(
-      crossAxisAlignment: "start",
       children: [
         Glyph(icon: "info", size: 14.0, color: data.theme.dim),
         SizedBox(width: 8.0),
         Expanded(child: Text(text: args.h.text, style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 })),
+        switch args.h.go.on {
+          true: Padding(
+            padding: [10.0, 0.0, 0.0, 0.0],
+            child: Pressable(
+              radius: 8.0,
+              color: data.theme.active,
+              hoverColor: data.theme.hover,
+              padding: [10.0, 4.0, 11.0, 5.0],
+              onTap: event "act" { a: args.h.go.action },
+              child: Text(text: args.h.go.label, style: { fontSize: 11.5, fontWeight: "w600", color: data.theme.fg }),
+            ),
+          ),
+          default: SizedBox(),
+        },
       ],
     ),
   ),
   default: SizedBox(),
 };
 
-// O que ficou pendente na daily anterior: riscado o que foi resolvido.
+// O que ficou pendente na daily anterior: o nome do trabalho e o que falta,
+// em duas linhas no máximo; riscado (e no fim) o que foi resolvido. Os
+// primeiros só, até o "mais N"; o "abrir" mostra aquela daily inteira.
 widget Before = switch args.b.on {
   true: Container(
     margin: [0.0, 0.0, 0.0, 12.0],
     padding: [12.0, 9.0, 12.0, 10.0],
     decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 12.0 }] },
     child: Column(
-      crossAxisAlignment: "start",
+      crossAxisAlignment: "stretch",
       children: [
-        Text(text: "da daily anterior", style: { fontSize: 11.0, fontWeight: "w700", color: data.theme.dim }),
+        Row(
+          children: [
+            Glyph(icon: "clock", size: 13.0, color: data.theme.dim),
+            SizedBox(width: 6.0),
+            Expanded(child: Text(text: args.b.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, fontWeight: "w700", color: data.theme.dim })),
+            Pressable(
+              radius: 6.0,
+              hoverColor: data.theme.hover,
+              padding: [7.0, 2.0, 7.0, 3.0],
+              onTap: event "act" { a: args.b.open },
+              child: Text(text: "abrir", style: { fontSize: 11.5, color: data.theme.accent }),
+            ),
+          ],
+        ),
         SizedBox(height: 4.0),
         ...for p in args.b.items:
           Padding(
-            padding: [0.0, 2.0, 0.0, 0.0],
-            child: Text(
-              text: [switch p.done { true: "✓ ", default: "· " }, p.text],
-              style: {
-                fontSize: 12.0,
-                height: 1.35,
-                color: switch p.done { true: data.theme.faint, default: data.theme.fg },
-                decoration: switch p.done { true: "lineThrough", default: "none" },
-              },
+            padding: [0.0, 5.0, 0.0, 0.0],
+            child: Row(
+              crossAxisAlignment: "start",
+              children: [
+                SizedBox(
+                  width: 16.0,
+                  child: Text(
+                    text: switch p.done { true: "✓", default: "·" },
+                    style: { fontSize: 12.0, height: 1.35, color: switch p.done { true: data.theme.faint, default: data.theme.dim } },
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: "start",
+                    children: [
+                      Text(
+                        text: p.nome,
+                        maxLines: 1,
+                        overflow: "ellipsis",
+                        style: {
+                          fontSize: 12.0,
+                          fontWeight: "w600",
+                          height: 1.35,
+                          color: switch p.done { true: data.theme.faint, default: data.theme.fg },
+                          decoration: switch p.done { true: "lineThrough", default: "none" },
+                        },
+                      ),
+                      Text(
+                        text: p.text,
+                        maxLines: 2,
+                        overflow: "ellipsis",
+                        style: {
+                          fontSize: 12.0,
+                          height: 1.35,
+                          color: switch p.done { true: data.theme.faint, default: data.theme.dim },
+                          decoration: switch p.done { true: "lineThrough", default: "none" },
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
+        switch args.b.more.on {
+          true: Padding(
+            padding: [10.0, 6.0, 0.0, 0.0],
+            child: Row(
+              children: [
+                Pressable(
+                  radius: 6.0,
+                  hoverColor: data.theme.hover,
+                  padding: [6.0, 2.0, 6.0, 3.0],
+                  onTap: event "act" { a: "daily-pendentes" },
+                  child: Text(text: args.b.more.label, style: { fontSize: 11.5, color: data.theme.accent }),
+                ),
+              ],
+            ),
+          ),
+          default: SizedBox(),
+        },
       ],
     ),
   ),
