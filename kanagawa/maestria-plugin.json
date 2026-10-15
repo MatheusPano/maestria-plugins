@@ -1,0 +1,16 @@
+{
+  "id": "maestria.kanagawa",
+  "name": "Kanagawa",
+  "version": "1.0.0",
+  "description": "Os temas Kanagawa Wave, Dragon e Lotus, nas cores da grande onda de Hokusai.",
+  "icon": "icons/kanagawa.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "contributes": {
+    "themes": [
+      { "path": "themes/wave.json" },
+      { "path": "themes/dragon.json" },
+      { "path": "themes/lotus.json" }
+    ]
+  }
+}

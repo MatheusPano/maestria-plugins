@@ -1,0 +1,16 @@
+{
+  "id": "maestria.tokyo-night",
+  "name": "Tokyo Night",
+  "version": "1.0.0",
+  "description": "Os temas Tokyo Night, Storm e Day, com o destaque no azul.",
+  "icon": "icons/tokyo-night.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "contributes": {
+    "themes": [
+      { "path": "themes/night.json" },
+      { "path": "themes/storm.json" },
+      { "path": "themes/day.json" }
+    ]
+  }
+}

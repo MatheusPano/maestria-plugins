@@ -1,0 +1,15 @@
+{
+  "id": "maestria.atom-one",
+  "name": "Atom One",
+  "version": "1.0.0",
+  "description": "Os temas One Dark e One Light, os do Atom, com o destaque no azul.",
+  "icon": "icons/atom-one.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "contributes": {
+    "themes": [
+      { "path": "themes/dark.json" },
+      { "path": "themes/light.json" }
+    ]
+  }
+}

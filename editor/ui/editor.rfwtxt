@@ -1,0 +1,344 @@
+// A janela do editor: as abas dos arquivos abertos, o caminho do da vez, o aviso
+// de quando ele mudou no disco, o editor (o `CodeEditor` da Maestria) e a barra
+// de baixo, como no VS Code. A Maestria só desenha; o texto que você digita fica
+// nela, num buffer por arquivo, e volta pro plugin em `event "change"` (depois de
+// parar de digitar) e `event "save"` (⌘S).
+//
+// Os dados: `data.mode` ("editor" | "empty" | "error"), `data.tabs`,
+// `data.crumb`, `data.banner`, `data.file` (o arquivo da vez: `path`, `text`,
+// `rev`, `language`, `line`, `jump`), `data.opts`, `data.status` e `data.empty`.
+// Todo clique vira `event "act"` com a ação em `a` (ou `action`, num menu).
+
+import core.widgets;
+import maestria;
+
+widget root = Container(
+  color: data.theme.bg,
+  child: switch data.mode {
+    "editor": Editor(),
+    "error": Column(
+      crossAxisAlignment: "stretch",
+      children: [Tabs(), Line(), Expanded(child: Problem())],
+    ),
+    default: Column(
+      crossAxisAlignment: "stretch",
+      children: [Expanded(child: Welcome())],
+    ),
+  },
+);
+
+widget Editor = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Tabs(),
+    Line(),
+    Crumb(),
+    Banner(),
+    Expanded(
+      child: CodeEditor(
+        doc: data.file.path,
+        text: data.file.text,
+        revision: data.file.rev,
+        language: data.file.language,
+        line: data.file.line,
+        column: data.file.column,
+        jump: data.file.jump,
+        readOnly: data.file.readOnly,
+        wordWrap: data.opts.wordWrap,
+        fontSize: data.opts.fontSize,
+        onChange: event "change" {},
+        onSave: event "save" {},
+        onCursor: event "cursor" {},
+      ),
+    ),
+    Line(),
+    Status(),
+  ],
+);
+
+widget Line = Container(height: 1.0, color: data.theme.border);
+
+// --- as abas -----------------------------------------------------------------------
+
+widget Tabs = Container(
+  height: 34.0,
+  color: data.theme.sidebar,
+  child: ListView(
+    scrollDirection: "horizontal",
+    children: [
+      ...for t in data.tabs:
+        Tab(t: t),
+    ],
+  ),
+);
+
+// Uma aba: o nome (a pasta em cinza, quando dois abertos têm o mesmo nome), a
+// bolinha de não salvo ou o x. A da vez fica com o fundo do editor e um traço
+// de destaque em cima.
+widget Tab = Pressable(
+  color: switch args.t.active { true: data.theme.bg, default: data.theme.sidebar },
+  hoverColor: switch args.t.active { true: data.theme.bg, default: data.theme.hover },
+  onTap: event "act" { a: args.t.open },
+  menu: args.t.menu,
+  onMenu: event "act" {},
+  child: Container(
+    height: 34.0,
+    padding: [12.0, 0.0, 6.0, 0.0],
+    // A borda é [início, topo, fim, baixo]: só o traço de cima.
+    decoration: {
+      type: "box",
+      border: [
+        { style: "none" },
+        { width: 2.0, color: switch args.t.active { true: data.theme.accent, default: data.theme.sidebar } },
+        { style: "none" },
+        { style: "none" },
+      ],
+    },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Opacity(
+          opacity: switch args.t.deleted { true: 0.45, default: 1.0 },
+          child: Svg(svg: args.t.svg, width: 14.0, height: 14.0),
+        ),
+        SizedBox(width: 6.0),
+        Text(
+          text: args.t.name,
+          maxLines: 1,
+          style: {
+            fontSize: 12.5,
+            color: switch args.t.deleted {
+              true: data.theme.red,
+              default: switch args.t.active { true: data.theme.fg, default: data.theme.dim },
+            },
+            decoration: switch args.t.deleted { true: "lineThrough", default: "none" },
+          },
+        ),
+        ...for h in args.t.hint:
+          Padding(
+            padding: [6.0, 0.0, 0.0, 0.0],
+            child: Text(text: h, maxLines: 1, style: { fontSize: 11.0, color: data.theme.faint }),
+          ),
+        SizedBox(width: 4.0),
+        Pressable(
+          radius: 5.0,
+          hoverColor: data.theme.active,
+          onTap: event "act" { a: args.t.close },
+          child: SizedBox(
+            width: 20.0,
+            height: 20.0,
+            child: Center(
+              child: switch args.t.dirty {
+                true: Glyph(icon: "icons/dot.svg", size: 10.0, color: data.theme.fg),
+                default: Glyph(icon: "icons/x.svg", size: 12.0, color: switch args.t.active { true: data.theme.dim, default: data.theme.faint }),
+              },
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
+// --- o caminho e o aviso ------------------------------------------------------------
+
+// "src › ui › editor.dart", com a pasta de cima do editor na frente.
+widget Crumb = Container(
+  height: 26.0,
+  padding: [14.0, 0.0, 10.0, 0.0],
+  child: Row(
+    children: [
+      Expanded(
+        child: Text(
+          text: data.crumb.path,
+          maxLines: 1,
+          overflow: "ellipsis",
+          style: { fontSize: 11.5, color: data.theme.faint },
+        ),
+      ),
+      ...for b in data.crumb.buttons:
+        IconButton(icon: b.icon, tooltip: b.tooltip, size: 14.0, extent: 22.0, onPressed: event "act" { a: b.a }),
+    ],
+  ),
+);
+
+// O arquivo mudou no disco enquanto você também mexia nele: qual dos dois fica.
+widget Banner = switch data.banner.show {
+  true: Container(
+    margin: [10.0, 0.0, 10.0, 6.0],
+    padding: [12.0, 8.0, 8.0, 8.0],
+    decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 7.0 }] },
+    child: Row(
+      children: [
+        Glyph(icon: "warning", size: 15.0, color: data.theme.yellow),
+        SizedBox(width: 9.0),
+        Expanded(
+          child: Text(text: data.banner.text, style: { fontSize: 12.0, color: data.theme.fg, height: 1.35 }),
+        ),
+        ...for b in data.banner.actions:
+          Padding(
+            padding: [6.0, 0.0, 0.0, 0.0],
+            child: Pressable(
+              radius: 6.0,
+              color: switch b.primary { true: data.theme.accent, default: data.theme.hover },
+              hoverColor: switch b.primary { true: data.theme.accent, default: data.theme.border },
+              padding: [10.0, 5.0, 10.0, 5.0],
+              onTap: event "act" { a: b.a },
+              child: Text(
+                text: b.label,
+                style: {
+                  fontSize: 12.0,
+                  fontWeight: "w600",
+                  color: switch b.primary { true: data.theme.onAccent, default: data.theme.fg },
+                },
+              ),
+            ),
+          ),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// --- a barra de baixo ---------------------------------------------------------------
+
+widget Status = Container(
+  height: 24.0,
+  color: data.theme.sidebar,
+  padding: [6.0, 0.0, 6.0, 0.0],
+  child: Row(
+    children: [
+      ...for s in data.status.left:
+        Item(s: s),
+      Expanded(child: SizedBox()),
+      ...for s in data.status.right:
+        Item(s: s),
+    ],
+  ),
+);
+
+// Um pedaço da barra: com ação, acende com o mouse em cima.
+widget Item = Pressable(
+  radius: 4.0,
+  hoverColor: switch args.s.a { "": data.theme.sidebar, default: data.theme.hover },
+  padding: [7.0, 3.0, 7.0, 3.0],
+  onTap: event "act" { a: args.s.a },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      ...for g in args.s.icon:
+        Padding(padding: [0.0, 0.0, 5.0, 0.0], child: Glyph(icon: g, size: 12.0, color: data.theme.dim)),
+      Text(
+        text: args.s.text,
+        maxLines: 1,
+        style: {
+          fontSize: 11.5,
+          color: switch args.s.tone { "yellow": data.theme.yellow, "red": data.theme.red, "accent": data.theme.accent, default: data.theme.dim },
+        },
+      ),
+    ],
+  ),
+);
+
+// --- sem arquivo aberto -------------------------------------------------------------
+
+widget Welcome = Center(
+  child: SizedBox(
+    width: 380.0,
+    child: Column(
+      mainAxisSize: "min",
+      crossAxisAlignment: "start",
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 40.0,
+              height: 40.0,
+              decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 10.0 }] },
+              child: Center(child: Glyph(icon: "icons/code.svg", size: 21.0, color: data.theme.accent)),
+            ),
+            SizedBox(width: 12.0),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: "start",
+                children: [
+                  Text(text: data.empty.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 17.0, fontWeight: "w700", color: data.theme.fg }),
+                  SizedBox(height: 2.0),
+                  Text(text: data.empty.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+                ],
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 22.0),
+        ...for b in data.empty.actions:
+          Start(b: b),
+        ...for r in data.empty.recentTitle:
+          Padding(
+            padding: [8.0, 20.0, 0.0, 6.0],
+            child: Text(text: r, style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.faint, letterSpacing: 0.6 }),
+          ),
+        ...for b in data.empty.recent:
+          Start(b: b),
+      ],
+    ),
+  ),
+);
+
+// Uma linha do começo: o ícone, o que faz e a tecla à direita.
+widget Start = Pressable(
+  radius: 7.0,
+  hoverColor: data.theme.hover,
+  padding: [8.0, 7.0, 8.0, 7.0],
+  onTap: event "act" { a: args.b.a },
+  child: Row(
+    children: [
+      Glyph(icon: args.b.icon, size: 15.0, color: data.theme.accent),
+      SizedBox(width: 10.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: args.b.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, color: data.theme.fg }),
+            ...for d in args.b.detail:
+              Text(text: d, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      Text(text: args.b.chord, style: { fontSize: 11.5, color: data.theme.faint }),
+    ],
+  ),
+);
+
+// --- o arquivo que não abre ---------------------------------------------------------
+
+widget Problem = Center(
+  child: SizedBox(
+    width: 360.0,
+    child: Column(
+      mainAxisSize: "min",
+      children: [
+        Glyph(icon: "file", size: 34.0, color: data.theme.faint),
+        SizedBox(height: 12.0),
+        Text(text: data.error.title, textAlign: "center", style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.fg }),
+        SizedBox(height: 4.0),
+        Text(text: data.error.text, textAlign: "center", style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 }),
+        SizedBox(height: 14.0),
+        Wrap(
+          spacing: 8.0,
+          children: [
+            ...for b in data.error.actions:
+              Pressable(
+                radius: 6.0,
+                color: data.theme.active,
+                hoverColor: data.theme.hover,
+                padding: [10.0, 5.0, 10.0, 5.0],
+                onTap: event "act" { a: b.a },
+                child: Text(text: b.label, style: { fontSize: 12.0, color: data.theme.fg }),
+              ),
+          ],
+        ),
+      ],
+    ),
+  ),
+);

@@ -1,0 +1,1341 @@
+// As duas janelinhas do escritório, que abrem em modal por cima da planta:
+//
+// - `chat`: a conversa com um claude. Em cima, quem é (o boneco, o nome, onde
+//   está e o status); no meio, a conversa (os seus pedidos à direita, as
+//   respostas à esquerda e as ferramentas numa linha apagada), grudada no fim, e
+//   a linha do que ele está fazendo agora; embaixo, o campo de mandar
+//   mensagem, que aceita um print (o ⌘V de uma imagem vai pro prompt
+//   dele e segue junto com a próxima mensagem). As respostas são markdown.
+//   `data.chat` traz tudo.
+// - `novo`: chamar um claude. A pasta (os repositórios da lateral e as
+//   worktrees deles) e o primeiro pedido; da mesa vazia de uma sala, só o
+//   pedido (a sala já está escolhida). `data.novo` traz as pastas.
+//
+// Os cliques voltam como `event "act"` com a ação em `a`; o campo de texto
+// manda o `text` no `onSubmit`.
+
+import core.widgets;
+import maestria;
+
+// --- o chat -------------------------------------------------------------------------
+
+widget chat = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    ChatHead(c: data.chat),
+    Container(height: 1.0, color: data.theme.border),
+    Expanded(
+      child: Conversation(
+        child: SingleChildScrollView(
+          primary: false, // cada área rolável com o seu controlador
+          reverse: true,
+          padding: [16.0, 12.0, 16.0, 8.0],
+          child: Lines(
+            child: Column(
+              crossAxisAlignment: "stretch",
+              children: [
+                ...for m in data.chat.items:
+                  Message(m: m),
+                SizedBox(height: 6.0),
+                Live(l: data.chat.live),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+    Problem(p: data.chat.problem),
+    Attached(t: data.chat.attached),
+    Padding(
+      padding: [14.0, 6.0, 14.0, 14.0],
+      child: TextInput(
+        id: data.chat.inputId,
+        placeholder: data.chat.placeholder,
+        hint: data.chat.hint,
+        disabled: data.chat.locked,
+        multiline: true,
+        maxLines: 6,
+        autofocus: true,
+        clear: data.chat.sent,
+        sendIcon: "send",
+        allowEmpty: data.chat.allowEmpty,
+        // O `/` abre a lista dos comandos dele (numa Maestria de antes, nada).
+        commands: data.chat.commands,
+        onSubmit: event "act" { a: "enviar" },
+        onPasteImage: event "act" { a: "imagem" },
+        onArrow: event "act" { a: "seta" },
+      ),
+    ),
+  ],
+);
+
+widget ChatHead = Padding(
+  padding: [16.0, 14.0, 12.0, 12.0],
+  child: Row(
+    children: [
+      Container(
+        width: 46.0,
+        height: 46.0,
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 12.0 }] },
+        child: Center(child: Avatar(c: args.c)),
+      ),
+      SizedBox(width: 12.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: args.c.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+            SizedBox(height: 2.0),
+            Text(text: args.c.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+            ContextBar(x: args.c.ctx),
+          ],
+        ),
+      ),
+      Nav(n: args.c.nav),
+      Container(
+        padding: [8.0, 3.0, 9.0, 3.0],
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 20.0 }] },
+        child: Row(
+          mainAxisSize: "min",
+          children: [
+            Container(width: 7.0, height: 7.0, decoration: { type: "box", color: args.c.dot, shape: "circle" }),
+            SizedBox(width: 6.0),
+            Text(text: args.c.status, style: { fontSize: 11.5, color: data.theme.fg }),
+          ],
+        ),
+      ),
+      SizedBox(width: 6.0),
+      switch args.c.canWake {
+        true: Pressable(
+          radius: 14.0,
+          color: data.theme.accent,
+          padding: [10.0, 4.0, 11.0, 5.0],
+          onTap: event "act" { a: "acordar" },
+          child: Row(
+            mainAxisSize: "min",
+            children: [
+              Glyph(icon: "play", size: 14.0, color: data.theme.onAccent),
+              SizedBox(width: 4.0),
+              Text(text: "acordar", style: { fontSize: 11.5, fontWeight: "w600", color: data.theme.onAccent }),
+            ],
+          ),
+        ),
+        default: SizedBox(),
+      },
+      SizedBox(width: 4.0),
+      Rest(r: args.c.rest),
+      SizedBox(width: 4.0),
+      Rest(r: args.c.nap),
+      SizedBox(width: 4.0),
+      IconButton(icon: "edit", tooltip: "renomear a conversa", onPressed: event "act" { a: "renomear" }),
+      IconButton(icon: "terminal", tooltip: "ir pra sessão (o terminal dele)", onPressed: event "act" { a: "ir" }),
+      IconButton(icon: "home", tooltip: "mandar pra casa (fecha a sessão)", onPressed: event "act" { a: "casa" }),
+    ],
+  ),
+);
+
+// Aberta pela caixa de entrada: o próximo que espera você (ou "caixa vazia").
+widget Nav = switch args.n.on {
+  true: Padding(
+    padding: [0.0, 0.0, 6.0, 0.0],
+    child: switch args.n.done {
+      true: Container(
+        padding: [10.0, 4.0, 11.0, 5.0],
+        decoration: { type: "box", color: 0x266CC483, borderRadius: [{ x: 14.0 }] },
+        child: Text(text: args.n.label, style: { fontSize: 11.5, fontWeight: "w600", color: 0xFF3FA864 }),
+      ),
+      default: Pressable(
+        radius: 14.0,
+        color: data.theme.accent,
+        padding: [10.0, 4.0, 11.0, 5.0],
+        onTap: event "act" { a: args.n.action },
+        child: Row(
+          mainAxisSize: "min",
+          children: [
+            Text(text: args.n.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, fontWeight: "w600", color: data.theme.onAccent }),
+            SizedBox(width: 4.0),
+            Glyph(icon: "chevron", size: 14.0, color: data.theme.onAccent),
+          ],
+        ),
+      ),
+    },
+  ),
+  default: SizedBox(),
+};
+
+// Mandar pra sala do descanso (ou chamar de volta pra mesa): o "descansar"
+// do topo do chat. Ele volta sozinho quando chega trabalho.
+widget Rest = switch args.r.on {
+  true: Pressable(
+    radius: 14.0,
+    color: data.theme.active,
+    hoverColor: data.theme.hover,
+    padding: [9.0, 4.0, 11.0, 5.0],
+    onTap: event "act" { a: args.r.action },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Glyph(icon: args.r.icon, size: 13.0, color: data.theme.dim),
+        SizedBox(width: 4.0),
+        Text(text: args.r.label, style: { fontSize: 11.5, color: data.theme.fg }),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+widget Avatar = switch data.sprites {
+  true: Sprite(
+    sheet: args.c.sheet,
+    columns: 4,
+    rows: args.c.rows,
+    row: args.c.row,
+    frames: 4,
+    fps: 2.5,
+    width: 24.0,
+    height: 36.0,
+  ),
+  default: Glyph(icon: "chat", size: 20.0, color: data.theme.accent),
+};
+
+// O contexto: a barrinha (verde, amarela, vermelha) e o número do lado, na
+// mesma cor. Some quando ainda não há número.
+widget ContextBar = switch args.x.on {
+  true: Padding(
+    padding: [0.0, 6.0, 0.0, 0.0],
+    child: Row(
+      children: [
+        Container(
+          width: 120.0,
+          height: 6.0,
+          decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 3.0 }] },
+          child: Align(
+            alignment: { x: -1.0, y: 0.0 },
+            child: Container(
+              duration: 600,
+              width: args.x.bar,
+              height: 6.0,
+              decoration: { type: "box", color: args.x.color, borderRadius: [{ x: 3.0 }] },
+            ),
+          ),
+        ),
+        SizedBox(width: 8.0),
+        Text(text: args.x.label, style: { fontSize: 11.5, fontWeight: "w600", color: args.x.color }),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// Uma mensagem: o seu pedido à direita, na cor de destaque; a resposta à
+// esquerda; as ferramentas numa linha apagada; um comando no meio. A ponta de
+// cada balão aponta pra quem falou -- os cantos do rfw vão na ordem cima-início,
+// cima-fim, baixo-início, baixo-fim (não a do CSS).
+widget Message = switch args.m.who {
+  "you": Padding(
+    padding: [64.0, 4.0, 0.0, 4.0],
+    child: Align(
+      alignment: { x: 1.0, y: 0.0 },
+      child: Container(
+        padding: [12.0, 8.0, 12.0, 9.0],
+        decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 14.0 }, { x: 14.0 }, { x: 14.0 }, { x: 4.0 }] },
+        child: Text(text: args.m.text, style: { fontSize: 13.0, color: data.theme.onAccent, height: 1.4 }),
+      ),
+    ),
+  ),
+  "pending": Padding(
+    padding: [64.0, 4.0, 0.0, 4.0],
+    child: Align(
+      alignment: { x: 1.0, y: 0.0 },
+      child: Opacity(
+        opacity: 0.55,
+        child: Container(
+          padding: [12.0, 8.0, 12.0, 9.0],
+          decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 14.0 }, { x: 14.0 }, { x: 14.0 }, { x: 4.0 }] },
+          child: Text(text: args.m.text, style: { fontSize: 13.0, color: data.theme.onAccent, height: 1.4 }),
+        ),
+      ),
+    ),
+  ),
+  "claude": Padding(
+    padding: [0.0, 4.0, 40.0, 4.0],
+    child: Align(
+      alignment: { x: -1.0, y: 0.0 },
+      child: Container(
+        padding: [12.0, 6.0, 12.0, 7.0],
+        decoration: {
+          type: "box",
+          color: data.theme.sidebar,
+          border: [{ color: data.theme.border, width: 1.0 }],
+          borderRadius: [{ x: 14.0 }, { x: 14.0 }, { x: 4.0 }, { x: 14.0 }],
+        },
+        child: Reply(text: args.m.text),
+      ),
+    ),
+  ),
+  "tool": Padding(
+    padding: [6.0, 2.0, 40.0, 2.0],
+    child: Text(text: args.m.text, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint, fontFamily: data.theme.mono }),
+  ),
+  "ask": Padding(
+    padding: [0.0, 4.0, 40.0, 4.0],
+    child: Ask(m: args.m),
+  ),
+  "perm": Padding(
+    padding: [0.0, 6.0, 24.0, 4.0],
+    child: Permission(m: args.m),
+  ),
+  "cmd": Padding(
+    padding: [0.0, 6.0, 0.0, 6.0],
+    child: Center(child: Text(text: args.m.text, style: { fontSize: 11.0, color: data.theme.faint, fontFamily: data.theme.mono })),
+  ),
+  default: SizedBox(),
+};
+
+// Uma pergunta do claude (o `AskUserQuestion`): cada pergunta com as opções
+// numeradas, como no terminal. Esperando você, a borda acende em amarelo e as
+// opções clicam (`o.tap`): o clique vai pro terminal como as setas e o enter;
+// depois de respondida, a escolhida fica marcada.
+widget Ask = Container(
+  padding: [12.0, 8.0, 12.0, 9.0],
+  decoration: {
+    type: "box",
+    color: data.theme.sidebar,
+    border: [{ color: switch args.m.open { true: 0xFFEEC05A, default: data.theme.border }, width: switch args.m.open { true: 1.5, default: 1.0 } }],
+    borderRadius: [{ x: 14.0 }, { x: 14.0 }, { x: 4.0 }, { x: 14.0 }],
+  },
+  child: Column(
+    crossAxisAlignment: "start",
+    children: [
+      Row(
+        mainAxisSize: "min",
+        children: [
+          Glyph(icon: "info", size: 13.0, color: switch args.m.open { true: 0xFFEEC05A, default: data.theme.faint }),
+          SizedBox(width: 5.0),
+          Text(text: args.m.state, style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.faint }),
+        ],
+      ),
+      ...for q in args.m.questions:
+        Question(q: q),
+    ],
+  ),
+);
+
+widget Question = Padding(
+  padding: [0.0, 6.0, 0.0, 0.0],
+  child: Column(
+    crossAxisAlignment: "start",
+    children: [
+      switch args.q.hasHeader {
+        true: Text(text: args.q.header, style: { fontSize: 10.5, fontWeight: "w700", color: data.theme.accent }),
+        default: SizedBox(),
+      },
+      Text(text: args.q.text, style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg, height: 1.4 }),
+      SizedBox(height: 4.0),
+      ...for o in args.q.options:
+        Option(o: o),
+      switch args.q.other.on {
+        true: Padding(
+          padding: [0.0, 3.0, 0.0, 0.0],
+          child: Text(text: ["✓ ", args.q.other.text], style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.accent }),
+        ),
+        default: SizedBox(),
+      },
+      // A de múltipla escolha: as opções marcam e desmarcam, e este botão fecha a pergunta.
+      switch args.q.confirm.on {
+        true: Padding(
+          padding: [26.0, 5.0, 0.0, 0.0],
+          child: Pressable(
+            radius: 8.0,
+            color: data.theme.accent,
+            padding: [12.0, 5.0, 12.0, 6.0],
+            onTap: event "act" { a: "confirmar", q: args.q.confirm.q },
+            child: Text(text: args.q.confirm.text, style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.onAccent }),
+          ),
+        ),
+        default: SizedBox(),
+      },
+    ],
+  ),
+);
+
+widget Option = Padding(
+  padding: [0.0, 2.0, 0.0, 0.0],
+  child: switch args.o.tap {
+    true: Pressable(
+      radius: 8.0,
+      hoverColor: data.theme.hover,
+      onTap: event "act" { a: "responder", q: args.o.q, o: args.o.o },
+      child: OptionBody(o: args.o),
+    ),
+    default: OptionBody(o: args.o),
+  },
+);
+
+widget OptionBody = Container(
+  padding: [8.0, 4.0, 8.0, 5.0],
+  decoration: {
+    type: "box",
+    color: switch args.o.chosen { true: data.theme.active, default: switch args.o.focus { true: data.theme.hover, default: 0x00000000 } },
+    border: [{ color: switch args.o.chosen { true: data.theme.accent, default: switch args.o.focus { true: data.theme.border, default: 0x00000000 } }, width: 1.0 }],
+    borderRadius: [{ x: 8.0 }],
+  },
+  child: Row(
+    crossAxisAlignment: "start",
+    children: [
+      SizedBox(
+        width: 18.0,
+        child: Text(text: switch args.o.chosen { true: "✓", default: switch args.o.focus { true: "❯", default: args.o.n } }, style: { fontSize: 12.5, fontWeight: "w700", color: switch args.o.chosen { true: data.theme.accent, default: data.theme.faint } }),
+      ),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: args.o.label, style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg, height: 1.35 }),
+            switch args.o.hasDescription {
+              true: Text(text: args.o.description, style: { fontSize: 11.5, color: data.theme.faint, height: 1.35 }),
+              default: SizedBox(),
+            },
+          ],
+        ),
+      ),
+    ],
+  ),
+);
+
+// A permissão que ele está pedindo: o que quer fazer (o comando inteiro, o
+// trecho que muda) e os botões. "permitir" é o enter do terminal; "negar", o
+// esc. O plano (`ExitPlanMode`) aparece, mas sem botões: é no terminal.
+widget Permission = Container(
+  padding: [12.0, 9.0, 12.0, 10.0],
+  decoration: {
+    type: "box",
+    color: data.theme.sidebar,
+    border: [{ color: 0xFFE5534B, width: 1.5 }],
+    borderRadius: [{ x: 14.0 }, { x: 14.0 }, { x: 4.0 }, { x: 14.0 }],
+  },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Glyph(icon: "shield", size: 15.0, color: 0xFFE5534B),
+          SizedBox(width: 6.0),
+          Expanded(child: Text(text: args.m.title, style: { fontSize: 13.0, fontWeight: "w700", color: data.theme.fg })),
+        ],
+      ),
+      switch args.m.hasBy {
+        true: Padding(
+          padding: [21.0, 2.0, 0.0, 0.0],
+          child: Text(text: args.m.by, style: { fontSize: 11.0, color: data.theme.faint }),
+        ),
+        default: SizedBox(),
+      },
+      switch args.m.hasSub {
+        true: Padding(
+          padding: [21.0, 3.0, 0.0, 0.0],
+          child: Text(text: args.m.sub, style: { fontSize: 12.0, color: data.theme.dim, height: 1.35 }),
+        ),
+        default: SizedBox(),
+      },
+      switch args.m.hasCode {
+        true: Container(
+          margin: [0.0, 8.0, 0.0, 0.0],
+          padding: [10.0, 8.0, 10.0, 8.0],
+          decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 8.0 }] },
+          child: Text(text: args.m.code, style: { fontSize: 11.5, color: data.theme.fg, fontFamily: data.theme.mono, height: 1.4 }),
+        ),
+        default: SizedBox(),
+      },
+      switch args.m.isPlan {
+        true: Container(
+          margin: [0.0, 8.0, 0.0, 0.0],
+          padding: [10.0, 6.0, 10.0, 6.0],
+          decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 8.0 }] },
+          child: Reply(text: args.m.plan),
+        ),
+        default: SizedBox(),
+      },
+      SizedBox(height: 9.0),
+      switch args.m.tap {
+        true: Row(
+          children: [
+            Pressable(
+              radius: 8.0,
+              color: 0xFF3FA864,
+              padding: [14.0, 6.0, 14.0, 7.0],
+              onTap: event "act" { a: "permitir", id: args.m.id },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "check", size: 14.0, color: 0xFFFFFFFF),
+                  SizedBox(width: 5.0),
+                  Text(text: "permitir", style: { fontSize: 12.5, fontWeight: "w600", color: 0xFFFFFFFF }),
+                ],
+              ),
+            ),
+            SizedBox(width: 8.0),
+            Pressable(
+              radius: 8.0,
+              color: data.theme.active,
+              hoverColor: data.theme.hover,
+              padding: [14.0, 6.0, 14.0, 7.0],
+              onTap: event "act" { a: "negar", id: args.m.id },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "close", size: 14.0, color: 0xFFE5534B),
+                  SizedBox(width: 5.0),
+                  Text(text: "negar", style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+                ],
+              ),
+            ),
+            SizedBox(width: 10.0),
+            Expanded(child: Text(text: "ou escreva embaixo o que ele deve fazer em vez disso", style: { fontSize: 11.0, color: data.theme.faint })),
+          ],
+        ),
+        default: Text(text: args.m.note, style: { fontSize: 11.5, color: data.theme.faint }),
+      },
+    ],
+  ),
+);
+
+// A resposta em markdown (o código, as listas, o negrito), numa Maestria que tem
+// o `Markdown`; texto puro numa de antes.
+widget Reply = switch data.markdown {
+  true: Markdown(text: args.text, fontSize: 13.0),
+  default: Text(text: args.text, style: { fontSize: 13.0, color: data.theme.fg, height: 1.45 }),
+};
+
+// O print colado: está no prompt dele, esperando a próxima mensagem.
+widget Attached = switch args.t.on {
+  true: Padding(
+    padding: [14.0, 4.0, 14.0, 0.0],
+    child: Align(
+      alignment: { x: -1.0, y: 0.0 },
+      child: Container(
+        padding: [10.0, 4.0, 10.0, 5.0],
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 12.0 }], border: [{ color: data.theme.accent, width: 1.0 }] },
+        child: Row(
+          mainAxisSize: "min",
+          children: [
+            Glyph(icon: "photo", size: 14.0, color: data.theme.accent),
+            SizedBox(width: 6.0),
+            Text(text: args.t.text, style: { fontSize: 11.5, color: data.theme.fg }),
+          ],
+        ),
+      ),
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// A conversa inteira é uma área de seleção só (numa Maestria com o
+// `Selectable`): arrastar atravessa parágrafos e mensagens, e rola sozinho
+// quando passa da borda.
+widget Conversation = switch data.selectable {
+  true: Selectable(child: args.child),
+  default: args.child,
+};
+
+// Dentro da rolagem: o que for copiado sai em linhas, uma mensagem (e um
+// parágrafo) por linha, em vez de tudo grudado.
+widget Lines = switch data.selectable {
+  true: SelectionLines(child: args.child),
+  default: args.child,
+};
+
+// O que ele está fazendo agora, embaixo da conversa (nada, parado no prompt).
+widget Live = switch args.l.on {
+  true: Align(
+    alignment: { x: -1.0, y: 0.0 },
+    child: Container(
+      padding: [10.0, 4.0, 10.0, 5.0],
+      decoration: { type: "box", color: args.l.bg, borderRadius: [{ x: 12.0 }] },
+      child: Text(text: args.l.text, style: { fontSize: 11.5, color: args.l.fg }),
+    ),
+  ),
+  default: SizedBox(),
+};
+
+widget Problem = switch args.p.on {
+  true: Padding(
+    padding: [16.0, 2.0, 16.0, 2.0],
+    child: Text(text: args.p.text, style: { fontSize: 11.5, color: data.theme.red }),
+  ),
+  default: SizedBox(),
+};
+
+// --- chamar um claude ---------------------------------------------------------------
+
+// Do "+" ou da lateral: a lista das pastas e o pedido. De uma mesa vazia, a sala
+// já está escolhida: só o pedido, e os chips de onde abrir quando o repositório
+// tem worktrees (quem trabalha nelas senta na mesma sala).
+widget novo = switch data.novo.compact {
+  true: NovoMesa(),
+  default: NovoLista(),
+};
+
+widget NovoLista = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [18.0, 16.0, 18.0, 6.0],
+      child: Column(
+        crossAxisAlignment: "start",
+        children: [
+          Text(text: "chamar um claude", style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+          SizedBox(height: 3.0),
+          Text(text: "ele entra pela porta e senta numa mesa da sala do repositório.", style: { fontSize: 11.5, color: data.theme.faint }),
+        ],
+      ),
+    ),
+    Expanded(
+      child: SingleChildScrollView(
+        primary: false, // cada área rolável com o seu controlador
+        padding: [12.0, 6.0, 12.0, 6.0],
+        child: Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for f in data.novo.folders:
+              Pressable(
+                radius: 8.0,
+                color: f.color,
+                hoverColor: data.theme.hover,
+                padding: [10.0, 7.0, 10.0, 7.0],
+                onTap: event "act" { a: "novo-pasta", v: f.value },
+                child: Row(
+                  children: [
+                    Glyph(icon: f.icon, size: 15.0, color: f.tint),
+                    SizedBox(width: 10.0),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: "start",
+                        children: [
+                          Text(text: f.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+                          Text(text: f.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+    Problem(p: data.novo.problem),
+    Pedido(),
+  ],
+);
+
+widget NovoMesa = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [18.0, 16.0, 18.0, 4.0],
+      child: Row(
+        children: [
+          Container(
+            width: 34.0,
+            height: 34.0,
+            decoration: { type: "box", color: 0x26D97757, borderRadius: [{ x: 9.0 }] },
+            child: Center(child: Glyph(icon: "folder", size: 17.0, color: 0xFFD97757)),
+          ),
+          SizedBox(width: 12.0),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: "start",
+              children: [
+                Text(text: data.novo.room, maxLines: 1, overflow: "ellipsis", style: { fontSize: 15.0, fontWeight: "w700", color: data.theme.fg }),
+                SizedBox(height: 2.0),
+                Text(text: "um claude novo entra pela porta e senta nesta mesa", style: { fontSize: 11.5, color: data.theme.faint }),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+    Lugares(),
+    Expanded(child: SizedBox()),
+    Problem(p: data.novo.problem),
+    Pedido(),
+  ],
+);
+
+// Onde abrir, na sala da mesa: a pasta principal e as worktrees.
+widget Lugares = switch data.novo.hasPlaces {
+  true: Padding(
+    padding: [18.0, 10.0, 18.0, 0.0],
+    child: Wrap(
+      spacing: 6.0,
+      runSpacing: 6.0,
+      children: [
+        ...for p in data.novo.places:
+          Tooltip(
+            message: p.tip,
+            child: Pressable(
+              radius: 14.0,
+              color: p.color,
+              hoverColor: data.theme.hover,
+              padding: [9.0, 4.0, 10.0, 5.0],
+              onTap: event "act" { a: "novo-pasta", v: p.value },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: p.icon, size: 13.0, color: p.fg),
+                  SizedBox(width: 5.0),
+                  Text(text: p.label, style: { fontSize: 11.5, fontWeight: "w600", color: p.fg }),
+                ],
+              ),
+            ),
+          ),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// O pedido: o campo e, embaixo, a dica e o "chamar sem pedido".
+widget Pedido = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [14.0, 6.0, 14.0, 6.0],
+      child: TextInput(
+        id: "novo",
+        placeholder: data.novo.placeholder,
+        multiline: true,
+        maxLines: 6,
+        autofocus: true,
+        clear: data.novo.sent,
+        sendIcon: "send",
+        onSubmit: event "act" { a: "novo-ir" },
+      ),
+    ),
+    Padding(
+      padding: [14.0, 0.0, 14.0, 14.0],
+      child: Row(
+        children: [
+          Expanded(child: Text(text: "enter chama com esse pedido; shift+enter quebra a linha", style: { fontSize: 11.0, color: data.theme.faint })),
+          Pressable(
+            radius: 8.0,
+            color: data.theme.active,
+            hoverColor: data.theme.hover,
+            padding: [10.0, 6.0, 10.0, 6.0],
+            onTap: event "act" { a: "novo-vazio" },
+            child: Text(text: "chamar sem pedido", style: { fontSize: 12.0, color: data.theme.fg }),
+          ),
+        ],
+      ),
+    ),
+  ],
+);
+
+// --- personalizar você ---------------------------------------------------------------
+//
+// O seu boneco andando em direção a você, o nome (que vai na plaquinha da sua
+// sala) e, embaixo, as cores de cada parte e o acessório. Cada clique já veste.
+
+widget voce = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [18.0, 16.0, 18.0, 10.0],
+      child: Row(
+        children: [
+          Container(
+            width: 96.0,
+            height: 120.0,
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 14.0 }] },
+            child: Center(child: Preview(v: data.voce)),
+          ),
+          SizedBox(width: 16.0),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: "start",
+              children: [
+                Text(text: "personalizar você", style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+                SizedBox(height: 2.0),
+                Text(text: data.voce.room, style: { fontSize: 11.5, color: data.theme.faint }),
+                SizedBox(height: 12.0),
+                Text(text: "seu nome", style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.dim }),
+                SizedBox(height: 4.0),
+                TextInput(
+                  id: "voce-nome",
+                  value: data.voce.name,
+                  placeholder: "como te chamam no escritório?",
+                  sendIcon: "check",
+                  onSubmit: event "act" { a: "voce-nome" },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+    Container(height: 1.0, color: data.theme.border),
+    Expanded(
+      child: SingleChildScrollView(
+        primary: false, // cada área rolável com o seu controlador
+        padding: [18.0, 10.0, 18.0, 10.0],
+        child: Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for g in data.voce.parts:
+              Part(g: g),
+            Padding(
+              padding: [0.0, 8.0, 0.0, 4.0],
+              child: Text(text: "acessório", style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.dim }),
+            ),
+            Wrap(
+              spacing: 6.0,
+              runSpacing: 6.0,
+              children: [
+                ...for x in data.voce.accessories:
+                  Chip(c: x),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+    Container(height: 1.0, color: data.theme.border),
+    Padding(
+      padding: [14.0, 10.0, 14.0, 12.0],
+      child: Row(
+        children: [
+          Pressable(
+            radius: 8.0,
+            hoverColor: data.theme.hover,
+            padding: [10.0, 6.0, 10.0, 6.0],
+            onTap: event "act" { a: "voce-padrao" },
+            child: Text(text: "voltar ao padrão", style: { fontSize: 12.0, color: data.theme.dim }),
+          ),
+          Spacer(),
+          Pressable(
+            radius: 8.0,
+            color: data.theme.accent,
+            padding: [14.0, 6.0, 14.0, 7.0],
+            onTap: event "act" { a: "voce-pronto" },
+            child: Text(text: "pronto", style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.onAccent }),
+          ),
+        ],
+      ),
+    ),
+  ],
+);
+
+// Você andando em direção a quem olha, com a roupa da vez.
+widget Preview = switch data.sprites {
+  true: Sprite(
+    sheet: args.v.sheet,
+    columns: 4,
+    rows: args.v.rows,
+    row: args.v.row,
+    frames: 4,
+    fps: 6.0,
+    width: 64.0,
+    height: 96.0,
+  ),
+  default: Glyph(icon: "user", size: 40.0, color: data.theme.accent),
+};
+
+// Uma parte (o cabelo, a camisa…): o nome e as bolinhas de cor.
+widget Part = Padding(
+  padding: [0.0, 6.0, 0.0, 6.0],
+  child: Column(
+    crossAxisAlignment: "start",
+    children: [
+      Text(text: args.g.label, style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.dim }),
+      SizedBox(height: 6.0),
+      Wrap(
+        spacing: 6.0,
+        runSpacing: 6.0,
+        children: [
+          ...for o in args.g.options:
+            Swatch(o: o),
+        ],
+      ),
+    ],
+  ),
+);
+
+// Uma cor: a escolhida tem o anel na cor de destaque.
+widget Swatch = Pressable(
+  radius: 15.0,
+  onTap: event "act" { a: args.o.action },
+  child: Container(
+    width: 28.0,
+    height: 28.0,
+    padding: [3.0, 3.0, 3.0, 3.0],
+    decoration: {
+      type: "box",
+      shape: "circle",
+      border: [{ color: switch args.o.on { true: data.theme.accent, default: 0x00000000 }, width: 2.0 }],
+    },
+    child: Container(
+      decoration: { type: "box", color: args.o.color, shape: "circle", border: [{ color: 0x55000000, width: 1.0 }] },
+    ),
+  ),
+);
+
+// Um acessório: o escolhido aceso.
+widget Chip = Pressable(
+  radius: 14.0,
+  color: switch args.c.on { true: data.theme.accent, default: data.theme.active },
+  hoverColor: data.theme.hover,
+  padding: [12.0, 5.0, 12.0, 6.0],
+  onTap: event "act" { a: args.c.action },
+  child: Text(
+    text: args.c.label,
+    style: { fontSize: 12.0, color: switch args.c.on { true: data.theme.onAccent, default: data.theme.fg } },
+  ),
+);
+
+// --- os recados dos ajudantes --------------------------------------------------------
+//
+// O que cada ajudante respondeu, do mais novo pro mais velho: o tipo dele (o
+// Explore, o Plan), o que foi fazer, a hora e a resposta em markdown.
+
+widget recados = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [18.0, 16.0, 18.0, 10.0],
+      child: Column(
+        crossAxisAlignment: "start",
+        children: [
+          Text(text: ["recados pra ", data.recados.name], style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+          SizedBox(height: 2.0),
+          Text(text: data.recados.sub, style: { fontSize: 11.5, color: data.theme.faint }),
+        ],
+      ),
+    ),
+    Container(height: 1.0, color: data.theme.border),
+    Expanded(
+      child: Conversation(
+        child: SingleChildScrollView(
+          primary: false, // cada área rolável com o seu controlador
+          padding: [16.0, 12.0, 16.0, 12.0],
+          child: Lines(
+            child: Column(
+              crossAxisAlignment: "stretch",
+              children: [
+                ...for n in data.recados.notes:
+                  Recado(n: n),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  ],
+);
+
+widget Recado = Padding(
+  padding: [0.0, 0.0, 0.0, 12.0],
+  child: Container(
+    padding: [12.0, 9.0, 12.0, 10.0],
+    decoration: {
+      type: "box",
+      color: data.theme.sidebar,
+      border: [{ color: switch args.n.fresh { true: 0xFF4E8AD1, default: data.theme.border }, width: switch args.n.fresh { true: 1.5, default: 1.0 } }],
+      borderRadius: [{ x: 12.0 }],
+    },
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Row(
+          children: [
+            Glyph(icon: "file", size: 14.0, color: 0xFF4E8AD1),
+            SizedBox(width: 6.0),
+            switch args.n.hasType {
+              true: Container(
+                margin: [0.0, 0.0, 6.0, 0.0],
+                padding: [6.0, 1.0, 6.0, 2.0],
+                decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 8.0 }] },
+                child: Text(text: args.n.type, style: { fontSize: 10.5, fontWeight: "w700", color: data.theme.accent }),
+              ),
+              default: SizedBox(),
+            },
+            Expanded(child: Text(text: args.n.what, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, fontWeight: "w700", color: data.theme.fg })),
+            Text(text: args.n.when, style: { fontSize: 11.0, color: data.theme.faint }),
+          ],
+        ),
+        SizedBox(height: 6.0),
+        Reply(text: args.n.text),
+      ],
+    ),
+  ),
+);
+
+// --- mandar pra vários ---------------------------------------------------------------
+//
+// Quem vai receber (o x tira da lista), os atalhos e o campo. Quem espera uma
+// permissão ou uma resposta sua aparece apagado: pra ele não vai.
+
+widget grupo = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [18.0, 16.0, 18.0, 8.0],
+      child: Column(
+        crossAxisAlignment: "start",
+        children: [
+          Text(text: data.grupo.title, style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+          SizedBox(height: 2.0),
+          Text(text: "a mesma mensagem vai pro terminal de cada um; quem dorme acorda e lê.", style: { fontSize: 11.5, color: data.theme.faint }),
+        ],
+      ),
+    ),
+    Expanded(
+      child: SingleChildScrollView(
+        primary: false, // cada área rolável com o seu controlador
+        padding: [16.0, 4.0, 16.0, 4.0],
+        child: Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            Wrap(
+              spacing: 6.0,
+              runSpacing: 6.0,
+              children: [
+                ...for w in data.grupo.names:
+                  Opacity(
+                    opacity: switch w.waiting { true: 0.45, default: 1.0 },
+                    child: Container(
+                      padding: [6.0, 3.0, 2.0, 3.0],
+                      decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 14.0 }] },
+                      child: Row(
+                        mainAxisSize: "min",
+                        children: [
+                          Mini(w: w),
+                          SizedBox(width: 5.0),
+                          Text(text: w.name, style: { fontSize: 12.0, color: data.theme.fg }),
+                          IconButton(icon: "close", tooltip: "tirar da lista", onPressed: event "act" { a: "grupo-tirar", tab: w.tabId }),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            SizedBox(height: 12.0),
+            Text(text: "atalhos", style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.dim }),
+            SizedBox(height: 6.0),
+            Wrap(
+              spacing: 6.0,
+              runSpacing: 6.0,
+              children: [
+                ...for p in data.grupo.presets:
+                  Pressable(
+                    radius: 14.0,
+                    color: data.theme.active,
+                    hoverColor: data.theme.hover,
+                    padding: [11.0, 5.0, 11.0, 6.0],
+                    onTap: event "act" { a: "grupo-preset", text: p.text },
+                    child: Text(text: p.text, style: { fontSize: 12.0, color: data.theme.fg, fontFamily: data.theme.mono }),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+    Problem(p: data.grupo.problem),
+    Padding(
+      padding: [14.0, 6.0, 14.0, 14.0],
+      child: TextInput(
+        id: "grupo",
+        placeholder: "a mensagem pra todos…",
+        multiline: true,
+        maxLines: 5,
+        autofocus: true,
+        clear: data.grupo.sent,
+        sendIcon: "send",
+        onSubmit: event "act" { a: "grupo-enviar" },
+      ),
+    ),
+  ],
+);
+
+// O bonequinho de cada um, pequeno, no chip.
+widget Mini = switch data.sprites {
+  true: Sprite(sheet: args.w.sheet, columns: 4, rows: 13, row: 0, frames: 1, fps: 0.0, paused: true, width: 12.0, height: 18.0),
+  default: Glyph(icon: "user", size: 14.0, color: data.theme.accent),
+};
+
+// --- a daily ---------------------------------------------------------------------------
+//
+// O resumo pra daily (ou o "bom dia", com o que ficou da última): o que ficou
+// pendente da anterior (riscado quando foi resolvido), um cartão por trabalho
+// -- o que fez, o curioso (💡) e o que falta -- e o texto pronto pra falar,
+// com o copiar. Enquanto o resumo é escrito, o aviso do que está acontecendo.
+// Abrir só mostra (a última, ou outra pelo relógio); o "fazer a daily" é que
+// leva todo mundo pra sala de reunião, e o ↻ escreve um resumo novo sem ela.
+
+widget daily = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [18.0, 16.0, 12.0, 10.0],
+      child: Row(
+        children: [
+          Container(
+            width: 34.0,
+            height: 34.0,
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+            child: Center(child: Glyph(icon: "calendar", size: 18.0, color: data.theme.accent)),
+          ),
+          SizedBox(width: 12.0),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: "start",
+              children: [
+                Text(text: data.daily.title, style: { fontSize: 16.0, fontWeight: "w700", color: data.theme.fg }),
+                SizedBox(height: 2.0),
+                Text(text: data.daily.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+              ],
+            ),
+          ),
+          // As outras dailies guardadas: só pra ver, sem ler nem juntar nada.
+          switch data.daily.hasHistory {
+            true: MenuButton(icon: "clock", tooltip: "ver outra daily", menu: data.daily.history, onMenu: event "act" {}),
+            default: SizedBox(),
+          },
+          switch data.daily.loading {
+            true: SizedBox(),
+            default: IconButton(icon: "refresh", tooltip: "novo resumo, sem reunião: lê as conversas do período de novo", onPressed: event "act" { a: "daily-refazer" }),
+          },
+          SizedBox(width: 6.0),
+          // O "fazer a daily": a janela fecha e eles contam na sala de reunião.
+          switch data.daily.meeting {
+            true: Pressable(
+              radius: 8.0,
+              color: data.theme.active,
+              hoverColor: data.theme.hover,
+              padding: [11.0, 6.0, 12.0, 7.0],
+              onTap: event "act" { a: "daily-encerrar" },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "stop", size: 13.0, color: data.theme.fg),
+                  SizedBox(width: 5.0),
+                  Text(text: "encerrar a reunião", style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.fg }),
+                ],
+              ),
+            ),
+            default: Pressable(
+              radius: 8.0,
+              color: data.theme.accent,
+              padding: [11.0, 6.0, 12.0, 7.0],
+              onTap: event "act" { a: "daily-fazer" },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "play", size: 13.0, color: data.theme.onAccent),
+                  SizedBox(width: 5.0),
+                  Text(text: "fazer a daily", style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.onAccent }),
+                ],
+              ),
+            ),
+          },
+          SizedBox(width: 4.0),
+          IconButton(icon: "close", tooltip: "fechar", onPressed: event "act" { a: "daily-fechar" }),
+        ],
+      ),
+    ),
+    Container(height: 1.0, color: data.theme.border),
+    Expanded(
+      child: Conversation(
+        child: SingleChildScrollView(
+          primary: false, // cada área rolável com o seu controlador
+          padding: [16.0, 12.0, 16.0, 12.0],
+          child: Lines(
+            child: Column(
+              crossAxisAlignment: "stretch",
+              children: [
+                DailyNote(d: data.daily),
+                Problem(p: data.daily.problem),
+                DailyHint(h: data.daily.empty),
+                DailyHint(h: data.daily.old),
+                Before(b: data.daily.previous),
+                ...for it in data.daily.items:
+                  DailyItem(it: it),
+                DailyText(d: data.daily),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  ],
+);
+
+// O que está acontecendo enquanto o resumo é feito.
+widget DailyNote = switch args.d.loading {
+  true: Padding(
+    padding: [0.0, 4.0, 0.0, 12.0],
+    child: Row(
+      children: [
+        Glyph(icon: "clock", size: 15.0, color: data.theme.accent),
+        SizedBox(width: 10.0),
+        Expanded(child: Text(text: args.d.note, style: { fontSize: 12.5, color: data.theme.dim })),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// Um aviso discreto: nada pra mostrar ainda (o que cada botão faz), ou uma
+// daily antiga na tela.
+widget DailyHint = switch args.h.on {
+  true: Container(
+    margin: [0.0, 0.0, 0.0, 12.0],
+    padding: [12.0, 9.0, 12.0, 10.0],
+    decoration: { type: "box", border: [{ color: data.theme.border, width: 1.0 }], borderRadius: [{ x: 12.0 }] },
+    child: Row(
+      crossAxisAlignment: "start",
+      children: [
+        Glyph(icon: "info", size: 14.0, color: data.theme.dim),
+        SizedBox(width: 8.0),
+        Expanded(child: Text(text: args.h.text, style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 })),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// O que ficou pendente na daily anterior: riscado o que foi resolvido.
+widget Before = switch args.b.on {
+  true: Container(
+    margin: [0.0, 0.0, 0.0, 12.0],
+    padding: [12.0, 9.0, 12.0, 10.0],
+    decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 12.0 }] },
+    child: Column(
+      crossAxisAlignment: "start",
+      children: [
+        Text(text: "da daily anterior", style: { fontSize: 11.0, fontWeight: "w700", color: data.theme.dim }),
+        SizedBox(height: 4.0),
+        ...for p in args.b.items:
+          Padding(
+            padding: [0.0, 2.0, 0.0, 0.0],
+            child: Text(
+              text: [switch p.done { true: "✓ ", default: "· " }, p.text],
+              style: {
+                fontSize: 12.0,
+                height: 1.35,
+                color: switch p.done { true: data.theme.faint, default: data.theme.fg },
+                decoration: switch p.done { true: "lineThrough", default: "none" },
+              },
+            ),
+          ),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// Um trabalho: quem fez (o bonequinho, quando a conversa está aberta), onde,
+// o que fez, o curioso e o que falta; e o comentar na tarefa do Wiboor.
+widget DailyItem = Padding(
+  padding: [0.0, 0.0, 0.0, 10.0],
+  child: Container(
+    padding: [12.0, 10.0, 12.0, 11.0],
+    decoration: { type: "box", color: data.theme.sidebar, border: [{ color: data.theme.border, width: 1.0 }], borderRadius: [{ x: 12.0 }] },
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Row(
+          children: [
+            switch args.it.hasSheet {
+              true: Padding(
+                padding: [0.0, 0.0, 8.0, 0.0],
+                child: Sprite(sheet: args.it.sheet, columns: 4, rows: 13, row: 0, frames: 1, fps: 0.0, paused: true, width: 12.0, height: 18.0),
+              ),
+              default: SizedBox(),
+            },
+            Expanded(
+              child: Column(
+                crossAxisAlignment: "start",
+                children: [
+                  Text(text: args.it.nome, style: { fontSize: 13.0, fontWeight: "w700", color: data.theme.fg }),
+                  Text(text: args.it.where, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.faint }),
+                ],
+              ),
+            ),
+            switch args.it.wiboor.on {
+              true: Pressable(
+                radius: 8.0,
+                color: data.theme.active,
+                hoverColor: data.theme.hover,
+                padding: [9.0, 4.0, 10.0, 5.0],
+                onTap: event "act" { a: "daily-wiboor", i: args.it.i },
+                child: Row(
+                  mainAxisSize: "min",
+                  children: [
+                    Glyph(icon: "chat", size: 12.0, color: data.theme.dim),
+                    SizedBox(width: 4.0),
+                    Text(text: args.it.wiboor.label, style: { fontSize: 11.0, color: data.theme.fg }),
+                  ],
+                ),
+              ),
+              default: SizedBox(),
+            },
+          ],
+        ),
+        SizedBox(height: 6.0),
+        Text(text: args.it.fiz, style: { fontSize: 12.5, color: data.theme.fg, height: 1.4 }),
+        switch args.it.hasCurioso {
+          true: Padding(
+            padding: [0.0, 6.0, 0.0, 0.0],
+            child: Text(text: ["💡 ", args.it.curioso], style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 }),
+          ),
+          default: SizedBox(),
+        },
+        switch args.it.hasPendente {
+          true: Padding(
+            padding: [0.0, 6.0, 0.0, 0.0],
+            child: Text(text: ["⏳ falta: ", args.it.pendente], style: { fontSize: 12.0, color: 0xFFD08A2E, height: 1.4 }),
+          ),
+          default: SizedBox(),
+        },
+      ],
+    ),
+  ),
+);
+
+// O texto pronto pra falar na daily, com o copiar.
+widget DailyText = switch args.d.hasText {
+  true: Container(
+    margin: [0.0, 6.0, 0.0, 0.0],
+    padding: [12.0, 10.0, 12.0, 12.0],
+    decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 12.0 }], border: [{ color: data.theme.accent, width: 1.0 }] },
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(text: "pra falar na daily", style: { fontSize: 11.0, fontWeight: "w700", color: data.theme.accent })),
+            Pressable(
+              radius: 8.0,
+              color: data.theme.accent,
+              padding: [10.0, 4.0, 11.0, 5.0],
+              onTap: event "act" { a: "daily-copiar" },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "copy", size: 12.0, color: data.theme.onAccent),
+                  SizedBox(width: 4.0),
+                  Text(text: "copiar", style: { fontSize: 11.5, fontWeight: "w600", color: data.theme.onAccent }),
+                ],
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 6.0),
+        Reply(text: args.d.text),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};

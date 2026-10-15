@@ -1,0 +1,31 @@
+{
+  "id": "tokyo-night-day",
+  "label": "Tokyo Night Day",
+  "dark": false,
+  "canvas": "#C4C8DA",
+  "bg": "#E1E2E7",
+  "bgSidebar": "#D0D5E3",
+  "bgHover": "#C4C8DA",
+  "bgActive": "#B7C1E3",
+  "border": "#C4C8DA",
+  "fg": "#3760BF",
+  "fgDim": "#6172B0",
+  "fgFaint": "#848CB5",
+  "accent": "#2E7DE9",
+  "green": "#587539",
+  "yellow": "#8C6C3E",
+  "red": "#F52A65",
+  "purple": "#9854F1",
+  "ansi": {
+    "black": "#A1A6C5",
+    "red": "#F52A65",
+    "green": "#587539",
+    "yellow": "#8C6C3E",
+    "blue": "#2E7DE9",
+    "magenta": "#9854F1",
+    "cyan": "#007197",
+    "white": "#6172B0",
+    "brightBlack": "#848CB5",
+    "brightWhite": "#3760BF"
+  }
+}

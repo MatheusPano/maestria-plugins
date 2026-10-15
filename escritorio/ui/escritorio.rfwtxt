@@ -1,0 +1,791 @@
+// A tela do escritório. Em cima, o topo com os números; embaixo, a planta, que
+// cresce até caber (FittedBox) ou fica no zoom escolhido no canto dela
+// (`data.zoom`) -- tudo dentro dela está em pixels da pixel art.
+//
+// `data.scene` é o fundo (o svg, a largura e a altura) e só vem quando a planta
+// muda, junto com `data.labels` (as plaquinhas das salas) e `data.windows` (o
+// vidro de cada janela). `data.light` é a luz da hora: a camada por cima do
+// chão e a cor do vidro. `data.screens`, as telas dos monitores, que acendem na
+// cor do que o claude da mesa faz (e a luminária, de noite). `data.boards`, o
+// quadro branco de cada sala, com a lista do Claude. `data.agents`, os bonecos
+// (e o gato): cada um no mesmo lugar da lista enquanto vive -- o `Positioned`
+// de cada lugar é quem anima a caminhada; um lugar vago tem `on: false`.
+// `data.effects`, o que sobe e some em cima de alguém (o foguete do push, o ✓
+// dos testes, o "z" de quem dorme), do mesmo jeito.
+//
+// `data.decor` é o "arrumar os móveis": ligado, as vagas de cada sala (os
+// `DropTarget`) e os vasos e luminárias (os `Draggable`) por cima de tudo.
+//
+// O clique num boneco (ou num quadro) volta como `event "act"` com a ação em `a`.
+
+import core.widgets;
+import maestria;
+
+widget root = Container(
+  color: data.theme.canvas,
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Head(),
+      Selection(),
+      Expanded(
+        child: Padding(
+          padding: [14.0, 0.0, 14.0, 14.0],
+          child: Container(
+            decoration: { type: "box", color: 0xFF1C1726, borderRadius: [{ x: 10.0 }] },
+            padding: [10.0, 10.0, 10.0, 10.0],
+            child: Stack(
+              children: [
+                Positioned(start: 0.0, top: 0.0, end: 0.0, bottom: 0.0, child: Viewport()),
+                Positioned(end: 6.0, bottom: 6.0, child: Zoom()),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ],
+  ),
+);
+
+// A planta no zoom da vez. Com o `ZoomView` (`data.zoom.view`), como um mapa:
+// a bolinha aproxima e afasta em volta do cursor e arrastar move; os botões do
+// canto mandam `command` e ele conta a escala de volta no "zoom:escala".
+//
+// Numa Maestria sem ele, por níveis: "caber" encolhe ou estica até caber
+// (FittedBox); um nível fixo desenha cada pixel da pixel art com
+// `data.zoom.scale` pixels da tela, e o que passar da janela rola (a roda do
+// mouse, ou shift+roda pro lado). O `Container` anima o tamanho entre um nível
+// e outro.
+widget Viewport = switch data.zoom.view {
+  true: ZoomView(
+    maxScale: data.zoom.maxScale,
+    command: data.zoom.command,
+    commandRev: data.zoom.rev,
+    onZoom: event "act" { a: "zoom:escala" },
+    child: FittedBox(fit: "contain", child: Plan()),
+  ),
+  default: Steps(),
+};
+
+widget Steps = switch data.zoom.fit {
+  true: FittedBox(fit: "contain", child: Plan()),
+  default: Center(
+    child: SingleChildScrollView(
+      primary: false,
+      child: SingleChildScrollView(
+        scrollDirection: "horizontal",
+        primary: false,
+        child: Container(
+          duration: 180,
+          width: data.zoom.w,
+          height: data.zoom.h,
+          child: FittedBox(fit: "fill", child: Plan()),
+        ),
+      ),
+    ),
+  ),
+};
+
+// O controle do zoom, no canto da planta: o nível no meio volta a caber.
+widget Zoom = Container(
+  padding: [2.0, 2.0, 2.0, 2.0],
+  decoration: { type: "box", color: 0xE62A2438, borderRadius: [{ x: 8.0 }] },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      IconButton(icon: "remove", tooltip: "afastar", color: 0xFFF4F1EA, disabled: data.zoom.minimum, onPressed: event "act" { a: "zoom:-" }),
+      Tooltip(
+        message: "voltar a caber na tela",
+        child: Pressable(
+          radius: 5.0,
+          padding: [6.0, 4.0, 6.0, 4.0],
+          hoverColor: 0x22FFFFFF,
+          onTap: event "act" { a: "zoom:caber" },
+          child: SizedBox(
+            width: 38.0,
+            child: Text(text: data.zoom.label, textAlign: "center", style: { fontSize: 11.5, fontWeight: "w600", color: 0xFFF4F1EA }),
+          ),
+        ),
+      ),
+      IconButton(icon: "add", tooltip: "aproximar", color: 0xFFF4F1EA, disabled: data.zoom.maximum, onPressed: event "act" { a: "zoom:+" }),
+    ],
+  ),
+);
+
+widget Plan = SizedBox(
+  width: data.scene.w,
+  height: data.scene.h,
+  child: Stack(
+    children: [
+      Positioned(start: 0.0, top: 0.0, child: Svg(svg: data.scene.svg, width: data.scene.w, height: data.scene.h)),
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        width: data.scene.w,
+        height: data.scene.h,
+        child: Container(duration: 3000, color: data.light.overlay),
+      ),
+      ...for w in data.windows:
+        Glass(w: w),
+      ...for s in data.screens:
+        Glow(s: s),
+      ...for s in data.screens:
+        Screen(s: s),
+      ...for b in data.boards:
+        Board(b: b),
+      ...for k in data.desks:
+        Desk(k: k),
+      ...for l in data.labels:
+        Plaque(l: l),
+      Inbox(i: data.inbox),
+      Door(d: data.door),
+      Punch(p: data.punch),
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Stack(
+          children: [
+            ...for n in data.notes:
+              Note(n: n),
+          ],
+        ),
+      ),
+      // Os bonecos e os efeitos, cada lista na sua camada: na mesma `Stack`, o
+      // Flutter casa os filhos pela posição, e um boneco a mais herdava o
+      // `Positioned` do primeiro efeito, nascendo do tamanho dele (40x14) e
+      // crescendo até o seu, com o conteúdo vazando no caminho.
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Stack(
+          children: [
+            ...for a in data.agents:
+              Agent(a: a),
+          ],
+        ),
+      ),
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Stack(
+          children: [
+            ...for e in data.effects:
+              Effect(e: e),
+          ],
+        ),
+      ),
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Decor(),
+      ),
+    ],
+  ),
+);
+
+// --- arrumar os móveis --------------------------------------------------------------
+
+// As vagas e os móveis, cada lista na sua camada (pelo mesmo motivo dos bonecos).
+widget Decor = switch data.decor.on {
+  true: Stack(
+    children: [
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Container(color: 0x33000000),
+      ),
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Stack(
+          children: [
+            ...for v in data.decor.slots:
+              Slot(v: v),
+          ],
+        ),
+      ),
+      Positioned(
+        start: 0.0,
+        top: 0.0,
+        end: 0.0,
+        bottom: 0.0,
+        child: Stack(
+          children: [
+            ...for m in data.decor.items:
+              Movable(m: m),
+          ],
+        ),
+      ),
+    ],
+  ),
+  default: SizedBox(),
+};
+
+// Uma vaga: acende quando um móvel da sala dela está no ar.
+widget Slot = Positioned(
+  start: args.v.x,
+  top: args.v.y,
+  width: 16.0,
+  height: 16.0,
+  child: DropTarget(
+    id: args.v.id,
+    radius: 2.0,
+    color: 0x14FFFFFF,
+    hoverColor: 0x55FFFFFF,
+    onDrop: event "act" { a: "movel" },
+    child: SizedBox(width: 16.0, height: 16.0),
+  ),
+);
+
+// Um vaso ou uma luminária: arraste pra outra vaga da sala (em cima de outro, os dois trocam).
+widget Movable = Positioned(
+  start: args.m.x,
+  top: args.m.y,
+  width: 16.0,
+  height: 32.0,
+  child: Tooltip(
+    message: args.m.tip,
+    child: Draggable(
+      payload: args.m.payload,
+      targets: args.m.targets,
+      width: 32.0,
+      feedback: Svg(svg: args.m.svg, width: 32.0, height: 64.0),
+      child: Container(
+        width: 16.0,
+        height: 32.0,
+        decoration: { type: "box", color: 0x18FFFFFF, borderRadius: [{ x: 2.0 }], border: [{ color: 0xCCF2D15C, width: 0.8 }] },
+      ),
+    ),
+  ),
+);
+
+// --- o topo -------------------------------------------------------------------------
+
+widget Head = Padding(
+  padding: [18.0, 14.0, 12.0, 10.0],
+  child: Row(
+    children: [
+      Container(
+        width: 34.0,
+        height: 34.0,
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 9.0 }] },
+        child: Center(child: Glyph(icon: "icons/escritorio.svg", size: 19.0, color: data.theme.accent)),
+      ),
+      SizedBox(width: 12.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: data.head.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.5, fontWeight: "w700", color: data.theme.fg }),
+            SizedBox(height: 2.0),
+            Text(text: data.head.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+          ],
+        ),
+      ),
+      ...for c in data.head.chips:
+        Padding(
+          padding: [6.0, 0.0, 0.0, 0.0],
+          child: Container(
+            padding: [8.0, 3.0, 9.0, 3.0],
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 20.0 }] },
+            child: Row(
+              mainAxisSize: "min",
+              children: [
+                Container(width: 7.0, height: 7.0, decoration: { type: "box", color: c.color, shape: "circle" }),
+                SizedBox(width: 6.0),
+                Text(text: c.text, style: { fontSize: 11.5, color: data.theme.fg }),
+              ],
+            ),
+          ),
+        ),
+      SizedBox(width: 6.0),
+      Anchored(id: "chamar", child: IconButton(icon: "add", tooltip: "chamar um claude", onPressed: event "act" { a: "chamar" })),
+      Anchored(id: "daily", child: IconButton(icon: "calendar", tooltip: "daily: a última (ou outra) pra ler, e o fazer a daily, que junta todo mundo na sala de reunião", onPressed: event "act" { a: "daily" })),
+      IconButton(
+        icon: "check",
+        tooltip: "selecionar bonecos pra mandar a mesma mensagem a vários",
+        color: switch data.selection.on { true: data.theme.accent, default: data.theme.dim },
+        onPressed: event "act" { a: "selecionar" },
+      ),
+      Decorating(),
+      MenuButton(
+        icon: "palette",
+        tooltip: "o tema e os móveis",
+        menu: data.head.themeMenu,
+        onMenu: event "act" {},
+      ),
+      MenuButton(
+        icon: "pets",
+        tooltip: "o bicho do escritório",
+        menu: data.head.petMenu,
+        onMenu: event "act" {},
+      ),
+      IconButton(icon: "refresh", tooltip: "reler as sessões e pôr cada um no seu lugar", onPressed: event "act" { a: "atualizar" }),
+    ],
+  ),
+);
+
+// Arrumando os móveis: o aviso e o "pronto", no topo.
+widget Decorating = switch data.head.decorating {
+  true: Padding(
+    padding: [6.0, 0.0, 4.0, 0.0],
+    child: Pressable(
+      radius: 14.0,
+      color: data.theme.accent,
+      padding: [10.0, 4.0, 11.0, 5.0],
+      onTap: event "act" { a: "moveis" },
+      child: Row(
+        mainAxisSize: "min",
+        children: [
+          Glyph(icon: "check", size: 14.0, color: data.theme.onAccent),
+          SizedBox(width: 5.0),
+          Text(text: "arraste os vasos e as luminárias · pronto", style: { fontSize: 11.5, fontWeight: "w600", color: data.theme.onAccent }),
+        ],
+      ),
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// --- a planta -----------------------------------------------------------------------
+
+widget Screen = Positioned(
+  start: args.s.x,
+  top: args.s.y,
+  width: 14.0,
+  height: 8.0,
+  child: Container(duration: 500, color: args.s.color),
+);
+
+// O vidro da janela, na cor da hora.
+widget Glass = Positioned(
+  start: args.w.x,
+  top: args.w.y,
+  width: 20.0,
+  height: 12.0,
+  child: Container(
+    duration: 3000,
+    color: data.light.glass,
+    child: Align(
+      alignment: { x: 0.0, y: 0.0 },
+      child: Container(width: 2.0, height: 12.0, color: 0xFF2F2A40),
+    ),
+  ),
+);
+
+// A luminária de quem está na mesa, de noite: uma mancha de luz quente.
+widget Glow = Positioned(
+  start: args.s.gx,
+  top: args.s.gy,
+  width: 40.0,
+  height: 34.0,
+  child: Container(duration: 2000, decoration: { type: "box", color: args.s.glow, borderRadius: [{ x: 16.0 }] }),
+);
+
+// De onde um modal sai (o chat cresce a partir do boneco): o `Anchor` da
+// Maestria, numa que o tem; numa de antes, só o que está dentro.
+widget Anchored = switch data.anchors {
+  true: Anchor(id: args.id, child: args.child),
+  default: args.child,
+};
+
+// Uma mesa vazia: o clique chama um claude pra sala dela.
+widget Desk = Positioned(
+  start: args.k.x,
+  top: args.k.y,
+  width: 32.0,
+  height: 24.0,
+  child: switch args.k.on {
+    true: Tooltip(
+      message: args.k.tip,
+      child: Pressable(
+        radius: 3.0,
+        hoverColor: 0x22FFFFFF,
+        onTap: event "act" { a: args.k.action },
+        child: Anchored(id: args.k.anchor, child: SizedBox(width: 32.0, height: 24.0)),
+      ),
+    ),
+    default: SizedBox(),
+  },
+);
+
+// O quadro branco: de quem é a lista, quantos já foram, a barra e o que está
+// sendo feito agora. O que é cada item fica no tooltip; o clique vai pra sessão.
+widget Board = Positioned(
+  start: args.b.x,
+  top: args.b.y,
+  width: 58.0,
+  height: 24.0,
+  child: switch args.b.on {
+    true: Tooltip(
+      message: args.b.tip,
+      child: Pressable(
+        onTap: event "act" { a: args.b.action },
+        child: Padding(
+          padding: [2.5, 1.5, 2.5, 1.5],
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              Row(
+                children: [
+                  Expanded(child: Text(text: args.b.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 4.5, fontWeight: "w700", color: 0xFF2A3A6B })),
+                  Text(text: args.b.count, style: { fontSize: 4.5, fontWeight: "w700", color: 0xFF2A3A6B }),
+                ],
+              ),
+              SizedBox(height: 1.5),
+              Container(
+                height: 2.5,
+                color: 0xFFD9DCE6,
+                child: Align(
+                  alignment: { x: -1.0, y: 0.0 },
+                  child: Container(duration: 600, width: args.b.bar, height: 2.5, color: 0xFF3FA864),
+                ),
+              ),
+              SizedBox(height: 1.5),
+              Text(text: args.b.current, maxLines: 2, overflow: "ellipsis", style: { fontSize: 4.0, color: 0xFFC0392B, height: 1.15 }),
+            ],
+          ),
+        ),
+      ),
+    ),
+    default: SizedBox(),
+  },
+);
+
+// O que sobe e some: aparece no lugar e, no envio seguinte, vai pra cima
+// apagando, no tempo que o plugin mandar.
+widget Effect = Positioned(
+  start: args.e.x,
+  top: args.e.y,
+  width: 40.0,
+  height: 14.0,
+  duration: args.e.ms,
+  curve: "easeOut",
+  child: Opacity(
+    opacity: args.e.opacity,
+    duration: args.e.ms,
+    child: Center(child: Text(text: args.e.text, style: { fontSize: args.e.size, fontWeight: "w800", color: args.e.color })),
+  ),
+);
+
+widget Plaque = Positioned(
+  start: args.l.x,
+  top: args.l.y,
+  child: Container(
+    padding: [3.0, 1.0, 3.0, 1.5],
+    decoration: { type: "box", color: 0xFF2A2438, borderRadius: [{ x: 2.0 }] },
+    child: Text(text: args.l.text, style: { fontSize: 6.0, fontWeight: "w700", color: 0xFFF4F1EA }),
+  ),
+);
+
+// Um boneco: o balão em cima, o sprite e o nome embaixo. A caixa é larga pro
+// balão caber; o que é clicável é só o boneco.
+widget Agent = Positioned(
+  start: args.a.x,
+  top: args.a.y,
+  width: 112.0,
+  height: 58.0,
+  duration: args.a.ms,
+  curve: "linear",
+  child: switch args.a.on {
+    true: Column(
+      crossAxisAlignment: "center",
+      children: [
+        SizedBox(
+          height: 22.0,
+          child: Align(alignment: { x: 0.0, y: 1.0 }, child: Bubble(b: args.a.bubble)),
+        ),
+        Tooltip(
+          message: args.a.tip,
+          child: Pressable(
+            onTap: event "act" { a: args.a.action },
+            menu: args.a.menu,
+            onMenu: event "act" {},
+            child: Anchored(id: args.a.anchor, child: Picked(a: args.a)),
+          ),
+        ),
+        SizedBox(height: 1.0),
+        Tag(a: args.a),
+      ],
+    ),
+    default: SizedBox(),
+  },
+);
+
+widget Body = switch data.sprites {
+  true: Sprite(
+    sheet: args.a.sheet,
+    columns: 4,
+    rows: args.a.rows,
+    row: args.a.row,
+    frames: args.a.frames,
+    fps: args.a.fps,
+    flip: args.a.flip,
+    paused: args.a.paused,
+    width: 16.0,
+    height: 24.0,
+  ),
+  // Sem o `Sprite` (uma Maestria de antes): um bloquinho da cor da camisa.
+  default: SizedBox(
+    width: 16.0,
+    height: 24.0,
+    child: Padding(
+      padding: [3.0, 4.0, 3.0, 0.0],
+      child: Container(
+        decoration: { type: "box", color: args.a.shirt, borderRadius: [{ x: 3.0 }], border: [{ color: 0xFF2A1F2D, width: 1.0 }] },
+      ),
+    ),
+  ),
+};
+
+widget Bubble = switch args.b.on {
+  true: Container(
+    padding: [3.0, 1.0, 3.0, 1.5],
+    constraints: { maxWidth: 110.0 },
+    decoration: { type: "box", color: args.b.bg, borderRadius: [{ x: 3.0 }], border: [{ color: 0xFF2A1F2D, width: 0.6 }] },
+    child: Text(text: args.b.text, maxLines: 2, overflow: "ellipsis", style: { fontSize: 6.0, fontWeight: "w600", color: args.b.fg, height: 1.15 }),
+  ),
+  default: SizedBox(),
+};
+
+widget Tag = switch args.a.showName {
+  true: Container(
+    padding: [2.0, 0.5, 2.5, 0.8],
+    constraints: { maxWidth: 88.0 },
+    decoration: { type: "box", color: 0xB31C1726, borderRadius: [{ x: 2.0 }] },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Container(width: 3.0, height: 3.0, decoration: { type: "box", color: args.a.tone, shape: "circle" }),
+        SizedBox(width: 2.0),
+        Flexible(
+          child: Text(text: args.a.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 5.0, color: 0xFFF4F1EA }),
+        ),
+        Battery(b: args.a.battery),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// A bateria do contexto, do lado do nome: cheia no começo da conversa,
+// esvaziando conforme ela enche (amarela da metade pra baixo, vermelha no fim).
+widget Battery = switch args.b.on {
+  true: Padding(
+    padding: [2.5, 0.0, 0.0, 0.0],
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Container(
+          width: 8.0,
+          height: 4.0,
+          padding: [0.5, 0.5, 0.5, 0.5],
+          decoration: { type: "box", border: [{ color: 0xFFF4F1EA, width: 0.5 }], borderRadius: [{ x: 0.8 }] },
+          child: Align(
+            alignment: { x: -1.0, y: 0.0 },
+            child: Container(duration: 600, width: args.b.w, height: 2.5, color: args.b.color),
+          ),
+        ),
+        Container(width: 0.8, height: 1.8, color: 0xFFF4F1EA),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// O boneco marcado na seleção ganha a moldura amarela.
+widget Picked = switch args.a.selected {
+  true: Container(
+    decoration: { type: "box", color: 0x33F2D15C, borderRadius: [{ x: 3.0 }], border: [{ color: 0xFFF2D15C, width: 0.8 }] },
+    child: Body(a: args.a),
+  ),
+  default: Body(a: args.a),
+};
+
+// --- a bandeja, o ponto e os recados ------------------------------------------------
+
+// A caixa de entrada, na sua mesa: um papel por claude que espera você (o
+// vermelho é a permissão, o amarelo a pergunta, o verde o "pronto"), e o
+// número no canto. O clique abre o primeiro, e o chat leva ao próximo.
+widget Inbox = switch args.i.on {
+  true: Positioned(
+    start: args.i.x,
+    top: args.i.y,
+    width: 10.0,
+    height: 10.0,
+    child: Tooltip(
+      message: args.i.tip,
+      child: Pressable(
+        radius: 1.5,
+        hoverColor: 0x33FFFFFF,
+        onTap: event "act" { a: args.i.action },
+        child: Stack(
+          children: [
+            ...for p in args.i.papers:
+              Positioned(start: 1.5, top: p.y, child: Container(width: 7.0, height: 2.5, decoration: { type: "box", color: 0xFFF4F1EA, border: [{ color: p.color, width: 0.6 }] })),
+            Positioned(start: 0.5, top: 7.0, child: Container(width: 9.0, height: 2.5, color: 0xFF8A5A3B)),
+            Positioned(start: 0.5, top: 6.6, child: Container(width: 9.0, height: 0.6, color: 0xFFA36D48)),
+            switch args.i.count {
+              "": SizedBox(),
+              default: Positioned(
+                end: 0.0,
+                top: 0.0,
+                child: Container(
+                  padding: [1.2, 0.0, 1.2, 0.2],
+                  decoration: { type: "box", color: 0xFFE5534B, borderRadius: [{ x: 2.0 }] },
+                  child: Text(text: args.i.count, style: { fontSize: 3.6, fontWeight: "w800", color: 0xFFFFFFFF }),
+                ),
+              ),
+            },
+          ],
+        ),
+      ),
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// A porta da rua: o clique é o fim do expediente (o resumo do dia, na sala de reunião).
+widget Door = switch args.d.on {
+  true: Positioned(
+    start: args.d.x,
+    top: args.d.y,
+    width: 16.0,
+    height: 16.0,
+    child: Tooltip(
+      message: args.d.tip,
+      child: Pressable(
+        radius: 2.0,
+        hoverColor: 0x44F2D15C,
+        onTap: event "act" { a: "expediente" },
+        child: Anchored(id: "porta", child: SizedBox(width: 16.0, height: 16.0)),
+      ),
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// O relógio de ponto, na parede da sua sala: o tempo e os tokens do dia.
+widget Punch = switch args.p.on {
+  true: Positioned(
+    start: args.p.x,
+    top: args.p.y,
+    width: 30.0,
+    height: 17.0,
+    child: Tooltip(
+      message: args.p.tip,
+      child: Container(
+        padding: [1.5, 1.2, 1.5, 1.2],
+        decoration: { type: "box", color: 0xFF2A2438, borderRadius: [{ x: 1.5 }], border: [{ color: 0xFF8B8FA3, width: 0.8 }] },
+        child: Container(
+          color: 0xFF14261C,
+          child: Column(
+            mainAxisAlignment: "center",
+            children: [
+              Text(text: args.p.time, maxLines: 1, style: { fontSize: 5.0, fontWeight: "w800", color: 0xFF7FE0A0 }),
+              Text(text: args.p.tokens, maxLines: 1, style: { fontSize: 3.6, color: 0xFFB8E8C6 }),
+            ],
+          ),
+        ),
+      ),
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// O papel que um ajudante deixou na mesa: o clique abre o que ele respondeu.
+widget Note = Positioned(
+  start: args.n.x,
+  top: args.n.y,
+  width: 8.0,
+  height: 8.0,
+  child: Tooltip(
+    message: args.n.tip,
+    child: Pressable(
+      radius: 1.0,
+      hoverColor: 0x33FFFFFF,
+      onTap: event "act" { a: args.n.action },
+      child: Stack(
+        children: [
+          Positioned(start: 0.5, top: 1.0, child: Container(width: 6.0, height: 6.5, decoration: { type: "box", color: 0xFFFFF7D6, border: [{ color: 0xFFC9A36B, width: 0.5 }] })),
+          Positioned(start: 1.5, top: 2.6, child: Container(width: 4.0, height: 0.5, color: 0xFF8B8799)),
+          Positioned(start: 1.5, top: 4.0, child: Container(width: 3.0, height: 0.5, color: 0xFF8B8799)),
+          Positioned(start: 1.5, top: 5.4, child: Container(width: 3.5, height: 0.5, color: 0xFF8B8799)),
+          switch args.n.count {
+            "": SizedBox(),
+            default: Positioned(
+              end: 0.0,
+              top: 0.0,
+              child: Container(
+                padding: [1.0, 0.0, 1.0, 0.2],
+                decoration: { type: "box", color: 0xFF4E8AD1, borderRadius: [{ x: 2.0 }] },
+                child: Text(text: args.n.count, style: { fontSize: 3.4, fontWeight: "w800", color: 0xFFFFFFFF }),
+              ),
+            ),
+          },
+        ],
+      ),
+    ),
+  ),
+);
+
+// A barra da seleção: quantos estão marcados, marcar todos e mandar.
+widget Selection = switch data.selection.on {
+  true: Padding(
+    padding: [18.0, 0.0, 14.0, 8.0],
+    child: Anchored(
+      id: "selecao",
+      child: Container(
+        padding: [12.0, 6.0, 6.0, 6.0],
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 10.0 }], border: [{ color: 0xFFF2D15C, width: 1.0 }] },
+        child: Row(
+          children: [
+            Glyph(icon: "check", size: 15.0, color: 0xFFF2D15C),
+            SizedBox(width: 8.0),
+            Expanded(child: Text(text: data.selection.text, style: { fontSize: 12.0, color: data.theme.fg })),
+            Pressable(
+              radius: 8.0,
+              hoverColor: data.theme.hover,
+              padding: [10.0, 5.0, 10.0, 5.0],
+              onTap: event "act" { a: "sel:todos" },
+              child: Text(text: "todos", style: { fontSize: 12.0, color: data.theme.fg }),
+            ),
+            SizedBox(width: 4.0),
+            switch data.selection.canSend {
+              true: Pressable(
+                radius: 8.0,
+                color: data.theme.accent,
+                padding: [12.0, 5.0, 12.0, 6.0],
+                onTap: event "act" { a: "sel:mandar" },
+                child: Row(
+                  mainAxisSize: "min",
+                  children: [
+                    Glyph(icon: "send", size: 13.0, color: data.theme.onAccent),
+                    SizedBox(width: 5.0),
+                    Text(text: "mandar mensagem", style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.onAccent }),
+                  ],
+                ),
+              ),
+              default: SizedBox(),
+            },
+            SizedBox(width: 4.0),
+            IconButton(icon: "close", tooltip: "parar de selecionar", onPressed: event "act" { a: "selecionar" }),
+          ],
+        ),
+      ),
+    ),
+  ),
+  default: SizedBox(),
+};

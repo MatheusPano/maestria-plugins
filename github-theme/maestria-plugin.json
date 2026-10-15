@@ -1,0 +1,15 @@
+{
+  "id": "maestria.github-theme",
+  "name": "GitHub",
+  "version": "1.0.0",
+  "description": "Os temas GitHub Dark e GitHub Dark Dimmed, nas cores do Primer (o Light já vem na Maestria).",
+  "icon": "icons/github-theme.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "contributes": {
+    "themes": [
+      { "path": "themes/dark.json" },
+      { "path": "themes/dark-dimmed.json" }
+    ]
+  }
+}

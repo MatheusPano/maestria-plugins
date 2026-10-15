@@ -1,0 +1,31 @@
+{
+  "id": "tokyo-night",
+  "label": "Tokyo Night",
+  "dark": true,
+  "canvas": "#0F0F14",
+  "bg": "#1A1B26",
+  "bgSidebar": "#16161E",
+  "bgHover": "#292E42",
+  "bgActive": "#3B4261",
+  "border": "#292E42",
+  "fg": "#C0CAF5",
+  "fgDim": "#A9B1D6",
+  "fgFaint": "#565F89",
+  "accent": "#7AA2F7",
+  "green": "#9ECE6A",
+  "yellow": "#E0AF68",
+  "red": "#F7768E",
+  "purple": "#BB9AF7",
+  "ansi": {
+    "black": "#414868",
+    "red": "#F7768E",
+    "green": "#9ECE6A",
+    "yellow": "#E0AF68",
+    "blue": "#7AA2F7",
+    "magenta": "#BB9AF7",
+    "cyan": "#7DCFFF",
+    "white": "#A9B1D6",
+    "brightBlack": "#565F89",
+    "brightWhite": "#C0CAF5"
+  }
+}

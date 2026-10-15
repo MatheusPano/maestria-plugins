@@ -1,0 +1,92 @@
+// A aba da lateral: quem está em cada sala, com a bolinha do status, o botão que
+// abre o escritório e o que chama um claude novo. Clicar numa linha abre a
+// janelinha de chat daquele claude.
+
+import core.widgets;
+import maestria;
+
+widget root = SingleChildScrollView(
+  primary: false, // cada área rolável com o seu controlador
+  padding: [8.0, 6.0, 8.0, 12.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Pressable(
+        radius: 8.0,
+        color: data.theme.active,
+        hoverColor: data.theme.hover,
+        padding: [10.0, 8.0, 10.0, 8.0],
+        onTap: event "act" { a: "abrir" },
+        child: Row(
+          children: [
+            Glyph(icon: "icons/escritorio.svg", size: 16.0, color: data.theme.accent),
+            SizedBox(width: 9.0),
+            Expanded(child: Text(text: "abrir o escritório", style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg })),
+          ],
+        ),
+      ),
+      SizedBox(height: 4.0),
+      Anchored(id: "chamar-lateral", child: Pressable(
+        radius: 8.0,
+        hoverColor: data.theme.hover,
+        padding: [10.0, 7.0, 10.0, 7.0],
+        onTap: event "act" { a: "chamar" },
+        child: Row(
+          children: [
+            Glyph(icon: "add", size: 16.0, color: data.theme.dim),
+            SizedBox(width: 9.0),
+            Expanded(child: Text(text: "chamar um claude", style: { fontSize: 12.5, color: data.theme.fg })),
+          ],
+        ),
+      )),
+      SizedBox(height: 8.0),
+      switch data.empty {
+        true: Padding(
+          padding: [6.0, 8.0, 6.0, 0.0],
+          child: Text(text: "nenhum claude aberto. Abra uma sessão e ele entra pela porta.", style: { fontSize: 11.5, color: data.theme.faint, height: 1.4 }),
+        ),
+        default: SizedBox(),
+      },
+      ...for r in data.rooms:
+        Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            Padding(
+              padding: [6.0, 10.0, 6.0, 4.0],
+              child: Text(text: r.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 10.5, fontWeight: "w700", color: data.theme.faint, letterSpacing: 0.6 }),
+            ),
+            ...for a in r.agents:
+              Anchored(id: a.anchor, child: Pressable(
+                radius: 6.0,
+                hoverColor: data.theme.hover,
+                padding: [8.0, 5.0, 8.0, 5.0],
+                onTap: event "act" { a: a.action },
+                menu: a.menu,
+                onMenu: event "act" {},
+                child: Row(
+                  children: [
+                    Container(width: 8.0, height: 8.0, decoration: { type: "box", color: a.tone, shape: "circle" }),
+                    SizedBox(width: 9.0),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: "start",
+                        children: [
+                          Text(text: a.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, color: data.theme.fg }),
+                          Text(text: a.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, color: data.theme.dim }),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              )),
+          ],
+        ),
+    ],
+  ),
+);
+
+// De onde um modal sai: o `Anchor` da Maestria, numa que o tem.
+widget Anchored = switch data.anchors {
+  true: Anchor(id: args.id, child: args.child),
+  default: args.child,
+};

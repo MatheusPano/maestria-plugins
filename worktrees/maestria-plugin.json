@@ -1,0 +1,75 @@
+{
+  "id": "maestria.worktrees",
+  "name": "Worktrees",
+  "version": "1.0.0",
+  "description": "Todas as worktrees dos repositórios da lateral num lugar só, cada uma com a descrição da branch (git branch --edit-description), os commits à frente da base, o que falta commitar e se tem um claude nela. A descrição de uma branch com TASK#/BUG# vem sozinha do título da tarefa no Wiboor.",
+  "icon": "icons/worktrees.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:lista",
+    "onCommand:descrever",
+    "onCommand:limpar"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      {
+        "id": "lista",
+        "title": "worktrees: abrir uma worktree…",
+        "key": "meta+alt+w"
+      },
+      {
+        "id": "descrever",
+        "title": "worktrees: descrever a branch do painel em foco…"
+      },
+      {
+        "id": "limpar",
+        "title": "worktrees: limpar as já mergeadas…"
+      }
+    ],
+    "settings": [
+      {
+        "id": "wiboor",
+        "type": "boolean",
+        "default": true,
+        "title": "descrição pelo título do Wiboor",
+        "description": "uma branch com TASK#123 ou BUG#123 e sem descrição ganha o título da tarefa, gravado no .git/config. Usa a chave de $WIBOOR_API_KEY ou do ~/.config/wiboor/config.json."
+      },
+      {
+        "id": "onlyWithWorktrees",
+        "type": "boolean",
+        "default": true,
+        "title": "só repositórios com worktree",
+        "description": "esconde os repositórios da lateral que só têm a pasta principal."
+      },
+      {
+        "id": "mergeInto",
+        "type": "string",
+        "default": "",
+        "title": "branches onde as worktrees entram",
+        "description": "pra limpar as mergeadas: uma worktree conta como mergeada quando o último commit dela já está numa destas (main, develop — separadas por vírgula). Vale pros repositórios sem escolha própria; vazio pergunta na primeira limpeza de cada um e guarda a resposta no .git/config dele (worktrees.mergeInto)."
+      },
+      {
+        "id": "poll",
+        "type": "number",
+        "default": 10,
+        "title": "conferir a cada (segundos)",
+        "description": "enquanto a aba ou a janela de uma worktree está aberta. 0 desliga: aí só atualiza pelo botão."
+      },
+      {
+        "id": "commits",
+        "type": "number",
+        "default": 10,
+        "title": "commits mostrados na janela de uma worktree"
+      }
+    ]
+  }
+}

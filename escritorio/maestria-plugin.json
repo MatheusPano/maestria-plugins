@@ -1,0 +1,210 @@
+{
+  "id": "maestria.escritorio",
+  "name": "Escritório",
+  "version": "1.0.0",
+  "description": "Os claudes abertos como bonequinhos de pixel art num escritório, como o Pixel Agents: uma sala por repositório, cada um na sua mesa digitando ou lendo conforme a ferramenta, acenando quando precisa de você, tomando café na sala do descanso quando fica à toa e saindo pela porta quando a sessão fecha. Os subagentes entram como ajudantes de crachá e, no fim, vão até a mesa de quem os chamou contar como foi. Os da mesma tarefa se juntam na sala do repositório, quem lê outro repositório vai até a sala dele, o recado de outra sessão é levado por quem mandou (ou por um mensageiro), os vasos de cada sala crescem com os commits da semana, e dá pra escolher o tema e arrastar os móveis. Quem bate cabeça ganha uma nuvem de chuva, a bateria de cada um mostra o contexto, o relógio de ponto conta o dia, a caixa de entrada na sua mesa junta quem espera você, dá pra mandar a mesma mensagem a vários, e o ajudante deixa um recado na mesa de quem o chamou. O push vira festa, o teste quebrado vira drama, a lista do Claude vai pro quadro branco da sala, o contexto quase cheio dá suor, o pedido que você manda é levado por você até a mesa, e o bicho do escritório (gato ou cachorro) anda por aí. Clicar num boneco abre uma janelinha de chat com ele, sem sair do escritório (dá pra responder as perguntas e dar ou negar permissão de lá, e pôr ele pra dormir), e dá pra chamar um claude novo de lá mesmo.",
+  "icon": "icons/escritorio.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:escritorio",
+    "onCommand:chamar",
+    "onSession"
+  ],
+  "permissions": [
+    "hooks",
+    "terminal.write",
+    "sessions.create",
+    "sessions.close"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "screen": {
+      "home": "escritorio"
+    },
+    "commands": [
+      {
+        "id": "escritorio",
+        "title": "escritório: abrir…",
+        "key": "meta+alt+e",
+        "icon": "icons/escritorio.svg",
+        "sidebar": true
+      },
+      {
+        "id": "chamar",
+        "title": "escritório: chamar um claude…"
+      }
+    ],
+    "settings": [
+      {
+        "id": "coffee",
+        "type": "number",
+        "default": 900,
+        "title": "ir sozinho pra sala do descanso depois de (segundos parado)",
+        "description": "quanto tempo um claude parado de verdade (sem nenhum sinal da sessão, nem de um ajudante dela) fica na mesa antes de levantar sozinho pro café. 0: só vai quando você manda (o \"descansar\" do chat). O padrão é 15 minutos."
+      },
+      {
+        "id": "tools",
+        "type": "boolean",
+        "default": true,
+        "title": "balão com a ferramenta",
+        "description": "o que cada um está fazendo (editando store.dart, $ npm test) num balão em cima da cabeça. Desligado, só os pedidos pra você aparecem."
+      },
+      {
+        "id": "names",
+        "type": "boolean",
+        "default": true,
+        "title": "nome embaixo de cada boneco",
+        "description": "o título da sessão, com a bolinha do status."
+      },
+      {
+        "id": "office",
+        "type": "boolean",
+        "default": true,
+        "title": "a sua sala no escritório",
+        "description": "você mora no escritório: uma sala sua perto da porta, com a sua mesa, de onde você sai pra levar os pedidos e pra onde volta. Clicando no seu boneco, você muda o nome, as cores e o acessório. Desligado, você só aparece pra entregar um pedido e vai embora."
+      },
+      {
+        "id": "askVisits",
+        "type": "boolean",
+        "default": true,
+        "title": "quem tem uma pergunta vai até a sua sala",
+        "description": "quando um claude faz uma pergunta (o AskUserQuestion), ele levanta, vai até a sua sala e espera do lado da sua mesa, com a pergunta no balão, até você responder. Precisa da sua sala ligada; desligado, ele acena da mesa dele."
+      },
+      {
+        "id": "visits",
+        "type": "boolean",
+        "default": true,
+        "title": "você leva o pedido até a mesa",
+        "description": "quando você manda um pedido, um boneco seu sai da porta e o entrega na mesa daquele claude. Desligado, o pedido só aparece num balão."
+      },
+      {
+        "id": "holdPrompt",
+        "type": "boolean",
+        "default": false,
+        "title": "o claude só começa quando o pedido chega na mesa",
+        "description": "o que você manda pela janelinha de chat espera o seu boneco andar até a mesa e entregar; só aí vai pro terminal e o claude começa. Desligado, o pedido vai na hora e ele já vai trabalhando enquanto você caminha. Precisa do \"você leva o pedido até a mesa\" ligado e do escritório aberto; o que você digita direto no terminal vai sempre na hora."
+      },
+      {
+        "id": "pet",
+        "type": "select",
+        "default": "gato",
+        "options": [
+          {
+            "value": "gato",
+            "label": "gato"
+          },
+          {
+            "value": "cachorro",
+            "label": "cachorro"
+          },
+          {
+            "value": "nenhum",
+            "label": "nenhum"
+          }
+        ],
+        "title": "o bicho do escritório",
+        "description": "anda por aí, cochila (o gato em cima do teclado das mesas vazias, o cachorro no chão) e vai miar ou latir do lado de quem espera você há tempo demais. Um clique faz carinho. Dá pra trocar também no ícone de patinha da própria tela."
+      },
+      {
+        "id": "theme",
+        "type": "select",
+        "default": "classico",
+        "options": [
+          {
+            "value": "classico",
+            "label": "clássico"
+          },
+          {
+            "value": "aconchegante",
+            "label": "aconchegante"
+          },
+          {
+            "value": "moderno",
+            "label": "moderno"
+          },
+          {
+            "value": "espacial",
+            "label": "espacial"
+          }
+        ],
+        "title": "o tema do escritório",
+        "description": "as cores do chão, das paredes e dos móveis, e o que tem em volta do prédio: o jardim, ou o espaço (no espacial). Dá pra trocar também no ícone de paleta da própria tela, onde fica o \"arrumar os móveis\" (arrastar os vasos e as luminárias de cada sala)."
+      },
+      {
+        "id": "meetings",
+        "type": "boolean",
+        "default": true,
+        "title": "os da mesma tarefa se juntam",
+        "description": "os claudes da mesma tarefa (o TASK#123 ou BUG#45 da branch ou do nome da sessão) que ficam parados juntos vão até a mesa de quem terminou, na sala do repositório, e contam o que cada um fez. A sala de reunião (com dois claudes ou mais) é também a da daily, que a traz mesmo com um claude só."
+      },
+      {
+        "id": "daylight",
+        "type": "boolean",
+        "default": true,
+        "title": "dia e noite pelo relógio",
+        "description": "a luz das janelas segue a hora, e de noite o escritório escurece e as luminárias de quem trabalha acendem."
+      },
+      {
+        "id": "dailyTime",
+        "type": "string",
+        "default": "",
+        "title": "horário da daily",
+        "description": "ex.: 14:00. O resumo da daily (o \"fazer a daily\" e o ↻ da janela do \"daily\" do topo, ou a porta da rua) conta da daily anterior até agora: numa daily às 14h, a de terça vai de segunda 14h até a hora do resumo, e a de segunda, desde sexta 14h. Vazio: o resumo é do dia de hoje."
+      },
+      {
+        "id": "dailyRemind",
+        "type": "number",
+        "default": 10,
+        "title": "juntar a daily sozinha (minutos antes)",
+        "description": "com o horário da daily configurado, tantos minutos antes o resumo é escrito, todo mundo vai pra sala de reunião e cada um conta a sua parte. 0: só quando você aperta o \"fazer a daily\"."
+      },
+      {
+        "id": "dailyWeekends",
+        "type": "boolean",
+        "default": false,
+        "title": "daily também no fim de semana",
+        "description": "desligado, a daily de segunda conta desde a de sexta."
+      },
+      {
+        "id": "dailyModel",
+        "type": "select",
+        "default": "sonnet",
+        "options": [
+          {
+            "value": "haiku",
+            "label": "haiku (mais rápido)"
+          },
+          {
+            "value": "sonnet",
+            "label": "sonnet"
+          },
+          {
+            "value": "opus",
+            "label": "opus (mais caprichado)"
+          }
+        ],
+        "title": "modelo do resumo da daily",
+        "description": "o resumo é escrito por um claude -p, sem ferramentas e sem gravar sessão, com o que cada conversa fez no período."
+      },
+      {
+        "id": "dailyStyle",
+        "type": "string",
+        "default": "",
+        "title": "como você quer o texto da daily",
+        "description": "opcional. ex.: \"em inglês\", \"cite o número da tarefa\", \"bem informal\"."
+      },
+      {
+        "id": "rooms",
+        "type": "folders",
+        "default": [],
+        "title": "as salas do escritório",
+        "description": "as pastas da lateral que têm sala sempre, mesmo sem nenhum claude aberto nelas. As que não estão marcadas só ganham sala enquanto tem um claude trabalhando lá."
+      }
+    ]
+  }
+}

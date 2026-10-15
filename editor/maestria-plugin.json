@@ -1,0 +1,83 @@
+{
+  "id": "maestria.editor",
+  "name": "Editor",
+  "version": "0.1.0",
+  "description": "Edite código sem sair da Maestria, como no VS Code: a árvore da pasta na lateral (com o estado de cada arquivo no git), os arquivos em abas, cor de sintaxe, buscar e trocar no arquivo (⌘F), abrir pelo nome (⌘P) e buscar em todos (⇧⌘F). Quando o claude mexe num arquivo aberto, a aba recarrega sozinha.",
+  "icon": "icons/code.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:abrir",
+    "onCommand:arquivo",
+    "onCommand:buscar",
+    "onCommand:pasta-do-painel"
+  ],
+  "permissions": [
+    "sessions.create"
+  ],
+  "contributes": {
+    "sidebar": true,
+    "screen": {
+      "home": "abrir"
+    },
+    "commands": [
+      {
+        "id": "abrir",
+        "title": "editor: abrir",
+        "key": "meta+shift+e",
+        "icon": "icons/code.svg",
+        "sidebar": true
+      },
+      {
+        "id": "arquivo",
+        "title": "editor: abrir arquivo pelo nome…",
+        "key": "meta+p"
+      },
+      {
+        "id": "buscar",
+        "title": "editor: buscar nos arquivos…",
+        "key": "meta+shift+f"
+      },
+      {
+        "id": "pasta-do-painel",
+        "title": "editor: abrir a pasta deste painel"
+      }
+    ],
+    "settings": [
+      {
+        "id": "fontSize",
+        "group": "editor",
+        "type": "number",
+        "default": 13,
+        "title": "tamanho da letra"
+      },
+      {
+        "id": "wordWrap",
+        "group": "editor",
+        "type": "boolean",
+        "default": false,
+        "title": "quebrar as linhas compridas"
+      },
+      {
+        "id": "autoSave",
+        "group": "editor",
+        "type": "boolean",
+        "default": false,
+        "title": "salvar sozinho",
+        "description": "grava o arquivo logo depois de você parar de digitar, sem o ⌘S."
+      },
+      {
+        "id": "hide",
+        "group": "árvore",
+        "type": "string",
+        "default": ".git, .DS_Store",
+        "title": "esconder",
+        "description": "nomes que não aparecem na árvore nem no ⌘P, separados por vírgula. O que o .gitignore ignora aparece apagado."
+      }
+    ]
+  }
+}

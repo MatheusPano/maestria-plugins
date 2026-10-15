@@ -1,0 +1,15 @@
+{
+  "id": "maestria.rose-pine",
+  "name": "Rosé Pine",
+  "version": "1.0.0",
+  "description": "Os temas Rosé Pine e Rosé Pine Moon, com o destaque no rose (o Dawn já vem na Maestria).",
+  "icon": "icons/rose-pine.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "contributes": {
+    "themes": [
+      { "path": "themes/main.json" },
+      { "path": "themes/moon.json" }
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "id": "one-light",
+  "label": "One Light",
+  "dark": false,
+  "canvas": "#DBDBDC",
+  "bg": "#FAFAFA",
+  "bgSidebar": "#EAEAEB",
+  "bgHover": "#E5E5E6",
+  "bgActive": "#D0D0D1",
+  "border": "#DBDBDC",
+  "fg": "#383A42",
+  "fgDim": "#696C77",
+  "fgFaint": "#A0A1A7",
+  "accent": "#4078F2",
+  "green": "#50A14F",
+  "yellow": "#C18401",
+  "red": "#E45649",
+  "purple": "#A626A4",
+  "ansi": {
+    "black": "#383A42",
+    "red": "#E45649",
+    "green": "#50A14F",
+    "yellow": "#C18401",
+    "blue": "#4078F2",
+    "magenta": "#A626A4",
+    "cyan": "#0184BC",
+    "white": "#A0A1A7",
+    "brightBlack": "#696C77",
+    "brightYellow": "#986801",
+    "brightWhite": "#D0D0D1"
+  }
+}
