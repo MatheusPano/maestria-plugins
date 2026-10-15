@@ -39,6 +39,21 @@ const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest(
 
 const readManifest = (dir) => JSON.parse(readFileSync(join(dir, MANIFEST), 'utf8'));
 
+// Tema, recurso ou os dois, pelo mesmo critério do PluginManifest.kinds da
+// Maestria: temas declarados fazem um tema; processo, comandos, aba, tela,
+// configurações ou sugestões fazem um recurso.
+const kinds = (m) => {
+  const c = m.contributes ?? {};
+  const feature =
+    (typeof m.main === 'string' ? m.main.trim() !== '' : m.main?.length > 0) ||
+    c.commands?.length > 0 ||
+    c.settings?.length > 0 ||
+    Boolean(c.sidebar) ||
+    Boolean(c.screen) ||
+    c.suggestions != null;
+  return [...(c.themes?.length > 0 ? ['theme'] : []), ...(feature ? ['feature'] : [])];
+};
+
 // O que o catálogo mostra antes de instalar, igual pra plugins daqui e de fora.
 const summary = (m) => ({
   id: m.id,
@@ -48,6 +63,7 @@ const summary = (m) => ({
   author: m.author ?? '',
   maestria: m.maestria ?? 1,
   permissions: m.permissions ?? [],
+  kinds: kinds(m),
 });
 
 // As pastas da raiz que são plugins, em ordem.
