@@ -1120,11 +1120,14 @@ function sectionBlock(text, key, list, terms, filter) {
   return { type: 'section', text, count, collapsed: closed, action: `recolher:${key}` };
 }
 
-/** Manda a aba e o selo. Com a aba escondida também: ela aparece pronta. */
+/**
+ * Manda a aba. Com a aba escondida também: ela aparece pronta. O selo vai
+ * vazio, que é o que tira o número de conexões que uma versão anterior punha
+ * no ícone.
+ */
 async function pushSidebar() {
-  const count = state.live.size;
   try {
-    await mx.request('sidebar.update', { blocks: sidebarBlocks(), badge: count ? String(count) : null });
+    await mx.request('sidebar.update', { blocks: sidebarBlocks(), badge: '' });
   } catch (e) {
     // Uma Maestria sem a aba da lateral: a janela continua servindo.
     mx.log('sidebar.update:', e.message);

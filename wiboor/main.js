@@ -1586,9 +1586,11 @@ function sidebarBlocks() {
   return blocks;
 }
 
+// Sem número no ícone: as tarefas em andamento já estão na aba, e na faixa o
+// número só disputava o olho. Vazio tira o selo que uma versão anterior tenha
+// deixado.
 function badgeText() {
-  const n = state.mine.filter((t) => t.status === 'STARTED').length;
-  return n ? String(n) : '';
+  return '';
 }
 
 async function pushSidebar() {

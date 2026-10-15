@@ -1,7 +1,7 @@
 {
   "id": "maestria.docker",
   "name": "Docker",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Os containers como no OrbStack, na aba da lateral: os projetos do compose com a seta, o cubo colorido de cada imagem, parar, subir e remover sempre à mão. A janela de cada container tem Info, Stats ao vivo, os logs coloridos e um terminal dentro dele; a de cada projeto, os logs de todos juntos. Imagens, volumes e disco numa janela à parte.",
   "icon": "icons/docker.svg",
   "author": "Matheus Pano",

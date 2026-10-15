@@ -847,9 +847,10 @@ function legacySidebar() {
   return out;
 }
 
+// Sem número no ícone: quantos containers estão no ar é ruído na faixa, e a
+// aba já diz isso. Vazio tira o selo que uma versão anterior tenha deixado.
 function badgeText() {
-  const n = state.list.filter((c) => c.state === 'running').length;
-  return n ? String(n) : '';
+  return '';
 }
 
 /**
