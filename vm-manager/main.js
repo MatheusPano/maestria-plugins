@@ -29,7 +29,9 @@ const { startLoopback } = require('./lib/loopback');
 const { ApiError } = require('./lib/http');
 const { navFor, gate, initials, ROLE_LABEL, FORBIDDEN_TEXT } = require('./lib/nav');
 const { createPoller } = require('./lib/poller');
-const { vmsView, overviewView, detailWindowBlocks, destroyBlocks, createBusy } = require('./lib/vms');
+const { vmsView, overviewView, detailWindowBlocks, destroyBlocks, createBusy, flex } = require('./lib/vms');
+const { cephView, defaultPool } = require('./lib/storage');
+const bk = require('./lib/buckets');
 const cf = require('./lib/create-form');
 const { createCreateFlow } = require('./lib/create-flow');
 
@@ -338,7 +340,7 @@ async function updateWindow(viewId, { title, blocks } = {}) {
   try {
     const res = await mx.request('view.update', params);
     if (res && res.open === false) {
-      state.views.delete(viewId);
+      windowGone(viewId);
       return false;
     }
     return true;
@@ -348,8 +350,14 @@ async function updateWindow(viewId, { title, blocks } = {}) {
   }
 }
 
-async function closeWindow(viewId) {
+/** Uma janela de blocos que fechou (por nós ou pelo usuário): larga o que era só dela. */
+function windowGone(viewId) {
   state.views.delete(viewId);
+  forgetWindow(viewId);
+}
+
+async function closeWindow(viewId) {
+  windowGone(viewId);
   await mx.request('view.close', { viewId }).catch(() => {});
 }
 
@@ -398,6 +406,7 @@ function forgetAreas() {
   flow.abandon();
   create.gen++; // um catálogo que ainda chega é de quem saiu
   Object.assign(create, { form: null, options: null, bridge: '', loading: false, loadError: '', ip: freshIp(), errors: [], flowError: '', validating: false });
+  forgetStorage(); // Ceph, buckets, o "Novo bucket" e as credenciais (com as secret keys)
 }
 
 async function doLogout() {
@@ -787,6 +796,475 @@ on('create', async (arg, values) => {
 
 registerScreen('create', { open: () => openCreateWindow() });
 
+// Ceph (CephView.tsx). Carrega uma vez ao entrar: health, pools e lixeira juntos (o
+// erro do health some quieto, como na web), depois as imagens do maior pool rbd.
+// Sem polling. `ceph:pool:<nome>` troca o pool e recarrega as imagens.
+
+const freshCeph = () => ({
+  gen: 0, imagesGen: 0, health: '', pools: null, error: '', selected: '',
+  images: null, imagesError: '', loadingImages: false, imagesQuery: '', trash: null, trashError: '',
+});
+const cephState = freshCeph();
+
+async function loadImages(pool) {
+  const gen = ++cephState.imagesGen;
+  Object.assign(cephState, { selected: pool, images: null, imagesError: '', loadingImages: true, imagesQuery: '' });
+  await render();
+  let images = null;
+  let error = '';
+  try {
+    const list = await api().poolImages(pool);
+    images = Array.isArray(list) ? list : [];
+  } catch (e) {
+    if (!isUnauthorized(e)) error = errText(e);
+  }
+  if (gen !== cephState.imagesGen) return; // trocou de pool no meio
+  Object.assign(cephState, { images, imagesError: error, loadingImages: false });
+  await render();
+}
+
+async function loadCeph() {
+  const gen = ++cephState.gen;
+  cephState.imagesGen++;
+  Object.assign(cephState, { ...freshCeph(), gen, imagesGen: cephState.imagesGen });
+  const a = api();
+  const [health, pools, trash] = await Promise.allSettled([a.health(), a.pools(), a.trash()]);
+  if (gen !== cephState.gen) return; // saiu e entrou de novo
+  const ceph = health.status === 'fulfilled' && health.value && health.value.ceph;
+  cephState.health = (ceph && ceph.status) || '';
+  if (pools.status === 'fulfilled') {
+    cephState.pools = Array.isArray(pools.value) ? pools.value : [];
+  } else if (!isUnauthorized(pools.reason)) cephState.error = errText(pools.reason);
+  if (trash.status === 'fulfilled') cephState.trash = Array.isArray(trash.value) ? trash.value : [];
+  else if (!isUnauthorized(trash.reason)) cephState.trashError = errText(trash.reason);
+  const pool = cephState.pools ? defaultPool(cephState.pools) : '';
+  if (pool) await loadImages(pool);
+}
+
+function cephScreenView() {
+  const c = cephState;
+  const v = cephView({
+    health: c.health, pools: c.pools || [], selected: c.selected, images: c.images,
+    imagesQuery: c.imagesQuery, trash: c.trash, loadingImages: c.loadingImages, trashError: c.trashError,
+  });
+  return {
+    ...v,
+    error: c.error,
+    poolsLoading: c.pools === null && !c.error,
+    pools: v.pools.map((p) => ({ ...p, ...flex(p.width), apps: p.apps.map((text) => ({ text })), a: `ceph:pool:${p.name}` })),
+    images: {
+      ...v.images,
+      error: c.imagesError,
+      countText: Array.isArray(c.images) ? String(v.images.count) : '',
+      // Um campo por pool: trocar de pool começa a busca do zero, como na web.
+      searchId: `ceph.search.${c.selected}`,
+      rows: v.images.rows.map((r) => ({ ...r, ...flex(r.usedWidth), hasVmid: r.vmid !== '' })),
+    },
+    trash: { ...v.trash, countText: String(v.trash.count) },
+  };
+}
+
+on('ceph', async (arg, values) => {
+  const i = arg.indexOf(':');
+  const kind = i < 0 ? arg : arg.slice(0, i);
+  const rest = i < 0 ? '' : arg.slice(i + 1);
+  if (kind === 'pool') {
+    const name = rest || String(values.name || '');
+    const pool = (cephState.pools || []).find((p) => p.name === name);
+    // Só os pools rbd têm imagens; o mesmo pool de novo não recarrega (a web também não).
+    if (!pool || !(pool.applications || []).includes('rbd') || name === cephState.selected) return null;
+    return loadImages(name);
+  }
+  if (kind === 'search') {
+    cephState.imagesQuery = String(values.text === undefined ? '' : values.text);
+    return render();
+  }
+  return null;
+});
+
+registerScreen('ceph', {
+  load: () => loadCeph(),
+  view: () => cephScreenView(),
+});
+
+// Buckets (BucketsView.tsx). Carrega ao entrar e depois de criar um bucket; sem polling.
+// O "Novo bucket" (CreateBucketDialog.tsx) e as "Credenciais S3" (S3CredentialsDialog.tsx)
+// são janelas de blocos. A secret key só é buscada num "Revelar"/copiar de um admin, fica
+// num Map por janela (apagado quando ela fecha, no sair e na troca de url) e nunca vai
+// pro log nem pro `data` da janela principal.
+
+const freshBuckets = () => ({ gen: 0, buckets: null, error: '', query: '', sort: { key: 'bucket', dir: 'asc' } });
+const bucketsState = freshBuckets();
+const SORT_KEYS = new Set(Object.keys(bk.DEFAULT_DIR));
+
+async function loadBuckets() {
+  const gen = ++bucketsState.gen;
+  try {
+    const list = await api().buckets();
+    if (gen !== bucketsState.gen) return;
+    bucketsState.buckets = Array.isArray(list) ? list : [];
+    bucketsState.error = '';
+  } catch (e) {
+    if (gen !== bucketsState.gen) return;
+    if (!isUnauthorized(e)) bucketsState.error = errText(e);
+  }
+}
+
+const arrow = (dir) => (dir === 'asc' ? '↑' : dir === 'desc' ? '↓' : '');
+// Os flex das colunas (os mesmos, literais, nas linhas do storage.rfwtxt).
+const BUCKET_FLEX = { bucket: 28, owner: 14, objects: 10, used: 10, quota: 20, created: 10 };
+
+function bucketsScreenView(user) {
+  const v = bk.bucketsView(bucketsState, { admin: isAdmin(user) });
+  return {
+    ...v,
+    header: { newBucket: false, ...v.header },
+    columns: v.columns.map((col) => ({ ...col, flex: BUCKET_FLEX[col.key], active: col.dir !== '', arrow: arrow(col.dir), a: `bucket:sort:${col.key}` })),
+    rows: v.rows.map((r) => ({ ...r, ...flex(r.width), tenantText: r.tenant ? `${r.tenant}/` : '', a: `bucket:creds:${r.key}` })),
+  };
+}
+
+// --- "Novo bucket" ---------------------------------------------------------------------
+
+const NEW_BUCKET = 'bucket:new';
+const NEW_OWNER_HINT = 'Cria o usuário no RGW com uma chave S3 só dele. As credenciais aparecem logo depois de criar.';
+const freshNewBucket = () => ({ gen: 0, owners: null, error: '', errors: [], saving: false, form: { name: '', mode: 'existing', owner: '', newOwner: '' } });
+let newBucket = freshNewBucket();
+
+function mergeBucketValues(values) {
+  const f = newBucket.form;
+  const text = (v, cur) => (v === undefined ? cur : String(v).trim().toLowerCase());
+  newBucket.form = {
+    ...f,
+    name: text(values.name, f.name),
+    owner: values.owner === undefined ? f.owner : String(values.owner),
+    newOwner: text(values.newOwner, f.newOwner),
+  };
+}
+
+function newBucketBlocks() {
+  const nb = newBucket;
+  const f = nb.form;
+  const owners = nb.owners;
+  const blocks = [
+    { type: 'input', id: 'name', label: 'Nome', placeholder: 'Ex: uplii-media', value: f.name },
+    { type: 'text', style: f.name && !bk.BUCKET_NAME.test(f.name) ? 'error' : 'faint', text: 'Minúsculas, números e hífen; de 3 a 63 caracteres.' },
+    { type: 'text', text: 'Dono' },
+    {
+      type: 'tabs',
+      items: [
+        { label: 'Usuário existente', action: 'bucket:mode:existing', active: f.mode !== 'new' },
+        { label: 'Novo usuário', action: 'bucket:mode:new', active: f.mode === 'new' },
+      ],
+    },
+  ];
+  if (f.mode === 'new') {
+    const uid = f.newOwner || f.name;
+    const taken = !!owners && owners.includes(uid);
+    blocks.push(
+      { type: 'input', id: 'newOwner', placeholder: 'Ex: uplii', value: f.newOwner },
+      {
+        type: 'text',
+        style: uid && (taken || !bk.NEW_OWNER.test(uid)) ? 'error' : 'faint',
+        text: taken ? 'Esse usuário já existe; escolha em Usuário existente.' : NEW_OWNER_HINT,
+      },
+    );
+  } else {
+    const placeholder = owners === null ? 'Carregando…' : owners.length ? 'Escolha o usuário do RGW' : 'Nenhum usuário do RGW';
+    blocks.push({ type: 'select', id: 'owner', options: owners || [], value: f.owner, placeholder, loading: owners === null });
+  }
+  if (nb.errors.length) blocks.push({ type: 'text', style: 'error', text: nb.errors.join(' · ') });
+  if (nb.error) blocks.push({ type: 'text', style: 'error', text: nb.error });
+  blocks.push({
+    type: 'row',
+    align: 'end',
+    children: [
+      { type: 'button', action: 'bucket:cancel', label: 'Cancelar', disabled: nb.saving },
+      { type: 'button', action: 'bucket:submit', label: nb.saving ? 'Criando…' : 'Criar bucket', style: 'primary', disabled: nb.saving },
+    ],
+  });
+  return blocks;
+}
+
+const renderNewBucket = () => (state.views.has(NEW_BUCKET) ? updateWindow(NEW_BUCKET, { blocks: newBucketBlocks() }) : false);
+
+async function openNewBucket() {
+  // Criando: só traz a janela de volta, com o "Criando…".
+  if (newBucket.saving) return openWindow(NEW_BUCKET, 'Novo bucket', newBucketBlocks());
+  const gen = newBucket.gen + 1;
+  newBucket = { ...freshNewBucket(), gen };
+  await openWindow(NEW_BUCKET, 'Novo bucket', newBucketBlocks());
+  let owners = [];
+  let error = '';
+  try {
+    const list = await api().bucketOwners();
+    owners = Array.isArray(list) ? list.map(String) : [];
+  } catch (e) {
+    error = errText(e);
+  }
+  if (gen !== newBucket.gen) return null;
+  newBucket.owners = owners;
+  newBucket.error = error;
+  return renderNewBucket();
+}
+
+async function submitNewBucket(values) {
+  const nb = newBucket;
+  if (nb.saving) return null; // o segundo clique (ou o enter) não manda outro POST
+  mergeBucketValues(values);
+  nb.errors = bk.validateBucket(nb.form, nb.owners || []);
+  if (nb.errors.length) return renderNewBucket();
+  const body = bk.bucketBody(nb.form);
+  nb.saving = true; // antes de qualquer await
+  nb.error = '';
+  renderNewBucket();
+  let created;
+  try {
+    created = await api().createBucket(body);
+  } catch (e) {
+    if (nb !== newBucket) return null;
+    nb.saving = false;
+    nb.error = errText(e);
+    return renderNewBucket();
+  }
+  if (nb !== newBucket) return null; // saiu no meio
+  newBucket = { ...freshNewBucket(), gen: nb.gen + 1 };
+  await closeWindow(NEW_BUCKET);
+  await loadBuckets();
+  await render();
+  if (body.newOwner) {
+    const b = created && typeof created === 'object' ? created : {};
+    await openCredentials({ name: b.name || body.name, owner: b.owner || body.owner });
+  }
+  return null;
+}
+
+// --- "Credenciais S3" ------------------------------------------------------------------
+
+const CREDS = 'bucket:creds:';
+const SNIPPET_TABS = [['env', '.env'], ['aws', 'AWS CLI'], ['rclone', 'rclone']];
+const COPIED = 'Copiado';
+const COPY_FAILED = 'Não deu para copiar; selecione o texto';
+const credWindows = new Map(); // viewId → { gen, bucket, owner, creds, error, showSecret, tab, feedback, timer }
+const secrets = new Map(); // viewId → a secret key revelada (só desta janela; nunca no log)
+let credGen = 0;
+
+function forgetWindow(viewId) {
+  const w = credWindows.get(viewId);
+  if (w && w.timer) clearTimeout(w.timer);
+  credWindows.delete(viewId);
+  secrets.delete(viewId);
+}
+
+function forgetStorage() {
+  Object.assign(cephState, freshCeph(), { gen: cephState.gen + 1, imagesGen: cephState.imagesGen + 1 });
+  Object.assign(bucketsState, freshBuckets(), { gen: bucketsState.gen + 1 });
+  newBucket = { ...freshNewBucket(), gen: newBucket.gen + 1 };
+  for (const viewId of [...credWindows.keys()]) forgetWindow(viewId);
+  secrets.clear();
+}
+
+function ownerBuckets(owner) {
+  const list = bucketsState.buckets || [];
+  return Math.max(1, list.filter((b) => b.owner === owner).length);
+}
+
+function credentialsBlocks(viewId) {
+  const w = credWindows.get(viewId);
+  const admin = currentAdmin();
+  const blocks = [{ type: 'text', style: 'dim', text: `Bucket ${w.bucket} · usuário ${w.owner} do RGW` }];
+  if (w.error) blocks.push({ type: 'text', style: 'error', text: w.error });
+  const c = w.creds;
+  if (!c) {
+    if (!w.error) blocks.push({ type: 'text', style: 'dim', text: 'Carregando credenciais…' });
+  } else {
+    const secret = admin ? secrets.get(viewId) : undefined;
+    const shown = admin && w.showSecret && !!secret;
+    blocks.push({
+      type: 'kv',
+      items: [
+        { key: 'Endpoint', value: c.endpoint || '' },
+        { key: 'Região', value: c.region || '' },
+        c.accessKey ? { key: 'Access key', value: c.accessKey } : { key: 'Access key', value: 'Este usuário não tem chave S3.', tone: 'dim' },
+      ],
+    });
+    const copies = [
+      { type: 'button', action: 'bucket:copy:endpoint', label: 'Endpoint', icon: 'copy', tooltip: 'Copiar' },
+      { type: 'button', action: 'bucket:copy:region', label: 'Região', icon: 'copy', tooltip: 'Copiar' },
+    ];
+    if (c.accessKey) copies.push({ type: 'button', action: 'bucket:copy:access', label: 'Access key', icon: 'copy', tooltip: 'Copiar' });
+    blocks.push({ type: 'row', children: copies });
+    if (c.accessKey) {
+      if (admin) {
+        blocks.push(
+          { type: 'kv', items: [shown ? { key: 'Secret key', value: secret } : { key: 'Secret key', value: bk.MASK, tone: 'dim' }] },
+          {
+            type: 'row',
+            children: [
+              { type: 'button', action: 'bucket:reveal', label: shown ? 'Esconder' : 'Revelar' },
+              { type: 'button', action: 'bucket:copy:secret', label: 'Secret key', icon: 'copy', tooltip: 'Copiar' },
+            ],
+          },
+        );
+      } else {
+        blocks.push({ type: 'kv', items: [{ key: 'Secret key', value: 'Só admins veem a secret key', tone: 'dim' }] });
+      }
+      blocks.push(
+        { type: 'tabs', items: SNIPPET_TABS.map(([id, label]) => ({ label, action: `bucket:tab:${id}`, active: w.tab === id })) },
+        { type: 'code', text: bk.snippet(w.tab, { ...c, bucket: w.bucket }, shown ? secret : null, { withSecret: admin }) },
+        { type: 'row', children: [{ type: 'button', action: 'bucket:copy:snippet', label: 'Copiar', icon: 'copy' }] },
+      );
+    }
+    if (w.feedback) blocks.push({ type: 'text', style: w.feedback === COPIED ? 'success' : 'error', text: w.feedback });
+    const isolate = admin ? ' Para isolar uma aplicação, crie o bucket com um usuário novo.' : '';
+    blocks.push({
+      type: 'text',
+      style: 'faint',
+      text: `As chaves são do usuário ${w.owner} e dão acesso a todos os buckets dele (${ownerBuckets(w.owner)}).${isolate}`,
+    });
+  }
+  blocks.push({ type: 'row', align: 'end', children: [{ type: 'button', action: 'bucket:close', label: 'Fechar' }] });
+  return blocks;
+}
+
+const renderCredentials = (viewId) =>
+  credWindows.has(viewId) && state.views.has(viewId) ? updateWindow(viewId, { blocks: credentialsBlocks(viewId) }) : false;
+
+async function openCredentials({ name, owner }) {
+  const viewId = `${CREDS}${owner}`;
+  forgetWindow(viewId); // de novo do zero, sem a secret de antes
+  const w = { gen: ++credGen, bucket: name, owner, creds: null, error: '', showSecret: false, tab: 'env', feedback: '', timer: null };
+  credWindows.set(viewId, w);
+  await openWindow(viewId, 'Credenciais S3', credentialsBlocks(viewId));
+  try {
+    const c = await api().credentials(owner);
+    if (credWindows.get(viewId) !== w) return null;
+    w.creds = c && typeof c === 'object' ? c : { endpoint: '', region: '', accessKey: null, owner };
+  } catch (e) {
+    if (credWindows.get(viewId) !== w) return null;
+    w.error = errText(e);
+  }
+  return renderCredentials(viewId);
+}
+
+/** A secret key da janela: do cache, ou do GET (auditado no servidor). Só pra admin. */
+async function loadSecret(viewId) {
+  const w = credWindows.get(viewId);
+  // Sem access key não há secret a mostrar (a web nem mostra o campo).
+  if (!w || !currentAdmin() || !w.creds || !w.creds.accessKey) return null;
+  if (secrets.has(viewId)) return secrets.get(viewId);
+  try {
+    const r = await api().secret(w.owner);
+    const value = r && typeof r.secretKey === 'string' ? r.secretKey : '';
+    if (credWindows.get(viewId) !== w || !value) return null; // fechou no meio: não guarda
+    secrets.set(viewId, value);
+    return value;
+  } catch (e) {
+    if (credWindows.get(viewId) === w) w.error = errText(e);
+    return null;
+  }
+}
+
+async function copyText(viewId, text) {
+  const w = credWindows.get(viewId);
+  if (!w || !text) return renderCredentials(viewId);
+  try {
+    await mx.request('clipboard.write', { text });
+    w.feedback = COPIED;
+  } catch {
+    w.feedback = COPY_FAILED;
+  }
+  if (w.timer) clearTimeout(w.timer);
+  w.timer = setTimeout(() => {
+    w.timer = null;
+    if (credWindows.get(viewId) !== w) return;
+    w.feedback = '';
+    renderCredentials(viewId);
+  }, 1500);
+  return renderCredentials(viewId);
+}
+
+async function copyField(viewId, what) {
+  const w = credWindows.get(viewId);
+  if (!w || !w.creds) return null;
+  const c = w.creds;
+  const admin = currentAdmin();
+  if (what === 'endpoint') return copyText(viewId, c.endpoint);
+  if (what === 'region') return copyText(viewId, c.region);
+  if (what === 'access') return copyText(viewId, c.accessKey);
+  if (!c.accessKey) return null;
+  if (what === 'secret') {
+    if (!admin) return null;
+    return copyText(viewId, await loadSecret(viewId));
+  }
+  if (what === 'snippet') {
+    const data = { ...c, bucket: w.bucket };
+    if (!admin) return copyText(viewId, bk.snippet(w.tab, data, null, { withSecret: false }));
+    const secret = await loadSecret(viewId);
+    return copyText(viewId, secret ? bk.snippet(w.tab, data, secret, { withSecret: true }) : '');
+  }
+  return null;
+}
+
+async function toggleSecret(viewId) {
+  const w = credWindows.get(viewId);
+  if (!w || !currentAdmin() || !w.creds || !w.creds.accessKey) return null;
+  if (w.showSecret) w.showSecret = false;
+  else if (await loadSecret(viewId)) w.showSecret = true;
+  return renderCredentials(viewId);
+}
+
+on('bucket', async (arg, values, { viewId }) => {
+  const i = arg.indexOf(':');
+  const kind = i < 0 ? arg : arg.slice(0, i);
+  const rest = i < 0 ? '' : arg.slice(i + 1);
+  // a tela
+  if (kind === 'sort') {
+    if (!SORT_KEYS.has(rest)) return null;
+    bucketsState.sort = bk.nextSort(bucketsState.sort, rest);
+    return render();
+  }
+  if (kind === 'search') {
+    bucketsState.query = String(values.text === undefined ? '' : values.text);
+    return render();
+  }
+  if (kind === 'creds') {
+    const b = (bucketsState.buckets || []).find((x) => `${x.tenant || ''}/${x.name}` === rest);
+    return b ? openCredentials({ name: b.name, owner: b.owner }) : null;
+  }
+  // as credenciais (todos os papéis; a secret, só admin, conferido em cada uma)
+  if (viewId && viewId.startsWith(CREDS) && credWindows.has(viewId)) {
+    if (kind === 'close') return closeWindow(viewId);
+    if (kind === 'tab') {
+      if (SNIPPET_TABS.some(([id]) => id === rest)) credWindows.get(viewId).tab = rest;
+      return renderCredentials(viewId);
+    }
+    if (kind === 'reveal') return toggleSecret(viewId);
+    if (kind === 'copy') return copyField(viewId, rest);
+    return null;
+  }
+  // o "Novo bucket": só admin
+  if (!currentAdmin()) return null;
+  if (kind === 'new') return openNewBucket();
+  if (viewId !== NEW_BUCKET) return null;
+  if (kind === 'cancel') return newBucket.saving ? null : closeWindow(NEW_BUCKET);
+  if (kind === 'mode') {
+    if (newBucket.saving) return null;
+    mergeBucketValues(values);
+    newBucket.form.mode = rest === 'new' ? 'new' : 'existing';
+    newBucket.errors = [];
+    return renderNewBucket();
+  }
+  if (kind === 'submit') return submitNewBucket(values);
+  return null;
+});
+
+registerScreen('buckets', {
+  load: () => loadBuckets(),
+  // `ctx.user` pode ser null (um render logo depois do sair): aí é só leitura.
+  view: (c) => bucketsScreenView(c.user),
+});
+
 // --- o protocolo -----------------------------------------------------------------------
 
 mx.onRequest('initialize', (params) => {
@@ -860,7 +1338,7 @@ mx.onNotification('view.action', async ({ viewId, action, values }) => {
 });
 
 mx.onNotification('event', (e) => {
-  if (e && e.type === 'view.closed') state.views.delete(e.viewId);
+  if (e && e.type === 'view.closed') windowGone(e.viewId);
 });
 
 function shutdown() {

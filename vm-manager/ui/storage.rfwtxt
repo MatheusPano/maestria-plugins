@@ -1,0 +1,589 @@
+// Ceph (CephView.tsx) e Buckets (BucketsView.tsx). Sem `import`: o main.js junta
+// todos os arquivos de ui/ numa biblioteca só, então as peças do vms.rfwtxt (Bar,
+// Mono, HeadCell, HaChip, VmsError) valem aqui também, e os nomes não podem repetir.
+//
+// Ceph: os dados chegam em `data.ceph` (lib/storage.js `cephView` + o que o main.js
+// põe: `error`, `poolsLoading`, `a`/`fill`/`rest` por pool e imagem). Um pool rbd
+// clicado manda `event "act" { a: "ceph:pool:<nome>" }`; a busca das imagens manda
+// `ceph:search` com o `text` no enter.
+//
+// Buckets: `data.buckets` (lib/buckets.js `bucketsView`). Os cabeçalhos mandam
+// `bucket:sort:<coluna>`, a busca `bucket:search`, a chave de cada linha
+// `bucket:creds:<tenant>/<nome>` e o "Novo bucket" `bucket:new`. As janelas do
+// "Novo bucket" e das credenciais são de blocos (main.js).
+
+// --- Ceph --------------------------------------------------------------------------
+
+widget CephScreen = SingleChildScrollView(
+  primary: false,
+  padding: [28.0, 24.0, 28.0, 28.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      CephHeader(h: data.ceph.header),
+      VmsError(text: data.ceph.error),
+      SizedBox(height: 20.0),
+      CephPools(),
+      CephImages(i: data.ceph.images),
+      CephTrash(t: data.ceph.trash),
+    ],
+  ),
+);
+
+widget CephHeader = Row(
+  children: [
+    Expanded(
+      child: Text(text: args.h.title, style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+    ),
+    switch args.h.health {
+      "": SizedBox(),
+      default: HealthBadge(h: args.h),
+    },
+  ],
+);
+
+widget HealthBadge = Container(
+  padding: [10.0, 4.0, 10.0, 4.0],
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 4.0 }],
+    border: [{ color: switch args.h.tone { "green": data.theme.green, "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.faint }, width: 1.0 }],
+  },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Container(
+        width: 7.0,
+        height: 7.0,
+        decoration: {
+          type: "box",
+          shape: "circle",
+          color: switch args.h.tone { "green": data.theme.green, "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.faint },
+        },
+      ),
+      SizedBox(width: 6.0),
+      Text(
+        text: args.h.health,
+        style: {
+          fontSize: 12.0,
+          fontWeight: "w500",
+          fontFamily: data.theme.mono,
+          color: switch args.h.tone { "green": data.theme.green, "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.faint },
+        },
+      ),
+    ],
+  ),
+);
+
+// Os pools de dados, em cartões; só os rbd são clicáveis (mostram as imagens).
+widget CephPools = switch data.ceph.poolsLoading {
+  true: Container(
+    height: 118.0,
+    decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  ),
+  default: Wrap(
+    spacing: 16.0,
+    runSpacing: 16.0,
+    children: [
+      ...for p in data.ceph.pools:
+        PoolCard(p: p),
+    ],
+  ),
+};
+
+widget PoolCard = SizedBox(
+  width: 280.0,
+  child: switch args.p.selectable {
+    true: Pressable(
+      radius: 6.0,
+      hoverColor: data.theme.hover,
+      onTap: event "act" { a: args.p.a },
+      child: PoolBody(p: args.p),
+    ),
+    default: PoolBody(p: args.p),
+  },
+);
+
+widget PoolBody = Container(
+  padding: [16.0, 14.0, 16.0, 14.0],
+  decoration: {
+    type: "box",
+    color: data.theme.sidebar,
+    borderRadius: [{ x: 6.0 }],
+    border: [{
+      color: switch args.p.selected { true: data.theme.accent, default: data.theme.border },
+      width: switch args.p.selected { true: 2.0, default: 1.0 },
+    }],
+  },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Text(
+              text: args.p.name,
+              maxLines: 1,
+              overflow: "ellipsis",
+              style: { fontSize: 12.0, fontWeight: "w500", fontFamily: data.theme.mono, color: data.theme.fg },
+            ),
+          ),
+          ...for app in args.p.apps:
+            AppChip(app: app),
+        ],
+      ),
+      SizedBox(height: 10.0),
+      Row(
+        children: [
+          Expanded(
+            child: Text(text: args.p.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+          ),
+          SizedBox(width: 8.0),
+          Text(text: args.p.objects, maxLines: 1, style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.faint }),
+        ],
+      ),
+      SizedBox(height: 10.0),
+      Bar(fill: args.p.fill, rest: args.p.rest, tone: args.p.tone),
+      SizedBox(height: 10.0),
+      Row(
+        children: [
+          Expanded(
+            child: Text(text: args.p.usage, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.fg }),
+          ),
+          Text(text: args.p.pctLabel, maxLines: 1, style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.fg }),
+        ],
+      ),
+    ],
+  ),
+);
+
+widget AppChip = Padding(
+  padding: [6.0, 0.0, 0.0, 0.0],
+  child: Container(
+    padding: [6.0, 0.0, 6.0, 0.0],
+    decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 2.0 }] },
+    child: Text(text: args.app.text, style: { fontSize: 10.5, fontFamily: data.theme.mono, color: data.theme.dim }),
+  ),
+);
+
+// --- as imagens do pool escolhido ----------------------------------------------------
+
+widget CephImages = switch args.i.visible {
+  true: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      SizedBox(height: 24.0),
+      Row(
+        children: [
+          Text(text: args.i.title, style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.fg }),
+          SizedBox(width: 8.0),
+          Text(text: args.i.countText, style: { fontSize: 12.0, color: data.theme.faint }),
+          Expanded(child: SizedBox()),
+          SizedBox(
+            width: 320.0,
+            child: TextInput(
+              id: args.i.searchId,
+              placeholder: "Buscar imagem ou VM",
+              allowEmpty: true,
+              onSubmit: event "act" { a: "ceph:search" },
+            ),
+          ),
+        ],
+      ),
+      VmsError(text: args.i.error),
+      SizedBox(height: 12.0),
+      ImagesTable(i: args.i),
+    ],
+  ),
+  default: SizedBox(),
+};
+
+widget ImagesTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        color: data.theme.active,
+        child: Row(
+          children: [
+            Expanded(flex: 30, child: HeadCell(text: "Imagem")),
+            Expanded(flex: 20, child: HeadCell(text: "VM")),
+            Expanded(flex: 12, child: HeadCell(text: "Provisionado")),
+            Expanded(flex: 18, child: HeadCell(text: "Usado")),
+            Expanded(flex: 10, child: HeadCell(text: "Snapshots")),
+          ],
+        ),
+      ),
+      switch args.i.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for r in args.i.rows:
+              ImageRow(r: r),
+          ],
+        ),
+        default: EmptyBox(text: args.i.empty),
+      },
+    ],
+  ),
+);
+
+widget ImageRow = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Container(height: 1.0, color: data.theme.border),
+    Padding(
+      padding: [16.0, 10.0, 16.0, 10.0],
+      child: Row(
+        children: [
+          Expanded(
+            flex: 30,
+            child: Text(
+              text: args.r.name,
+              maxLines: 1,
+              overflow: "ellipsis",
+              style: {
+                fontSize: 12.5,
+                fontFamily: data.theme.mono,
+                color: switch args.r.rowTone { "red": data.theme.red, default: data.theme.fg },
+              },
+            ),
+          ),
+          Expanded(flex: 20, child: ImageVm(r: args.r)),
+          Expanded(flex: 12, child: Mono(text: args.r.size)),
+          Expanded(flex: 18, child: ImageUsed(r: args.r)),
+          Expanded(flex: 10, child: Mono(text: args.r.snapshots)),
+        ],
+      ),
+    ),
+  ],
+);
+
+// "remoção interrompida" (vermelho), "sem VM" (amarelo) ou o nome com o vmid.
+widget ImageVm = switch args.r.vmTone {
+  "red": HaChip(text: args.r.vm, color: data.theme.red),
+  "yellow": HaChip(text: args.r.vm, color: data.theme.yellow),
+  default: Row(
+    children: [
+      Expanded(
+        child: Text(text: args.r.vm, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, color: data.theme.fg }),
+      ),
+      SizedBox(width: 6.0),
+      Text(text: args.r.vmid, maxLines: 1, style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.faint }),
+    ],
+  ),
+};
+
+widget ImageUsed = switch args.r.hasUsed {
+  true: Row(
+    children: [
+      SizedBox(width: 60.0, child: Bar(fill: args.r.fill, rest: args.r.rest, tone: args.r.usedTone)),
+      SizedBox(width: 8.0),
+      Expanded(child: Mono(text: args.r.used)),
+    ],
+  ),
+  default: Tooltip(
+    message: "Imagem sem fast-diff: o Ceph não calcula o uso",
+    child: Text(text: args.r.used, maxLines: 1, style: { fontSize: 11.5, color: data.theme.faint }),
+  ),
+};
+
+// --- a lixeira ---------------------------------------------------------------------
+
+widget CephTrash = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    VmsError(text: args.t.error),
+    switch args.t.visible {
+      true: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          SizedBox(height: 24.0),
+          Row(
+            children: [
+              Text(text: args.t.title, style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.fg }),
+              SizedBox(width: 8.0),
+              Text(text: args.t.countText, style: { fontSize: 12.0, color: data.theme.faint }),
+            ],
+          ),
+          SizedBox(height: 12.0),
+          TrashTable(t: args.t),
+        ],
+      ),
+      default: SizedBox(),
+    },
+  ],
+);
+
+widget TrashTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        color: data.theme.active,
+        child: Row(
+          children: [
+            Expanded(flex: 30, child: HeadCell(text: "Imagem")),
+            Expanded(flex: 18, child: HeadCell(text: "Pool")),
+            Expanded(flex: 14, child: HeadCell(text: "Origem")),
+            Expanded(flex: 16, child: HeadCell(text: "Na lixeira desde")),
+          ],
+        ),
+      ),
+      switch args.t.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for e in args.t.rows:
+              TrashRow(e: e),
+          ],
+        ),
+        default: EmptyBox(text: args.t.empty),
+      },
+    ],
+  ),
+);
+
+widget TrashRow = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Container(height: 1.0, color: data.theme.border),
+    Padding(
+      padding: [16.0, 10.0, 16.0, 10.0],
+      child: Row(
+        children: [
+          Expanded(
+            flex: 30,
+            child: Text(
+              text: args.e.name,
+              maxLines: 1,
+              overflow: "ellipsis",
+              style: {
+                fontSize: 12.5,
+                fontFamily: data.theme.mono,
+                color: switch args.e.rowTone { "red": data.theme.red, default: data.theme.fg },
+              },
+            ),
+          ),
+          Expanded(flex: 18, child: Mono(text: args.e.pool)),
+          Expanded(
+            flex: 14,
+            child: switch args.e.tone {
+              "red": HaChip(text: args.e.source, color: data.theme.red),
+              default: HaChip(text: args.e.source, color: data.theme.dim),
+            },
+          ),
+          Expanded(flex: 16, child: Mono(text: args.e.deletedAt)),
+        ],
+      ),
+    ),
+  ],
+);
+
+widget EmptyBox = Padding(
+  padding: [16.0, 48.0, 16.0, 48.0],
+  child: Center(child: Text(text: args.text, style: { fontSize: 13.0, color: data.theme.dim })),
+);
+
+// --- Buckets -----------------------------------------------------------------------
+
+widget BucketsScreen = SingleChildScrollView(
+  primary: false,
+  padding: [28.0, 24.0, 28.0, 28.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      BucketsHeader(h: data.buckets.header),
+      SizedBox(height: 20.0),
+      Row(
+        children: [
+          ...for s in data.buckets.stats:
+            Expanded(child: Padding(padding: [0.0, 0.0, 12.0, 0.0], child: StatCard(s: s))),
+        ],
+      ),
+      SizedBox(height: 20.0),
+      Align(
+        alignment: { x: -1.0, y: 0.0 },
+        child: SizedBox(
+          width: 320.0,
+          child: TextInput(
+            id: "buckets.search",
+            placeholder: "Buscar bucket ou dono",
+            allowEmpty: true,
+            onSubmit: event "act" { a: "bucket:search" },
+          ),
+        ),
+      ),
+      VmsError(text: data.buckets.error),
+      SizedBox(height: 14.0),
+      BucketsTable(),
+    ],
+  ),
+);
+
+widget BucketsHeader = Row(
+  children: [
+    Expanded(
+      child: Text(text: args.h.title, style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+    ),
+    switch args.h.newBucket {
+      true: Pressable(
+        radius: 6.0,
+        color: data.theme.accent,
+        hoverColor: data.theme.accent,
+        onTap: event "act" { a: "bucket:new" },
+        child: Padding(
+          padding: [14.0, 8.0, 14.0, 8.0],
+          child: Row(
+            mainAxisSize: "min",
+            children: [
+              Glyph(icon: "add", size: 16.0, color: data.theme.onAccent),
+              SizedBox(width: 8.0),
+              Text(text: "Novo bucket", style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.onAccent }),
+            ],
+          ),
+        ),
+      ),
+      default: Container(
+        padding: [10.0, 6.0, 10.0, 6.0],
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+        child: Text(text: args.h.badge, style: { fontSize: 12.0, fontWeight: "w500", color: data.theme.dim }),
+      ),
+    },
+  ],
+);
+
+widget StatCard = Container(
+  padding: [16.0, 14.0, 16.0, 14.0],
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "start",
+    children: [
+      Text(text: args.s.label, style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.dim }),
+      SizedBox(height: 4.0),
+      Text(text: args.s.value, maxLines: 1, style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+    ],
+  ),
+);
+
+widget BucketsTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        color: data.theme.active,
+        child: Row(
+          children: [
+            ...for c in data.buckets.columns:
+              Expanded(flex: c.flex, child: SortHeader(c: c)),
+            SizedBox(width: 40.0),
+          ],
+        ),
+      ),
+      switch data.buckets.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for r in data.buckets.rows:
+              BucketRow(r: r),
+          ],
+        ),
+        default: EmptyBox(text: data.buckets.empty),
+      },
+    ],
+  ),
+);
+
+// O cabeçalho que ordena: o clique alterna asc/desc (a primeira vez, o padrão da coluna).
+widget SortHeader = Align(
+  alignment: { x: -1.0, y: 0.0 },
+  child: Pressable(
+    radius: 4.0,
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: args.c.a },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Text(
+          text: args.c.label,
+          maxLines: 1,
+          style: {
+            fontSize: 12.0,
+            fontWeight: "w500",
+            color: switch args.c.active { true: data.theme.dim, default: data.theme.faint },
+          },
+        ),
+        SizedBox(width: 4.0),
+        Text(text: args.c.arrow, style: { fontSize: 11.0, color: data.theme.dim }),
+      ],
+    ),
+  ),
+);
+
+// As colunas da linha usam os mesmos flex do cabeçalho (main.js, BUCKET_FLEX).
+widget BucketRow = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Container(height: 1.0, color: data.theme.border),
+    Padding(
+      padding: [16.0, 8.0, 16.0, 8.0],
+      child: Row(
+        children: [
+          Expanded(
+            flex: 28,
+            child: Row(
+              children: [
+                Glyph(icon: "box", size: 14.0, color: data.theme.faint),
+                SizedBox(width: 8.0),
+                Text(text: args.r.tenantText, maxLines: 1, style: { fontSize: 12.5, fontFamily: data.theme.mono, color: data.theme.faint }),
+                Expanded(
+                  child: Text(text: args.r.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, fontFamily: data.theme.mono, color: data.theme.fg }),
+                ),
+              ],
+            ),
+          ),
+          Expanded(flex: 14, child: Mono(text: args.r.owner)),
+          Expanded(flex: 10, child: Mono(text: args.r.objects)),
+          Expanded(flex: 10, child: Mono(text: args.r.used)),
+          Expanded(flex: 20, child: QuotaCell(r: args.r)),
+          Expanded(flex: 10, child: Mono(text: args.r.created)),
+          SizedBox(
+            width: 40.0,
+            child: Align(
+              alignment: { x: 1.0, y: 0.0 },
+              child: Tooltip(
+                message: "Credenciais S3",
+                child: Pressable(
+                  radius: 4.0,
+                  hoverColor: data.theme.hover,
+                  onTap: event "act" { a: args.r.a },
+                  child: Padding(
+                    padding: [6.0, 6.0, 6.0, 6.0],
+                    child: Glyph(icon: "icons/key.svg", size: 14.0, color: data.theme.dim),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ],
+);
+
+widget QuotaCell = switch args.r.hasQuota {
+  true: Row(
+    children: [
+      SizedBox(width: 60.0, child: Bar(fill: args.r.fill, rest: args.r.rest, tone: args.r.tone)),
+      SizedBox(width: 8.0),
+      Expanded(child: Mono(text: args.r.quota)),
+    ],
+  ),
+  default: Text(text: args.r.quota, maxLines: 1, style: { fontSize: 12.0, color: data.theme.faint }),
+};

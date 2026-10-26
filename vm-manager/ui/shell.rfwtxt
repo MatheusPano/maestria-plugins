@@ -28,6 +28,8 @@ widget root = switch data.screen {
 
 widget Body = switch data.screen {
   "vms": VmsScreen(),
+  "ceph": CephScreen(),
+  "buckets": BucketsScreen(),
   "fatal": FatalScreen(),
   "forbidden": ForbiddenScreen(),
   default: SizedBox(),

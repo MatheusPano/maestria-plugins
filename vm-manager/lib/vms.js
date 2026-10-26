@@ -368,5 +368,5 @@ function detailWindowBlocks({ loading, error, detail } = {}) {
 module.exports = {
   destroyBlocks, detailWindowBlocks,
   backupState, needsBackupAttention, backupAge, backupCell, filterVms, counts, haCell,
-  overviewView, vmsView, detailBlocks, createBusy,
+  overviewView, vmsView, detailBlocks, createBusy, flex,
 };

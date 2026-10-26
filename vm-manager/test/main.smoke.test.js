@@ -55,7 +55,16 @@ const CATALOG = {
 function fakeApi(users, { failMe = 0, extra = {}, routes = {} } = {}) {
   const seen = [];
   let fails = failMe;
-  const gets = { '/api/vms': [VM_JIBRI, VM_DB], '/api/overview': OVERVIEW, ...extra };
+  const gets = {
+    '/api/vms': [VM_JIBRI, VM_DB],
+    '/api/overview': OVERVIEW,
+    // Ceph e buckets vazios por padrão (uma rota que falta vira 401 e derruba a sessão).
+    '/api/health': { status: 'ok', ceph: { enabled: true } },
+    '/api/storage/pools': [],
+    '/api/storage/trash': [],
+    '/api/buckets': [],
+    ...extra,
+  };
   const reply = (res, status, json) => {
     if (res.destroyed || res.writableEnded) return;
     res.writeHead(status, { 'content-type': 'application/json' });
@@ -108,7 +117,8 @@ function closeApi(api) {
 // `script`: código rodado depois do require do main.js (com `m` = o módulo), pra ligar telas de mentira.
 // `openReply()`: o `open` que a janela responde a cada view.update.
 // `env`: variáveis a mais (os ganchos de teste do main.js, como VMM_CREATE_TIMEOUT_MS).
-function startPlugin({ dataDir, url, script = '', openReply = () => true, env = {} }) {
+// `failMethods`: pedidos do plugin que a janela responde com erro (um clipboard.write que falha).
+function startPlugin({ dataDir, url, script = '', openReply = () => true, env = {}, failMethods = [] }) {
   const argv = script ? ['-e', `const m = require(${JSON.stringify(MAIN)});\n${script}`] : [MAIN];
   const child = spawn(process.execPath, argv, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } });
   const lines = [];
@@ -144,7 +154,10 @@ function startPlugin({ dataDir, url, script = '', openReply = () => true, env = 
         let result = null;
         if (msg.method === 'view.open') result = { tabId: 'plugin1' };
         if (msg.method === 'view.update') result = { open: msg.params.viewId === 'vmm' ? openReply() : true };
-        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+        const reply = failMethods.includes(msg.method)
+          ? { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'falhou' } }
+          : { jsonrpc: '2.0', id: msg.id, result };
+        child.stdin.write(JSON.stringify(reply) + '\n');
       } else if (msg.id !== undefined) {
         responses.set(msg.id, msg);
       }
@@ -622,12 +635,12 @@ const VIEWER = { id: 'u2', email: 'v@b.c', name: 'Vera Viewer', role: 'viewer' }
 
 /** Um plugin já logado (admin por padrão) com a tela de VMs aberta. */
 // `open: false` só sobe e inicializa (a janela principal fica fechada).
-async function openVms({ user = ADMIN, routes = {}, extra = {}, env = {}, open = true } = {}) {
+async function openVms({ user = ADMIN, routes = {}, extra = {}, env = {}, open = true, failMethods = [] } = {}) {
   const token = `tok-${user.role}-${Math.random().toString(36).slice(2)}`;
   const api = await fakeApi({ [token]: user }, { routes, extra: { ...CATALOG, '/api/vms/177': DETAIL, ...extra } });
   const dataDir = tmpDir();
   seed(dataDir, api.url, token, user);
-  const p = startPlugin({ dataDir, url: api.url, env });
+  const p = startPlugin({ dataDir, url: api.url, env, failMethods });
   const close = async () => {
     await p.stop();
     closeApi(api);
@@ -1040,4 +1053,546 @@ test('sair larga a criação (sem banner, sem mais consultas) e o próximo formu
     await close();
   }
   assert.deepEqual(p.bad, []);
+});
+
+// --- Task 10: Ceph, Buckets, "Novo bucket" e "Credenciais S3" ----------------------------
+
+const GB = 1024 ** 3;
+const POOLS = [
+  { name: 'ceph-small', applications: ['rbd'], storedBytes: 2 * GB, availBytes: 98 * GB, usedPct: 2, objects: 10, proxmoxStorages: [] },
+  { name: 'ceph-vm', applications: ['rbd'], storedBytes: 500 * GB, availBytes: 500 * GB, usedPct: 50, objects: 12345, proxmoxStorages: ['ceph'] },
+  { name: '.mgr', applications: ['mgr'], storedBytes: 1, availBytes: 1, usedPct: 0, objects: 1, proxmoxStorages: [] },
+  { name: 'default.rgw.buckets.data', applications: ['rgw'], storedBytes: 80 * GB, availBytes: 20 * GB, usedPct: 80, objects: 99, proxmoxStorages: [] },
+];
+const IMAGES_VM = [
+  { name: 'vm-177-disk-0', vmName: 'jibri-1', vmid: 177, removing: false, sizeBytes: 40 * GB, usedBytes: 10 * GB, snapshots: 2 },
+  { name: 'vm-999-disk-0', vmName: null, vmid: 999, removing: false, sizeBytes: 10 * GB, usedBytes: null, snapshots: 0 },
+  { name: 'vm-5-disk-1', vmName: null, vmid: null, removing: true, sizeBytes: 5 * GB, usedBytes: null, snapshots: null },
+];
+const IMAGES_SMALL = [{ name: 'small-img', vmName: null, vmid: null, removing: false, sizeBytes: GB, usedBytes: GB / 2, snapshots: 0 }];
+const TRASH = [{ id: 'a1', name: 'old-disk', pool: 'ceph-vm', source: 'REMOVING', deletedAt: '2026-10-01T12:00:00Z' }];
+const CEPH_GETS = {
+  '/api/health': { status: 'ok', proxmox: { ok: true }, netbox: { enabled: true }, ceph: { enabled: true, status: 'HEALTH_WARN' } },
+  '/api/storage/pools': POOLS,
+  '/api/storage/trash': TRASH,
+  '/api/storage/pools/ceph-vm/images': IMAGES_VM,
+  '/api/storage/pools/ceph-small/images': IMAGES_SMALL,
+};
+
+const BUCKETS = [
+  { name: 'media', tenant: null, owner: 'uplii', objects: 1500, usedBytes: 3 * GB, quotaBytes: 10 * GB, createdAt: '2026-01-10T00:00:00Z' },
+  { name: 'backups', tenant: null, owner: 'ops', objects: 20, usedBytes: 50 * GB, quotaBytes: null, createdAt: '2025-06-01T00:00:00Z' },
+  { name: 'logs', tenant: 'acme', owner: 'uplii', objects: 5, usedBytes: GB, quotaBytes: null, createdAt: null },
+];
+const SECRET = 'S3CR3T-very-secret-key-0123456789abcdef';
+const CREDS = { owner: 'uplii', endpoint: 'https://s3.example', region: 'br-1', accessKey: 'AKIAUPLII' };
+
+/** Logado (admin por padrão), na tela `screen` com os dados prontos. */
+async function openArea(screen, ready, opts = {}) {
+  const ctx = await openVms({ ...opts, extra: { ...CEPH_GETS, '/api/buckets': BUCKETS, ...(opts.extra || {}) } });
+  try {
+    ctx.p.act('vmm', 'nav', { to: screen });
+    await ctx.p.waitFor(() => {
+      const d = ctx.p.mainData();
+      return d.screen === screen && d[screen] && ready(d[screen]);
+    }, `tela ${screen} pronta`);
+  } catch (e) {
+    await ctx.close();
+    throw e;
+  }
+  return ctx;
+}
+
+/** Todos os textos de uma lista de blocos (com os itens de kv e de tabs e os filhos). */
+function allTexts(blocks) {
+  const out = [];
+  const walk = (bs) => (bs || []).forEach((b) => {
+    for (const k of ['text', 'label', 'title', 'placeholder', 'value']) if (typeof b[k] === 'string') out.push(b[k]);
+    (b.items || []).forEach((i) => {
+      for (const k of ['key', 'value', 'label']) if (typeof i[k] === 'string') out.push(i[k]);
+    });
+    walk(b.children);
+  });
+  walk(blocks);
+  return out;
+}
+const blockWith = (blocks, pred) => {
+  let hit = null;
+  const walk = (bs) => (bs || []).forEach((b) => {
+    if (!hit && pred(b)) hit = b;
+    walk(b.children);
+  });
+  walk(blocks);
+  return hit;
+};
+const button = (blocks, action) => blockWith(blocks, (b) => b.type === 'button' && b.action === action);
+
+test('ceph: health, pools de dados, imagens do maior rbd e a lixeira, sem null', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('ceph', (c) => c.images.rows.length === 3);
+  try {
+    const c = p.mainData().ceph;
+    assertNoNull(p.mainData());
+    assert.deepEqual(c.header, { title: 'Ceph', health: 'HEALTH_WARN', tone: 'yellow' });
+    assert.deepEqual(c.pools.map((x) => x.name), ['ceph-small', 'ceph-vm', 'default.rgw.buckets.data'], '.mgr fica de fora');
+    const vm = c.pools.find((x) => x.name === 'ceph-vm');
+    assert.equal(vm.selected, true, 'o maior rbd vem escolhido');
+    assert.equal(vm.a, 'ceph:pool:ceph-vm');
+    assert.deepEqual(vm.apps, [{ text: 'rbd' }]);
+    assert.equal(vm.sub, 'Proxmox: ceph');
+    assert.equal(vm.objects, '12.345 obj');
+    assert.equal(vm.fill + vm.rest, 1000);
+    const rgw = c.pools.find((x) => x.name === 'default.rgw.buckets.data');
+    assert.equal(rgw.selectable, false);
+    assert.equal(rgw.tone, 'yellow');
+    assert.equal(c.images.title, 'Imagens em ceph-vm');
+    assert.equal(c.images.countText, '3');
+    assert.equal(c.images.searchId, 'ceph.search.ceph-vm');
+    assert.deepEqual(c.images.rows.map((r) => r.vm), ['jibri-1', 'sem VM', 'remoção interrompida']);
+    assert.equal(c.images.rows[0].vmid, '177');
+    assert.equal(c.images.rows[1].used, 'sem dado');
+    assert.equal(c.images.rows[2].rowTone, 'red');
+    assert.equal(c.trash.visible, true);
+    assert.equal(c.trash.countText, '1');
+    assert.equal(c.trash.rows[0].tone, 'red');
+    assert.equal(c.error, '');
+    assert.equal(c.poolsLoading, false);
+    for (const path of ['/api/health', '/api/storage/pools', '/api/storage/trash', '/api/storage/pools/ceph-vm/images']) {
+      assert.equal(count('GET', path), 1, `${path} uma vez`);
+    }
+    assert.equal(count('GET', '/api/storage/pools/ceph-small/images'), 0);
+    // busca nas imagens (no enter)
+    p.act('vmm', 'act', { a: 'ceph:search', text: 'JIBRI' });
+    await p.waitFor(() => p.mainData().ceph.images.rows.length === 1, 'busca jibri');
+    // sem polling: nada mais da API depois de um tempo
+    const before = count('GET', '/api/storage/pools');
+    await pause(300);
+    assert.equal(count('GET', '/api/storage/pools'), before);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('ceph: trocar de pool recarrega as imagens; pool sem rbd e o mesmo pool não', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('ceph', (c) => c.images.rows.length === 3, {
+    routes: { 'GET /api/storage/pools/ceph-small/images': () => ({ json: IMAGES_SMALL, delayMs: 200 }) },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'ceph:search', text: 'jibri' });
+    await p.waitFor(() => p.mainData().ceph.images.rows.length === 1, 'busca');
+    p.act('vmm', 'act', { a: 'ceph:pool:ceph-small' });
+    await p.waitFor(() => p.mainData().ceph.images.empty === 'Lendo as imagens do pool, pode levar alguns segundos…', 'lendo');
+    await p.waitFor(() => {
+      const c = p.mainData().ceph;
+      return c.images.title === 'Imagens em ceph-small' && c.images.rows.length === 1 && c.images.rows[0].name === 'small-img';
+    }, 'imagens do ceph-small');
+    const c = p.mainData().ceph;
+    assert.equal(c.pools.find((x) => x.name === 'ceph-small').selected, true);
+    assert.equal(c.pools.find((x) => x.name === 'ceph-vm').selected, false);
+    assert.equal(c.images.searchId, 'ceph.search.ceph-small', 'a busca recomeça no pool novo');
+    assertNoNull(p.mainData());
+    assert.equal(count('GET', '/api/storage/pools/ceph-small/images'), 1);
+    p.act('vmm', 'act', { a: 'ceph:pool:ceph-small' });
+    p.act('vmm', 'act', { a: 'ceph:pool:default.rgw.buckets.data' });
+    p.act('vmm', 'act', { a: 'ceph:pool:nao-existe' });
+    await pause(250);
+    assert.equal(count('GET', '/api/storage/pools/ceph-small/images'), 1, 'o mesmo pool não recarrega');
+    assert.equal(count('GET', '/api/storage/pools/default.rgw.buckets.data/images'), 0, 'rgw não tem imagens');
+    assert.equal(p.mainData().ceph.images.title, 'Imagens em ceph-small');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('ceph: erro nos pools aparece na tela, erro do health some quieto, erro da lixeira vira "Lixeira: …"', { timeout: 15000 }, async () => {
+  const fail = (message) => () => ({ status: 500, json: { statusCode: 500, message }, raw: true });
+  const { p, close } = await openArea('ceph', (c) => c.error !== '' && c.trash.error !== '', {
+    routes: {
+      'GET /api/health': fail('health caiu'),
+      'GET /api/storage/pools': fail('Ceph fora do ar'),
+      'GET /api/storage/trash': fail('rbd trash falhou'),
+    },
+  });
+  try {
+    const c = p.mainData().ceph;
+    assertNoNull(p.mainData());
+    assert.equal(c.error, 'Ceph fora do ar');
+    assert.equal(c.poolsLoading, false);
+    assert.equal(c.header.health, '');
+    assert.equal(c.trash.error, 'Lixeira: rbd trash falhou');
+    assert.equal(c.trash.visible, false);
+    assert.equal(c.images.visible, false);
+    assert.equal(p.mainData().screen, 'ceph', 'não vira a tela fatal');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('buckets: stats, ordenação que alterna, busca, e o admin vê o "Novo bucket"', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3);
+  try {
+    const b = p.mainData().buckets;
+    assertNoNull(p.mainData());
+    assert.equal(b.header.newBucket, true);
+    assert.equal(b.header.readOnly, false);
+    assert.deepEqual(b.stats.map((s) => s.label), ['Buckets', 'Usado', 'Objetos', 'Donos']);
+    assert.deepEqual(b.stats.map((s) => s.value), ['3', '54 GB', '1.525', '2']);
+    assert.deepEqual(b.rows.map((r) => r.name), ['backups', 'media', 'logs'], 'sem tenant primeiro, por nome');
+    assert.equal(b.rows[2].tenantText, 'acme/');
+    assert.equal(b.rows[1].quota, '30% de 10 GB');
+    assert.equal(b.rows[1].a, 'bucket:creds:/media');
+    assert.deepEqual(b.columns.map((c) => c.flex), [28, 14, 10, 10, 20, 10]);
+    assert.equal(b.columns[0].arrow, '↑');
+    // Usado: a primeira vez desc, a segunda asc
+    p.act('vmm', 'act', { a: 'bucket:sort:used' });
+    await p.waitFor(() => p.mainData().buckets.rows[0].name === 'backups' && p.mainData().buckets.columns[3].dir === 'desc', 'usado desc');
+    assert.deepEqual(p.mainData().buckets.rows.map((r) => r.name), ['backups', 'media', 'logs']);
+    p.act('vmm', 'act', { a: 'bucket:sort:used' });
+    await p.waitFor(() => p.mainData().buckets.columns[3].dir === 'asc', 'usado asc');
+    assert.deepEqual(p.mainData().buckets.rows.map((r) => r.name), ['logs', 'media', 'backups']);
+    assert.equal(p.mainData().buckets.columns[3].arrow, '↑');
+    assert.equal(p.mainData().buckets.columns[0].arrow, '');
+    // Cota: sem cota fica no fim
+    p.act('vmm', 'act', { a: 'bucket:sort:quota' });
+    await p.waitFor(() => p.mainData().buckets.columns[4].dir === 'desc', 'cota desc');
+    assert.equal(p.mainData().buckets.rows[0].name, 'media');
+    p.act('vmm', 'act', { a: 'bucket:sort:bogus' });
+    // busca por dono
+    p.act('vmm', 'act', { a: 'bucket:search', text: 'OPS' });
+    await p.waitFor(() => p.mainData().buckets.rows.length === 1, 'busca ops');
+    assert.equal(p.mainData().buckets.rows[0].name, 'backups');
+    assert.equal(p.mainData().buckets.stats[0].value, '3', 'os stats são da lista toda');
+    p.act('vmm', 'act', { a: 'bucket:search', text: 'zzz' });
+    await p.waitFor(() => p.mainData().buckets.empty === 'Nenhum bucket encontrado.', 'vazio');
+    assert.equal(count('GET', '/api/buckets'), 1, 'sem polling');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('buckets (viewer): sem "Novo bucket", credenciais sem secret, e um forjado não chama a API', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3, {
+    user: VIEWER,
+    extra: { '/api/buckets/owners/uplii/credentials': CREDS, '/api/buckets/owners/uplii/credentials/secret': { secretKey: SECRET }, '/api/buckets/owners': ['uplii'] },
+    routes: { 'POST /api/buckets': () => ({ json: {} }) },
+  });
+  try {
+    const b = p.mainData().buckets;
+    assert.equal(b.header.newBucket, false);
+    assert.equal(b.header.badge, 'Somente leitura');
+    p.act('vmm', 'act', { a: 'bucket:new' });
+    p.act('bucket:new', 'bucket:submit', { name: 'x-bucket', owner: 'uplii' });
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    const id = 'bucket:creds:uplii';
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    const blocks = p.windowBlocks(id);
+    assertNoNull(blocks);
+    const texts = allTexts(blocks);
+    assert.ok(texts.includes('Só admins veem a secret key'));
+    assert.ok(!button(blocks, 'bucket:reveal'), 'sem Revelar');
+    assert.ok(!button(blocks, 'bucket:copy:secret'), 'sem copiar a secret');
+    const code = blockWith(blocks, (x) => x.type === 'code');
+    assert.ok(!/SECRET_KEY/.test(code.text), 'o snippet do viewer não tem a linha da secret');
+    assert.ok(texts.includes('As chaves são do usuário uplii e dão acesso a todos os buckets dele (2).'), 'rodapé sem o conselho de admin');
+    // forjados: revelar e copiar a secret
+    p.act(id, 'bucket:reveal', {});
+    p.act(id, 'bucket:copy:secret', {});
+    p.act(id, 'bucket:copy:snippet', {});
+    await p.waitFor(() => p.requests.some((r) => r.method === 'clipboard.write'), 'copiou o snippet');
+    const clip = p.requests.find((r) => r.method === 'clipboard.write').params.text;
+    assert.ok(!/SECRET/.test(clip), 'o snippet copiado pelo viewer não tem a secret');
+    await pause(200);
+    assert.equal(count('GET', '/api/buckets/owners/uplii/credentials/secret'), 0, 'o viewer nunca busca a secret');
+    assert.equal(count('POST', '/api/buckets'), 0);
+    assert.equal(count('GET', '/api/buckets/owners'), 0);
+    assert.ok(!p.requests.some((r) => r.method === 'view.open' && r.params.viewId === 'bucket:new'), 'sem janela do Novo bucket');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+  assert.ok(!p.lines.join('\n').includes(SECRET));
+});
+
+test('credenciais (admin): Revelar busca a secret uma vez, ela só aparece na janela e nunca no stderr', { timeout: 15000 }, async () => {
+  const { p, close, count, api } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners/uplii/credentials': CREDS, '/api/buckets/owners/uplii/credentials/secret': { secretKey: SECRET } },
+  });
+  const id = 'bucket:creds:uplii';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    let blocks = p.windowBlocks(id);
+    assertNoNull(blocks);
+    const open = p.requests.find((r) => r.method === 'view.open' && r.params.viewId === id);
+    assert.equal(open.params.title, 'Credenciais S3');
+    assert.equal(open.params.modal, true);
+    assert.ok(allTexts(blocks).includes('Bucket media · usuário uplii do RGW'));
+    assert.ok(allTexts(blocks).includes('•'.repeat(40)), 'a secret mascarada');
+    assert.equal(button(blocks, 'bucket:reveal').label, 'Revelar');
+    assert.ok(allTexts(blocks).includes('As chaves são do usuário uplii e dão acesso a todos os buckets dele (2). Para isolar uma aplicação, crie o bucket com um usuário novo.'));
+    assert.match(blockWith(blocks, (x) => x.type === 'code').text, /S3_SECRET_KEY=<secret key>/);
+    assert.deepEqual(blockWith(blocks, (x) => x.type === 'tabs').items.map((t) => t.label), ['.env', 'AWS CLI', 'rclone']);
+    assert.equal(count('GET', '/api/buckets/owners/uplii/credentials/secret'), 0, 'abrir não busca a secret');
+    assert.ok(!p.lines.join('\n').includes(SECRET));
+    // Revelar
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes(SECRET), 'secret revelada');
+    blocks = p.windowBlocks(id);
+    assert.equal(button(blocks, 'bucket:reveal').label, 'Esconder');
+    assert.match(blockWith(blocks, (x) => x.type === 'code').text, new RegExp(`S3_SECRET_KEY=${SECRET}`));
+    // A secret no stdout só no view.update da janela das credenciais.
+    const leaks = p.lines.filter((l) => l.includes(SECRET)).map((l) => JSON.parse(l));
+    assert.ok(leaks.length > 0);
+    for (const m of leaks) {
+      assert.equal(m.method, 'view.update');
+      assert.equal(m.params.viewId, id);
+      assert.equal(m.params.data, undefined, 'nunca no data da janela principal');
+    }
+    // Esconder, Revelar de novo, aba aws: do cache
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => button(p.windowBlocks(id), 'bucket:reveal').label === 'Revelar', 'escondida');
+    assert.ok(!allTexts(p.windowBlocks(id)).includes(SECRET));
+    p.act(id, 'bucket:reveal', {});
+    p.act(id, 'bucket:tab:aws', {});
+    await p.waitFor(() => /aws_secret_access_key S3CR3T/.test((blockWith(p.windowBlocks(id), (x) => x.type === 'code') || {}).text || ''), 'aba aws com a secret');
+    // copiar a secret: do cache, e o "Copiado"
+    p.act(id, 'bucket:copy:secret', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('Copiado'), 'copiado');
+    assert.equal(p.requests.filter((r) => r.method === 'clipboard.write').pop().params.text, SECRET);
+    assert.equal(count('GET', '/api/buckets/owners/uplii/credentials/secret'), 1, 'uma busca só (cache da janela)');
+    assert.ok(!api.seen.some((r) => r.method !== 'GET'), 'nada de auditoria local: só GETs');
+    // Fechar apaga o cache: reabrir não mostra a secret e um Revelar busca de novo
+    p.act(id, 'bucket:close', {});
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === id), 'fechou');
+    p.act('vmm', 'act', { a: 'bucket:creds:acme/logs' });
+    await p.waitFor(() => p.requests.filter((r) => r.method === 'view.open' && r.params.viewId === id).length === 2, 'reabriu');
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais de novo');
+    assert.ok(!allTexts(p.windowBlocks(id)).includes(SECRET));
+    assert.ok(allTexts(p.windowBlocks(id)).includes('Bucket logs · usuário uplii do RGW'));
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => count('GET', '/api/buckets/owners/uplii/credentials/secret') === 2, 'buscou de novo');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+  assert.ok(!p.stderr().includes(SECRET), 'a secret nunca no stderr');
+});
+
+test('credenciais: sem access key some a secret e os snippets; clipboard que falha avisa', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners/ops/credentials': { owner: 'ops', endpoint: 'https://s3.example', region: 'br-1', accessKey: null } },
+    failMethods: ['clipboard.write'],
+  });
+  const id = 'bucket:creds:ops';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:creds:/backups' });
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('Este usuário não tem chave S3.'), 'sem chave');
+    const blocks = p.windowBlocks(id);
+    assertNoNull(blocks);
+    assert.ok(!blockWith(blocks, (x) => x.type === 'code'), 'sem snippet');
+    assert.ok(!blockWith(blocks, (x) => x.type === 'tabs'), 'sem abas');
+    assert.ok(!button(blocks, 'bucket:reveal'));
+    assert.ok(!allTexts(blocks).includes('Secret key'));
+    p.act(id, 'bucket:reveal', {});
+    p.act(id, 'bucket:copy:secret', {});
+    p.act(id, 'bucket:copy:snippet', {});
+    await pause(150);
+    assert.equal(count('GET', '/api/buckets/owners/ops/credentials/secret'), 0, 'sem access key, nem busca a secret');
+    // copiar o endpoint com o clipboard falhando: o aviso, e some depois de 1,5 s
+    p.act(id, 'bucket:copy:endpoint', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('Não deu para copiar; selecione o texto'), 'aviso de falha');
+    assert.equal(p.requests.find((r) => r.method === 'clipboard.write').params.text, 'https://s3.example');
+    await p.waitFor(() => !allTexts(p.windowBlocks(id)).includes('Não deu para copiar; selecione o texto'), 'o aviso some', 3000);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('Novo bucket: validação, dois submits mandam UM POST, e o dono novo abre as credenciais', { timeout: 15000 }, async () => {
+  let created = false;
+  const { p, close, count, api } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: {
+      '/api/buckets/owners': ['uplii', 'ops'],
+      '/api/buckets/owners/novo-app/credentials': { owner: 'novo-app', endpoint: 'https://s3.example', region: 'br-1', accessKey: 'AKIANEW' },
+    },
+    routes: {
+      'POST /api/buckets': (req, body) => {
+        created = true;
+        return { json: { name: body.name, tenant: null, owner: body.owner, objects: 0, usedBytes: 0, quotaBytes: null, createdAt: null }, delayMs: 300 };
+      },
+      'GET /api/buckets': () => ({ json: created ? [...BUCKETS, { name: 'novo-app', tenant: null, owner: 'novo-app', objects: 0, usedBytes: 0, quotaBytes: null, createdAt: null }] : BUCKETS }),
+    },
+  });
+  const NB = 'bucket:new';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:new' });
+    const open = await p.waitFor(() => p.requests.find((r) => r.method === 'view.open' && r.params.viewId === NB), 'abre o Novo bucket');
+    assert.equal(open.params.title, 'Novo bucket');
+    assert.equal(open.params.modal, true);
+    assert.equal(blockWith(open.params.blocks, (b) => b.type === 'select').placeholder, 'Carregando…');
+    await p.waitFor(() => (blockWith(p.windowBlocks(NB), (b) => b.type === 'select') || {}).placeholder === 'Escolha o usuário do RGW', 'donos');
+    let blocks = p.windowBlocks(NB);
+    assertNoNull(blocks);
+    assert.deepEqual(blockWith(blocks, (b) => b.type === 'select').options, ['uplii', 'ops']);
+    assert.deepEqual(blockWith(blocks, (b) => b.type === 'tabs').items.map((t) => [t.label, t.active]), [['Usuário existente', true], ['Novo usuário', false]]);
+    assert.equal(button(blocks, 'bucket:submit').label, 'Criar bucket');
+    assert.ok(button(blocks, 'bucket:cancel'));
+    // inválido: o erro volta na janela, sem POST
+    p.act(NB, 'bucket:submit', { name: 'X', owner: '' });
+    await p.waitFor(() => allTexts(p.windowBlocks(NB)).some((t) => t.includes('Escolha o usuário do RGW · ') || t.startsWith('Minúsculas, números e hífen; de 3 a 63 caracteres. · ')), 'erros');
+    // Novo usuário: a dica, e um dono que já existe é recusado
+    p.act(NB, 'bucket:mode:new', { name: 'novo-app', owner: '' });
+    await p.waitFor(() => allTexts(p.windowBlocks(NB)).includes('Cria o usuário no RGW com uma chave S3 só dele. As credenciais aparecem logo depois de criar.'), 'dica');
+    blocks = p.windowBlocks(NB);
+    assert.equal(blockWith(blocks, (b) => b.id === 'newOwner').placeholder, 'Ex: uplii');
+    assert.equal(blockWith(blocks, (b) => b.id === 'name').value, 'novo-app', 'o nome digitado fica');
+    p.act(NB, 'bucket:submit', { name: 'novo-app', newOwner: 'uplii' });
+    await p.waitFor(() => allTexts(p.windowBlocks(NB)).includes('Esse usuário já existe; escolha em Usuário existente.'), 'dono já existe');
+    assert.equal(count('POST', '/api/buckets'), 0);
+    // dois submits seguidos (vazio = o nome do bucket)
+    p.act(NB, 'bucket:submit', { name: 'Novo-App ', newOwner: '' });
+    p.act(NB, 'bucket:submit', { name: 'Novo-App ', newOwner: '' });
+    await p.waitFor(() => (button(p.windowBlocks(NB), 'bucket:submit') || {}).label === 'Criando…', 'criando');
+    assert.equal(button(p.windowBlocks(NB), 'bucket:submit').disabled, true);
+    p.act(NB, 'bucket:submit', { name: 'novo-app', newOwner: '' }); // o enter no meio
+    p.act(NB, 'bucket:cancel', {}); // cancelar no meio não fecha
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === NB), 'fecha depois de criar');
+    await p.waitFor(() => p.mainData().buckets.rows.length === 4, 'recarregou a lista');
+    await p.waitFor(() => allTexts(p.windowBlocks('bucket:creds:novo-app')).includes('AKIANEW'), 'credenciais do dono novo, sozinhas');
+    assert.ok(allTexts(p.windowBlocks('bucket:creds:novo-app')).includes('Bucket novo-app · usuário novo-app do RGW'));
+    await pause(150);
+    assert.equal(count('POST', '/api/buckets'), 1, 'um POST só');
+    assert.deepEqual(api.seen.find((r) => r.method === 'POST' && r.path === '/api/buckets').body, { name: 'novo-app', owner: 'novo-app', newOwner: true });
+    assert.equal(p.requests.filter((r) => r.method === 'view.close' && r.params.viewId === NB).length, 1);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('Novo bucket com dono existente: cria, recarrega e não abre as credenciais; erro da API volta na janela', { timeout: 15000 }, async () => {
+  let fail = true;
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners': ['uplii'] },
+    routes: {
+      'POST /api/buckets': (req, body) => (fail
+        ? { status: 409, json: { statusCode: 409, message: 'Esse bucket já existe.' }, raw: true }
+        : { json: { name: body.name, tenant: null, owner: body.owner, objects: 0, usedBytes: 0, quotaBytes: null, createdAt: null } }),
+    },
+  });
+  const NB = 'bucket:new';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:new' });
+    await p.waitFor(() => (blockWith(p.windowBlocks(NB), (b) => b.type === 'select') || {}).placeholder === 'Escolha o usuário do RGW', 'donos');
+    p.act(NB, 'bucket:submit', { name: 'media', owner: 'uplii' });
+    await p.waitFor(() => allTexts(p.windowBlocks(NB)).includes('Esse bucket já existe.'), 'erro da API');
+    assert.equal(button(p.windowBlocks(NB), 'bucket:submit').label, 'Criar bucket', 'saving volta');
+    fail = false;
+    p.act(NB, 'bucket:submit', { name: 'media2', owner: 'uplii' });
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === NB), 'fechou');
+    await p.waitFor(() => count('GET', '/api/buckets') === 2, 'recarregou');
+    await pause(200);
+    assert.ok(!p.requests.some((r) => r.method === 'view.open' && String(r.params.viewId).startsWith('bucket:creds:')), 'sem credenciais');
+    assert.equal(count('POST', '/api/buckets'), 2);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('Novo bucket sem donos: "Nenhum usuário do RGW"; erro nos donos aparece', { timeout: 15000 }, async () => {
+  const { p, close } = await openArea('buckets', (b) => b.rows.length === 3, {
+    routes: { 'GET /api/buckets/owners': () => ({ status: 502, json: { statusCode: 502, message: 'RGW fora' }, raw: true }) },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'bucket:new' });
+    await p.waitFor(() => allTexts(p.windowBlocks('bucket:new')).includes('RGW fora'), 'erro');
+    assert.equal(blockWith(p.windowBlocks('bucket:new'), (b) => b.type === 'select').placeholder, 'Nenhum usuário do RGW');
+    assertNoNull(p.windowBlocks('bucket:new'));
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('sair com a secret revelada fecha as credenciais e esquece a secret', { timeout: 15000 }, async () => {
+  const { p, close, count, dataDir, token, api } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners/uplii/credentials': CREDS, '/api/buckets/owners/uplii/credentials/secret': { secretKey: SECRET } },
+  });
+  const id = 'bucket:creds:uplii';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes(SECRET), 'revelada');
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    assert.ok(p.requests.some((r) => r.method === 'view.close' && r.params.viewId === id), 'fechou as credenciais');
+    // entra de novo: as credenciais vêm sem a secret, e um Revelar busca de novo
+    seed(dataDir, api.url, token, ADMIN);
+    p.act('vmm', 'nav', { to: 'buckets' });
+    await p.waitFor(() => p.mainData().screen === 'buckets' && p.mainData().buckets.rows.length === 3, 'buckets de novo');
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => p.requests.filter((r) => r.method === 'view.open' && r.params.viewId === id).length === 2, 'reabriu');
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    assert.ok(!allTexts(p.windowBlocks(id)).includes(SECRET));
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => count('GET', '/api/buckets/owners/uplii/credentials/secret') === 2, 'buscou de novo');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+  assert.ok(!p.stderr().includes(SECRET));
+});
+
+test('as views de ceph e buckets aguentam ctx.user null', { timeout: 15000 }, async () => {
+  const dataDir = tmpDir();
+  const script = `
+    const ceph = m.screens.get('ceph').view({ user: null, now: Date.now });
+    const buckets = m.screens.get('buckets').view({ user: null, now: Date.now });
+    process.stderr.write('VIEW=' + JSON.stringify({ ceph, buckets }) + '\\n');
+  `;
+  const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9', script });
+  try {
+    await p.waitFor(() => /VIEW=.*\n/.test(p.stderr()), 'as views no stderr');
+    const v = JSON.parse(p.stderr().match(/VIEW=(.*)\n/)[1]);
+    assertNoNull(v);
+    assert.equal(v.buckets.header.newBucket, false);
+    assert.equal(v.buckets.header.readOnly, true);
+    assert.equal(v.buckets.empty, 'Carregando buckets…');
+    assert.equal(v.ceph.poolsLoading, true);
+    assert.equal(v.ceph.images.visible, false);
+  } finally {
+    await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('storage.rfwtxt: sem import, doubles, sem null/args.children, e a casca liga as telas', { timeout: 15000 }, () => {
+  const ui = path.join(__dirname, '..', 'ui');
+  const src = fs.readFileSync(path.join(ui, 'storage.rfwtxt'), 'utf8');
+  assert.ok(!/^import /m.test(src), 'tela sem import');
+  const code = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/0x[0-9a-fA-F]+/g, '0')
+    .replace(/\b(maxLines|flex):\s*\d+/g, '');
+  const ints = code.match(/(?<![\w.])\d+(?![\w.])/g) || [];
+  assert.deepEqual(ints.filter((n) => n !== '0'), [], 'números inteiros no .rfwtxt (use 13.0)');
+  for (const [o, c] of [['(', ')'], ['[', ']'], ['{', '}']]) assert.equal(code.split(o).length, code.split(c).length, `${o}${c} desbalanceados`);
+  assert.ok(!/\bnull\b/.test(code));
+  assert.ok(!/args\.children\b/.test(code));
+  assert.match(src, /widget CephScreen =/);
+  assert.match(src, /widget BucketsScreen =/);
+  const shell = fs.readFileSync(SHELL, 'utf8');
+  assert.match(shell, /"ceph": CephScreen\(\)/);
+  assert.match(shell, /"buckets": BucketsScreen\(\)/);
+  // Os arquivos viram uma biblioteca só: um nome de widget repetido quebraria.
+  const names = fs.readdirSync(ui).filter((f) => f.endsWith('.rfwtxt'))
+    .flatMap((f) => [...fs.readFileSync(path.join(ui, f), 'utf8').matchAll(/^widget (\w+) =/gm)].map((x) => x[1]));
+  assert.deepEqual(names.filter((n, i) => names.indexOf(n) !== i), [], 'widget repetido entre os .rfwtxt');
 });
