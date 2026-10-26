@@ -42,4 +42,46 @@ function fakeFetch(routes) {
   return fetch;
 }
 
-module.exports = { fakeFetch };
+// Falha apontando o caminho do primeiro null/undefined (o RFW não aceita null no data).
+function assertNoNull(value, path = '') {
+  if (value === null || value === undefined) {
+    throw new Error(`assertNoNull: ${value === null ? 'null' : 'undefined'} em ${path || '(raiz)'}`);
+  }
+  if (Array.isArray(value)) value.forEach((v, i) => assertNoNull(v, `${path}[${i}]`));
+  else if (typeof value === 'object') for (const [k, v] of Object.entries(value)) assertNoNull(v, path ? `${path}.${k}` : k);
+}
+
+// Relógio falso: `schedule(fn, ms)` devolve `cancel`; `now()` é o tempo virtual.
+// `advance(ms)` é ASSÍNCRONO: dispara os timers vencidos em ordem e, depois de cada
+// um, deixa as promises pendentes (ticks async) assentarem via setImmediate real.
+// Nos testes: `await clock.advance(1000)`.
+function fakeClock() {
+  let t = 0;
+  let seq = 0;
+  const timers = new Map();
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  return {
+    now: () => t,
+    schedule(fn, ms) {
+      const id = seq++;
+      timers.set(id, { at: t + ms, fn });
+      return () => timers.delete(id);
+    },
+    async advance(ms) {
+      const end = t + ms;
+      await settle();
+      for (;;) {
+        let next = null;
+        for (const [id, tm] of timers) if (tm.at <= end && (!next || tm.at < next.tm.at)) next = { id, tm };
+        if (!next) break;
+        timers.delete(next.id);
+        t = Math.max(t, next.tm.at);
+        next.tm.fn();
+        await settle();
+      }
+      t = end;
+    },
+  };
+}
+
+module.exports = { fakeFetch, assertNoNull, fakeClock };
