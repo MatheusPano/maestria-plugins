@@ -1047,6 +1047,9 @@ const COPIED = 'Copiado';
 const COPY_FAILED = 'Não deu para copiar; selecione o texto';
 const credWindows = new Map(); // viewId → { gen, bucket, owner, creds, error, showSecret, tab, feedback, timer }
 const secrets = new Map(); // viewId → a secret key revelada (só desta janela; nunca no log)
+// viewId → o GET da secret em curso: cliques seguidos (Revelar, copiar) esperam o mesmo,
+// porque cada GET vira um `s3.secret.reveal` na auditoria.
+const pendingSecret = new Map();
 let credGen = 0;
 
 function forgetWindow(viewId) {
@@ -1054,6 +1057,7 @@ function forgetWindow(viewId) {
   if (w && w.timer) clearTimeout(w.timer);
   credWindows.delete(viewId);
   secrets.delete(viewId);
+  pendingSecret.delete(viewId);
 }
 
 function forgetStorage() {
@@ -1062,6 +1066,7 @@ function forgetStorage() {
   newBucket = { ...freshNewBucket(), gen: newBucket.gen + 1 };
   for (const viewId of [...credWindows.keys()]) forgetWindow(viewId);
   secrets.clear();
+  pendingSecret.clear();
 }
 
 function ownerBuckets(owner) {
@@ -1101,7 +1106,9 @@ function credentialsBlocks(viewId) {
           {
             type: 'row',
             children: [
-              { type: 'button', action: 'bucket:reveal', label: shown ? 'Esconder' : 'Revelar' },
+              pendingSecret.has(viewId)
+                ? { type: 'button', action: 'bucket:reveal', label: 'Revelando…', disabled: true }
+                : { type: 'button', action: 'bucket:reveal', label: shown ? 'Esconder' : 'Revelar' },
               { type: 'button', action: 'bucket:copy:secret', label: 'Secret key', icon: 'copy', tooltip: 'Copiar' },
             ],
           },
@@ -1132,7 +1139,15 @@ const renderCredentials = (viewId) =>
 
 async function openCredentials({ name, owner }) {
   const viewId = `${CREDS}${owner}`;
-  forgetWindow(viewId); // de novo do zero, sem a secret de antes
+  const cur = credWindows.get(viewId);
+  if (cur && state.views.has(viewId)) {
+    // Já aberta pra esse dono (as chaves são do dono): só traz pra frente, com o bucket novo.
+    cur.bucket = name;
+    return openWindow(viewId, 'Credenciais S3', credentialsBlocks(viewId));
+  }
+  // Uma janela que fechou já largou a secret (windowGone → forgetWindow); aqui só sobra
+  // uma entrada velha se a Maestria não avisou o fechamento.
+  if (cur) forgetWindow(viewId);
   const w = { gen: ++credGen, bucket: name, owner, creds: null, error: '', showSecret: false, tab: 'env', feedback: '', timer: null };
   credWindows.set(viewId, w);
   await openWindow(viewId, 'Credenciais S3', credentialsBlocks(viewId));
@@ -1152,17 +1167,27 @@ async function loadSecret(viewId) {
   const w = credWindows.get(viewId);
   // Sem access key não há secret a mostrar (a web nem mostra o campo).
   if (!w || !currentAdmin() || !w.creds || !w.creds.accessKey) return null;
+  w.error = ''; // o erro de um Revelar anterior sai quando outro começa
   if (secrets.has(viewId)) return secrets.get(viewId);
-  try {
-    const r = await api().secret(w.owner);
-    const value = r && typeof r.secretKey === 'string' ? r.secretKey : '';
-    if (credWindows.get(viewId) !== w || !value) return null; // fechou no meio: não guarda
-    secrets.set(viewId, value);
-    return value;
-  } catch (e) {
-    if (credWindows.get(viewId) === w) w.error = errText(e);
-    return null;
-  }
+  if (pendingSecret.has(viewId)) return pendingSecret.get(viewId);
+  const p = (async () => {
+    await null; // o finally nunca roda antes do `set` abaixo, nem com um erro síncrono
+    try {
+      const r = await api().secret(w.owner);
+      const value = r && typeof r.secretKey === 'string' ? r.secretKey : '';
+      if (credWindows.get(viewId) !== w || !value) return null; // fechou no meio: não guarda
+      secrets.set(viewId, value);
+      return value;
+    } catch (e) {
+      if (credWindows.get(viewId) === w) w.error = errText(e);
+      return null;
+    } finally {
+      if (pendingSecret.get(viewId) === p) pendingSecret.delete(viewId);
+    }
+  })();
+  pendingSecret.set(viewId, p);
+  renderCredentials(viewId); // o "Revelando…"
+  return p;
 }
 
 async function copyText(viewId, text) {

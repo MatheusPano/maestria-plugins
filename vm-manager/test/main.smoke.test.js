@@ -1596,3 +1596,94 @@ test('storage.rfwtxt: sem import, doubles, sem null/args.children, e a casca lig
     .flatMap((f) => [...fs.readFileSync(path.join(ui, f), 'utf8').matchAll(/^widget (\w+) =/gm)].map((x) => x[1]));
   assert.deepEqual(names.filter((n, i) => names.indexOf(n) !== i), [], 'widget repetido entre os .rfwtxt');
 });
+
+// --- Task 10, fix 1 --------------------------------------------------------------------
+
+test('secret: Revelar duas vezes + copiar com o GET lento fazem UM GET (um s3.secret.reveal)', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners/uplii/credentials': CREDS },
+    routes: { 'GET /api/buckets/owners/uplii/credentials/secret': () => ({ json: { secretKey: SECRET }, delayMs: 300 }) },
+  });
+  const id = 'bucket:creds:uplii';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    p.act(id, 'bucket:reveal', {});
+    p.act(id, 'bucket:reveal', {});
+    p.act(id, 'bucket:copy:secret', {});
+    await p.waitFor(() => (button(p.windowBlocks(id), 'bucket:reveal') || {}).label === 'Revelando…', 'revelando');
+    assert.equal(button(p.windowBlocks(id), 'bucket:reveal').disabled, true);
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes(SECRET) && allTexts(p.windowBlocks(id)).includes('Copiado'), 'revelada e copiada');
+    assert.equal(button(p.windowBlocks(id), 'bucket:reveal').label, 'Esconder');
+    assert.equal(p.requests.filter((r) => r.method === 'clipboard.write').pop().params.text, SECRET);
+    await pause(400);
+    assert.equal(count('GET', '/api/buckets/owners/uplii/credentials/secret'), 1, 'um GET só');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+  assert.ok(!p.stderr().includes(SECRET));
+});
+
+test('secret: o erro de um Revelar some quando o próximo começa', { timeout: 15000 }, async () => {
+  let fails = 1;
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners/uplii/credentials': CREDS },
+    routes: {
+      'GET /api/buckets/owners/uplii/credentials/secret': () => (fails-- > 0
+        ? { status: 500, json: { statusCode: 500, message: 'RGW não respondeu' }, raw: true }
+        : { json: { secretKey: SECRET }, delayMs: 200 }),
+    },
+  });
+  const id = 'bucket:creds:uplii';
+  try {
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('RGW não respondeu'), 'erro');
+    assert.equal(button(p.windowBlocks(id), 'bucket:reveal').label, 'Revelar');
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => (button(p.windowBlocks(id), 'bucket:reveal') || {}).label === 'Revelando…', 'revelando');
+    assert.ok(!allTexts(p.windowBlocks(id)).includes('RGW não respondeu'), 'o erro velho sai no começo');
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes(SECRET), 'revelada');
+    assert.ok(!allTexts(p.windowBlocks(id)).includes('RGW não respondeu'));
+    assert.equal(count('GET', '/api/buckets/owners/uplii/credentials/secret'), 2);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('secret: fechar a janela (view.closed) apaga a secret; reabrir mostra a máscara e busca de novo', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openArea('buckets', (b) => b.rows.length === 3, {
+    extra: { '/api/buckets/owners/uplii/credentials': CREDS, '/api/buckets/owners/uplii/credentials/secret': { secretKey: SECRET } },
+  });
+  const id = 'bucket:creds:uplii';
+  const opens = () => p.requests.filter((r) => r.method === 'view.open' && r.params.viewId === id).length;
+  try {
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais');
+    p.act(id, 'bucket:reveal', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes(SECRET), 'revelada');
+    // reabrir com a janela ainda aberta só traz pra frente (a secret continua lá)
+    p.act('vmm', 'act', { a: 'bucket:creds:acme/logs' });
+    await p.waitFor(() => opens() === 2, 'trouxe pra frente');
+    assert.ok(allTexts(p.windowBlocks(id)).includes(SECRET));
+    assert.ok(allTexts(p.windowBlocks(id)).includes('Bucket logs · usuário uplii do RGW'));
+    // o usuário fecha no X: a Maestria só avisa
+    p.send('event', { type: 'view.closed', viewId: id }, { notify: true });
+    await pause(100);
+    p.act('vmm', 'act', { a: 'bucket:creds:/media' });
+    await p.waitFor(() => opens() === 3, 'reabriu');
+    await p.waitFor(() => allTexts(p.windowBlocks(id)).includes('AKIAUPLII'), 'credenciais de novo');
+    const blocks = p.windowBlocks(id);
+    assert.ok(!allTexts(blocks).includes(SECRET), 'sem a secret');
+    assert.ok(allTexts(blocks).includes('•'.repeat(40)), 'a máscara');
+    assert.equal(button(blocks, 'bucket:reveal').label, 'Revelar');
+    p.act(id, 'bucket:copy:secret', {});
+    await p.waitFor(() => count('GET', '/api/buckets/owners/uplii/credentials/secret') === 2, 'nada em cache: busca de novo');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
