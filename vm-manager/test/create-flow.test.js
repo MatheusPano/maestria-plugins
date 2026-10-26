@@ -246,3 +246,51 @@ test('404 before any running keeps tracking (no vms lookup)', async () => {
   assert.equal(flow.state().phase, 'tracking');
   assert.equal(calls.vms, 0);
 });
+
+// --- Task 8 (revisão da Task 6): 2xx vazio/não-JSON não é sucesso ---
+
+test('classify: ok without a JSON object → track', () => {
+  for (const data of [null, undefined, '', 'ok', 0, true]) {
+    assert.equal(classify({ ok: true, data }), 'track', `data ${JSON.stringify(data)}`);
+  }
+  assert.equal(classify({ ok: true, data: { vm: {} } }), 'succeeded');
+});
+
+test('empty 2xx → tracking, then the real result from /vms/creations', async () => {
+  const { flow, clock, calls } = setup({
+    create: async () => null,
+    creations: [{ status: 'succeeded', result: { vm: { vmid: 9 } } }],
+  });
+  const s = await flow.submit(BODY);
+  assert.equal(s.phase, 'tracking');
+  await clock.advance(5000);
+  assert.equal(flow.state().phase, 'succeeded');
+  assert.equal(flow.state().result.vm.vmid, 9);
+  assert.equal(calls.create, 1);
+});
+
+test('after succeeded, the clock makes no more vmCreation calls', async () => {
+  const { flow, clock, calls } = setup({
+    create: async () => { throw new ApiError('t', 0, { kind: 'timeout' }); },
+    creations: [{ status: 'succeeded', result: { vm: { vmid: 1 } } }],
+  });
+  await flow.submit(BODY);
+  await clock.advance(5000);
+  assert.equal(flow.state().phase, 'succeeded');
+  const n = calls.creation;
+  await clock.advance(60000);
+  assert.equal(calls.creation, n);
+});
+
+test('after unconfirmed, the clock makes no more vmCreation calls', async () => {
+  const { flow, clock, calls } = setup({
+    create: async () => { throw new ApiError('x', 502); },
+    creations: [running],
+  });
+  await flow.submit(BODY);
+  await clock.advance(600000);
+  assert.equal(flow.state().phase, 'unconfirmed');
+  const n = calls.creation;
+  await clock.advance(120000);
+  assert.equal(calls.creation, n);
+});

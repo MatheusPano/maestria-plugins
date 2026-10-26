@@ -10,8 +10,10 @@ const UNCONFIRMED = 'não deu pra confirmar — confira a lista antes de tentar 
 const FALLBACK_WARNING = 'Criada; detalhes do NetBox/backup não disponíveis — confira na lista.';
 const FINAL = new Set(['succeeded', 'rejected', 'failed', 'unconfirmed']);
 
+// Um 2xx só é sucesso com o resultado em json; vazio ou não-JSON (um proxy no meio)
+// não diz se a VM saiu: acompanha.
 function classify(outcome) {
-  if (outcome.ok) return 'succeeded';
+  if (outcome.ok) return outcome.data !== null && typeof outcome.data === 'object' ? 'succeeded' : 'track';
   const e = outcome.error;
   if (e && e.nest && !(e.status === 409 && IN_PROGRESS.test(e.message))) return 'rejected';
   return 'track';
