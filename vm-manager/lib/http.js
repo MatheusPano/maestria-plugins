@@ -39,9 +39,10 @@ function createHttp({ baseUrl, fetch: fetchFn = globalThis.fetch, getAuth, onUna
 
   async function request(method, path, { body, query, timeoutMs: t, raw = false, auth = true, headers } = {}) {
     const h = { 'Content-Type': 'application/json' };
+    let usedToken = null;
     if (auth && getAuth) {
-      const token = await getAuth();
-      if (token) h.Authorization = `Bearer ${token}`;
+      usedToken = await getAuth();
+      if (usedToken) h.Authorization = `Bearer ${usedToken}`;
     }
     Object.assign(h, headers || {});
 
@@ -70,7 +71,7 @@ function createHttp({ baseUrl, fetch: fetchFn = globalThis.fetch, getAuth, onUna
     }
 
     if (!res.ok) {
-      if (res.status === 401 && auth && onUnauthorized) onUnauthorized();
+      if (res.status === 401 && auth && onUnauthorized) onUnauthorized(usedToken);
       const nest = !!parsed && typeof parsed === 'object' && parsed.statusCode !== undefined && parsed.message !== undefined;
       throw new ApiError(extractMessage(parsed) || `HTTP ${res.status}`, res.status, { nest, kind: 'http' });
     }

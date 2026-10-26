@@ -49,13 +49,17 @@ function createSession({
     return rec && rec.url === url ? rec : null;
   }
 
-  function expire() {
-    const had = !!store.load();
+  /** Só derruba a sessão se o token que levou o 401 ainda é o guardado (ignora 401 velho). */
+  function expire(usedToken) {
+    const rec = store.load();
+    if (!rec || !usedToken || rec.token !== usedToken) return;
     store.clear();
-    if (had) {
-      emit('changed');
-      emit('expired');
-    }
+    emit('changed');
+    emit('expired');
+  }
+
+  function validTokenResponse(d) {
+    return !!d && typeof d.token === 'string' && d.token !== '' && Number.isFinite(Date.parse(d.expiresAt));
   }
 
   function user() {
@@ -71,16 +75,21 @@ function createSession({
   async function doRefresh(rec) {
     try {
       const data = await api.pluginRefresh(rec.token);
-      const t = now();
+      if (!validTokenResponse(data)) return;
+      // logout/expire/login durante o refresh: não ressuscita o token
+      const live = store.load();
+      if (!live || live.url !== url || live.token !== rec.token) return;
+      const nextUser = data.user || rec.user;
       store.save({
         url,
         token: data.token,
         expiresAt: Date.parse(data.expiresAt),
-        obtainedAt: t,
-        user: data.user || rec.user,
+        obtainedAt: now(),
+        user: nextUser,
       });
+      if (JSON.stringify(nextUser) !== JSON.stringify(rec.user)) emit('changed');
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) expire();
+      if (e instanceof ApiError && e.status === 401) expire(rec.token);
       // outras falhas: mantém o token antigo
     }
   }
@@ -123,6 +132,7 @@ function createSession({
         return { ok: false, message: LOGIN_MESSAGES[res && res.error] || LOGIN_MESSAGES.sso };
       }
       const data = await api.pluginToken({ code: res.code, verifier });
+      if (!validTokenResponse(data)) return { ok: false, message: 'Não foi possível entrar: resposta inválida da API.' };
       const t = now();
       store.save({ url, token: data.token, expiresAt: Date.parse(data.expiresAt), obtainedAt: t, user: data.user });
       emit('changed');

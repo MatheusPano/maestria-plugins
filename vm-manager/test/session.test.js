@@ -166,3 +166,49 @@ test('refreshMe updates role', async () => {
   assert.equal(session.user().role, 'viewer');
   assert.equal(store.load().user.role, 'viewer');
 });
+
+test('logout during in-flight refresh does not resurrect the token', async () => {
+  const rec = { url: URL_, token: 'old', obtainedAt: 0, expiresAt: 1000, user: USER };
+  const routes = [
+    { method: 'POST', path: '/api/auth/plugin/refresh', delayMs: 20, json: { data: { token: 'new', expiresAt: new Date(5000).toISOString() } } },
+    { method: 'GET', path: '/api/vms', json: { data: [] } },
+  ];
+  const { session, store } = mk({ rec, now: () => 600, routes });
+  const p = session.api.vms();
+  await new Promise((r) => setTimeout(r, 5));
+  session.logout();
+  await p;
+  assert.equal(store.load(), null);
+  assert.equal(session.isLoggedIn(), false);
+});
+
+test('stale 401 after re-login keeps the new token and does not emit expired', async () => {
+  const rec = { url: URL_, token: 'old', obtainedAt: 0, expiresAt: 10000, user: USER };
+  const { session, store } = mk({ rec, now: () => 100, routes: [{ path: '/api/vms', delayMs: 20, status: 401, json: { message: 'x' } }] });
+  let n = 0;
+  session.on('expired', () => n++);
+  const p = session.api.vms();
+  await new Promise((r) => setTimeout(r, 5));
+  store.save({ url: URL_, token: 'fresh', obtainedAt: 0, expiresAt: 10000, user: USER });
+  await assert.rejects(p, (e) => e.status === 401);
+  assert.equal(store.load().token, 'fresh');
+  assert.equal(n, 0);
+});
+
+test('malformed token response fails login', async () => {
+  const { session, store } = mk({ routes: [{ path: '/api/auth/plugin/token', json: { data: { token: 5, expiresAt: 'nope' } } }] });
+  assert.deepEqual(await session.login(), { ok: false, message: 'Não foi possível entrar: resposta inválida da API.' });
+  assert.equal(store.load(), null);
+});
+
+test('malformed refresh response keeps old token; changed user emits changed', async () => {
+  const rec = { url: URL_, token: 'old', obtainedAt: 0, expiresAt: 1000, user: USER };
+  const bad = mk({ rec, now: () => 600, routes: [{ method: 'POST', path: '/api/auth/plugin/refresh', json: { data: { token: 'x' } } }, { path: '/api/vms', json: { data: [] } }] });
+  await bad.session.api.vms();
+  assert.equal(bad.store.load().token, 'old');
+  const ok = mk({ rec, now: () => 600, routes: [{ method: 'POST', path: '/api/auth/plugin/refresh', json: { data: { token: 'new', expiresAt: new Date(5000).toISOString(), user: { ...USER, role: 'viewer' } } } }, { path: '/api/vms', json: { data: [] } }] });
+  let n = 0;
+  ok.session.on('changed', () => n++);
+  await ok.session.api.vms();
+  assert.equal(n, 1);
+});
