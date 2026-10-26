@@ -70,7 +70,7 @@ function createHttp({ baseUrl, fetch: fetchFn = globalThis.fetch, getAuth, onUna
     }
 
     if (!res.ok) {
-      if (res.status === 401 && onUnauthorized) onUnauthorized();
+      if (res.status === 401 && auth && onUnauthorized) onUnauthorized();
       const nest = !!parsed && typeof parsed === 'object' && parsed.statusCode !== undefined && parsed.message !== undefined;
       throw new ApiError(extractMessage(parsed) || `HTTP ${res.status}`, res.status, { nest, kind: 'http' });
     }

@@ -87,3 +87,10 @@ test('query skips empty values', async () => {
   await http.request('GET', '/audit', { query: { page: 2, action: '', userId: undefined } });
   assert.equal(fetch.calls[0].url, 'https://x/api/audit?page=2');
 });
+
+test('401 on auth:false call does not call onUnauthorized', async () => {
+  let n = 0;
+  const { http } = mk([{ path: '/api/auth/x', status: 401, json: { message: 'nope' } }], { onUnauthorized: () => { n++; } });
+  await assert.rejects(http.request('POST', '/auth/x', { auth: false }), (e) => e.status === 401);
+  assert.equal(n, 0);
+});
