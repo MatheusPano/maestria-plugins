@@ -35,6 +35,7 @@ const bk = require('./lib/buckets');
 const cf = require('./lib/create-form');
 const { createCreateFlow } = require('./lib/create-flow');
 const rt = require('./lib/routes');
+const adm = require('./lib/admin');
 
 const MAIN = 'vmm';
 const TITLE = 'VM Manager';
@@ -410,6 +411,7 @@ function forgetAreas() {
   Object.assign(create, { form: null, options: null, bridge: '', loading: false, loadError: '', ip: freshIp(), errors: [], flowError: '', validating: false });
   forgetStorage(); // Ceph, buckets, o "Novo bucket" e as credenciais (com as secret keys)
   forgetRoutes(); // a lista, a "Nova rota", a remoção e o acompanhamento dos jobs
+  forgetAdmin(); // os usuários e a auditoria
 }
 
 async function doLogout() {
@@ -1819,6 +1821,211 @@ registerScreen('routes', {
   // `ctx.user` pode ser null (um render logo depois do sair): aí é só leitura.
   view: (c) => routesScreenView(c.user, c.now()),
 });
+
+// Usuários (UsersTable.tsx) e Auditoria (AuditLog.tsx), só de admin: o `gate` já manda o
+// viewer pro "só admins", e cada ação confere de novo (`currentAdmin()`). Um 403 da API
+// quer dizer que o papel mudou noutro lugar: relê o /auth/me e passa pelo gating de novo.
+
+const isForbidden = (e) => e instanceof ApiError && e.status === 403;
+
+/** Depois de um 403: relê quem é e, se a tela não vale mais, vai pra onde o gating manda. */
+async function regate() {
+  const s = state.session;
+  const from = state.screen;
+  try {
+    await s.refreshMe();
+  } catch {
+    return false; // o 401 já leva ao login; a rede fora fica com o erro na tela
+  }
+  if (s !== state.session || state.screen !== from) return true;
+  const dest = gate(s.user(), from);
+  if (dest === from) return false;
+  switchTo(dest);
+  await render();
+  return true;
+}
+
+const freshUsers = () => ({ gen: 0, users: null, error: '', saving: new Set() });
+const usersState = freshUsers();
+
+async function loadUsers() {
+  const gen = ++usersState.gen;
+  try {
+    const list = await api().users();
+    if (gen !== usersState.gen) return;
+    usersState.users = Array.isArray(list) ? list : [];
+    usersState.error = '';
+  } catch (e) {
+    if (gen !== usersState.gen || isUnauthorized(e)) return;
+    if (isForbidden(e) && (await regate())) return;
+    usersState.error = errText(e);
+  }
+}
+
+/** Troca o papel (o "Aprovar" é `viewer`): um PATCH por linha de cada vez, nunca o próprio. */
+async function changeRole(id, role) {
+  if (!currentAdmin()) return null;
+  const me = state.session.user();
+  const list = usersState.users || [];
+  const target = list.find((u) => u.id === id);
+  if (!target || (me && me.id === id)) return null; // a UI nem oferece; aqui recusa
+  if (!ROLE_LABEL[role] || target.role === role) return null;
+  if (usersState.saving.has(id)) return null; // a linha fica travada até o PATCH voltar
+  const gen = usersState.gen;
+  usersState.saving.add(id); // antes de qualquer await
+  usersState.error = '';
+  render();
+  try {
+    const updated = await api().setRole(id, role);
+    if (gen !== usersState.gen) return null; // saiu ou trocou de url no meio
+    if (updated && typeof updated === 'object' && updated.id !== undefined) {
+      usersState.users = (usersState.users || []).map((u) => (u.id === updated.id ? updated : u));
+    }
+  } catch (e) {
+    if (gen !== usersState.gen || isUnauthorized(e)) return null;
+    if (isForbidden(e) && (await regate())) return null;
+    usersState.error = errText(e);
+  } finally {
+    if (gen === usersState.gen) usersState.saving.delete(id);
+  }
+  return render();
+}
+
+function usersScreenView(user, now) {
+  const loaded = Array.isArray(usersState.users);
+  const rows = adm.usersView(usersState.users || [], { meId: user ? user.id : '', saving: usersState.saving, now }).map((r) => ({
+    ...r,
+    saving: usersState.saving.has(r.id),
+    menu: r.canChange ? adm.roleMenu(r.id, r.role) : [],
+    approveA: `user:approve:${r.id}`,
+  }));
+  return {
+    pending: adm.pendingBanner(usersState.users || []),
+    error: usersState.error,
+    empty: loaded ? '' : 'Carregando…',
+    rows,
+  };
+}
+
+on('user', async (arg, values, { viewId }) => {
+  if (viewId !== MAIN || !currentAdmin()) return null;
+  const [kind, rawId, role] = arg.split(':');
+  const id = Number(rawId);
+  if (!Number.isFinite(id)) return null;
+  if (kind === 'approve') return changeRole(id, 'viewer');
+  if (kind === 'role') return changeRole(id, role || '');
+  return null;
+});
+
+registerScreen('users', {
+  load: () => loadUsers(),
+  // `ctx.user` pode ser null (um render logo depois do sair): aí ninguém é "eu".
+  view: (c) => usersScreenView(c.user, c.now()),
+});
+
+// A auditoria: os filtros voltam pra página 1 e fecham o detalhe; a página anterior fica na
+// tela enquanto a próxima chega (como na web), e uma resposta atrasada é largada (`latest`).
+
+const freshAuditFilters = () => ({ page: 1, action: '', outcome: '', userId: '', expanded: '' });
+const freshAudit = () => ({ latest: adm.createLatest(), users: [], res: null, error: '', filters: freshAuditFilters() });
+const auditState = freshAudit();
+
+async function loadAuditUsers() {
+  try {
+    const list = await api().users();
+    auditState.users = Array.isArray(list) ? list : [];
+  } catch {
+    auditState.users = []; // como na web: sem a lista, só o filtro "Todas" e os e-mails
+  }
+}
+
+async function fetchAudit() {
+  const latest = auditState.latest;
+  const i = latest.next();
+  const { page, action, outcome, userId } = auditState.filters;
+  auditState.error = '';
+  try {
+    const res = await api().audit({ page, action, outcome, userId });
+    if (!latest.isCurrent(i)) return;
+    auditState.res = res && typeof res === 'object' && Array.isArray(res.data) ? res : { data: [], pagination: null };
+  } catch (e) {
+    if (!latest.isCurrent(i) || isUnauthorized(e)) return;
+    if (isForbidden(e) && (await regate())) return;
+    auditState.res = { error: true };
+    auditState.error = errText(e);
+  }
+}
+
+/** Busca a página dos filtros atuais e redesenha (só se a auditoria ainda está na vista). */
+async function refetchAudit() {
+  render(); // o detalhe fecha e o filtro novo aparece já
+  await fetchAudit();
+  if (state.screen === 'audit') await render();
+}
+
+function auditScreenView() {
+  const f = auditState.filters;
+  const v = adm.auditView(auditState.res, { users: auditState.users, expanded: f.expanded });
+  return {
+    ...v,
+    error: auditState.error,
+    filters: adm.auditFilters(f, auditState.users),
+    rows: v.rows.map((r) => ({
+      ...r,
+      toggle: `audit:toggle:${r.id}`,
+      toggleTitle: r.expanded ? 'Esconder detalhe' : 'Ver detalhe',
+    })),
+  };
+}
+
+on('audit', async (arg, values, { viewId }) => {
+  if (viewId !== MAIN || !currentAdmin() || state.screen !== 'audit') return null;
+  const i = arg.indexOf(':');
+  const kind = i < 0 ? arg : arg.slice(0, i);
+  const rest = i < 0 ? '' : arg.slice(i + 1);
+  const f = auditState.filters;
+  if (kind === 'toggle') {
+    const id = Number(rest);
+    if (!rest || !Number.isFinite(id)) return null;
+    f.expanded = f.expanded === id ? '' : id;
+    return render();
+  }
+  if (kind === 'page') {
+    const p = auditState.res && !auditState.res.error && auditState.res.pagination;
+    if (!p) return null;
+    const to = rest === 'prev' ? p.currentPage - 1 : rest === 'next' ? p.currentPage + 1 : NaN;
+    if (!Number.isFinite(to) || to < 1 || to > p.lastPage) return null;
+    auditState.filters = { ...f, page: to, expanded: '' };
+    return refetchAudit();
+  }
+  let key;
+  let value;
+  if (kind === 'action' && (rest === '' || adm.ACTION_LABEL[rest])) [key, value] = ['action', rest];
+  else if (kind === 'outcome' && (rest === '' || adm.OUTCOME_LABEL[rest])) [key, value] = ['outcome', rest];
+  else if (kind === 'user' && (rest === '' || auditState.users.some((u) => String(u.id) === rest))) {
+    [key, value] = ['userId', rest === '' ? '' : Number(rest)];
+  } else return null;
+  if (f[key] === value) return null;
+  auditState.filters = adm.withFilter(f, key, value);
+  return refetchAudit();
+});
+
+registerScreen('audit', {
+  // Entrar é como abrir a página na web: filtros limpos e "Carregando…".
+  load: () => {
+    Object.assign(auditState, { res: null, error: '', filters: freshAuditFilters() });
+    return Promise.all([loadAuditUsers(), fetchAudit()]);
+  },
+  view: () => auditScreenView(),
+});
+
+/** Sair/trocar de url: a lista de usuários e a auditoria de quem estava logado vão embora. */
+function forgetAdmin() {
+  Object.assign(usersState, freshUsers(), { gen: usersState.gen + 1 });
+  const latest = auditState.latest;
+  Object.assign(auditState, freshAudit(), { latest });
+  latest.next(); // uma página que ainda chega é de quem saiu
+}
 
 // --- o protocolo -----------------------------------------------------------------------
 

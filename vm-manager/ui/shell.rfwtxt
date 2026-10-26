@@ -31,6 +31,8 @@ widget Body = switch data.screen {
   "ceph": CephScreen(),
   "buckets": BucketsScreen(),
   "routes": RoutesScreen(),
+  "users": UsersScreen(),
+  "audit": AuditScreen(),
   "fatal": FatalScreen(),
   "forbidden": ForbiddenScreen(),
   default: SizedBox(),

@@ -2198,7 +2198,322 @@ test('routes.rfwtxt: sem import, doubles, sem null/args.children, e a casca liga
   assert.deepEqual(names.filter((n, i) => names.indexOf(n) !== i), [], 'widget repetido entre os .rfwtxt');
 });
 
+// --- Task 14: Usuários e Auditoria --------------------------------------------------------
+
+const ME = { id: 1, email: 'ana@x.com', name: 'Ana Admin', role: 'admin' };
+const PEOPLE = [
+  { id: 1, email: 'ana@x.com', name: 'Ana Admin', role: 'admin', lastSeenAt: new Date().toISOString() },
+  { id: 2, email: 'bia@x.com', name: null, role: 'pending', lastSeenAt: null },
+  { id: 3, email: 'caio@x.com', name: 'Caio', role: 'viewer', lastSeenAt: null },
+];
+const patches = (api) => api.seen.filter((s) => s.method === 'PATCH');
 const banners = (p) => p.requests.filter((r) => r.method === 'window.showBanner').map((r) => r.params.text);
+
+/** Logado como `user` (a Ana, admin, por padrão) na tela de usuários com a lista lida. */
+function openUsers(opts = {}) {
+  return openArea('users', (u) => u.rows.length === 3, { user: { ...ME }, ...opts, extra: { '/api/users': PEOPLE, ...(opts.extra || {}) } });
+}
+
+test('usuários: lista, banner de pendentes, a própria linha travada, Aprovar manda UM PATCH {role:viewer} e troca a linha', { timeout: 15000 }, async () => {
+  const { p, close, api } = await openUsers({
+    routes: {
+      'PATCH /api/users/2/role': (req, body) => ({ json: { ...PEOPLE[1], role: body.role }, delayMs: 300 }),
+      'PATCH /api/users/3/role': (req, body) => ({ json: { ...PEOPLE[2], role: body.role } }),
+    },
+  });
+  try {
+    const v = p.mainData().users;
+    assertNoNull(v);
+    assert.equal(v.pending, '1 pessoa aguardando aprovação');
+    assert.equal(v.error, '');
+    assert.equal(v.empty, '');
+    const [me, bia, caio] = v.rows;
+    assert.deepEqual([me.name, me.email, me.roleLabel, me.roleTone], ['Ana Admin', 'ana@x.com', 'Admin', 'accent']);
+    assert.equal(me.canChange, false);
+    assert.equal(me.lockedTitle, 'Você não pode alterar o próprio papel');
+    assert.deepEqual(me.menu, [], 'a própria linha não tem menu');
+    assert.equal(bia.name, 'bia@x.com', 'sem nome, o e-mail');
+    assert.equal(bia.approve, true);
+    assert.equal(bia.approveA, 'user:approve:2');
+    assert.equal(bia.lastSeen, 'nunca');
+    assert.deepEqual(caio.menu.map((i) => i.action), ['user:role:3:admin', 'user:role:3:viewer', 'user:role:3:pending']);
+    assert.equal(caio.approve, false);
+    // o próprio papel, forjado: recusa sem PATCH; o mesmo papel também não manda nada
+    p.act('vmm', 'act', { action: 'user:role:1:viewer' });
+    p.act('vmm', 'act', { action: 'user:role:3:viewer' });
+    await pause(200);
+    assert.equal(patches(api).length, 0);
+    // Aprovar duas vezes e uma troca pelo menu com o PATCH lento: UM PATCH, e a linha trava
+    p.act('vmm', 'act', { a: 'user:approve:2' });
+    await p.waitFor(() => p.mainData().users.rows[1].saving === true, 'linha salvando');
+    assert.equal(p.mainData().users.rows[1].canChange, false);
+    assert.deepEqual(p.mainData().users.rows[1].menu, []);
+    p.act('vmm', 'act', { a: 'user:approve:2' });
+    p.act('vmm', 'act', { action: 'user:role:2:admin' });
+    await p.waitFor(() => p.mainData().users.rows[1].saving === false, 'salvou');
+    await pause(100);
+    assert.equal(patches(api).length, 1, 'um PATCH por clique');
+    assert.deepEqual(patches(api)[0].body, { role: 'viewer' });
+    assert.equal(patches(api)[0].path, '/api/users/2/role');
+    const after = p.mainData().users;
+    assert.equal(after.rows[1].roleLabel, 'Viewer');
+    assert.equal(after.rows[1].approve, false);
+    assert.equal(after.pending, '');
+    // trocar o papel do Caio pelo menu (onMenu manda a escolha em `action`)
+    p.act('vmm', 'act', { action: 'user:role:3:admin' });
+    await p.waitFor(() => p.mainData().users.rows[2].roleLabel === 'Admin', 'Caio admin');
+    assert.deepEqual(patches(api)[1].body, { role: 'admin' });
+    assert.equal(p.mainData().screen, 'users', 'promover outro não muda nada pra mim');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('usuários: dois papéis diferentes na mesma linha durante o PATCH mandam UM PATCH; o erro aparece em vermelho', { timeout: 15000 }, async () => {
+  let fail = false;
+  const { p, close, api } = await openUsers({
+    routes: {
+      'PATCH /api/users/3/role': (req, body) =>
+        fail ? { status: 500, json: { statusCode: 500, message: 'Papel inválido.' }, raw: true } : { json: { ...PEOPLE[2], role: body.role }, delayMs: 300 },
+    },
+  });
+  try {
+    p.act('vmm', 'act', { action: 'user:role:3:admin' });
+    p.act('vmm', 'act', { action: 'user:role:3:pending' });
+    await p.waitFor(() => p.mainData().users.rows[2].roleLabel === 'Admin' && !p.mainData().users.rows[2].saving, 'salvou');
+    await pause(100);
+    assert.equal(patches(api).length, 1);
+    fail = true;
+    p.act('vmm', 'act', { action: 'user:role:3:viewer' });
+    await p.waitFor(() => p.mainData().users.error === 'Papel inválido.', 'erro em vermelho');
+    assert.equal(p.mainData().users.rows[2].roleLabel, 'Admin', 'a linha fica como estava');
+    assert.equal(p.mainData().users.rows[2].canChange, true, 'a linha destrava');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('usuários: um 403 (rebaixado noutro lugar) relê o /auth/me e cai no "só admins"', { timeout: 15000 }, async () => {
+  const me = { ...ME };
+  const { p, close, api } = await openUsers({
+    user: me,
+    routes: {
+      'PATCH /api/users/3/role': () => {
+        me.role = 'viewer'; // o /auth/me passa a dizer viewer
+        return { status: 403, json: { statusCode: 403, message: 'Forbidden' }, raw: true };
+      },
+    },
+  });
+  try {
+    const mesBefore = api.seen.filter((s) => s.path === '/api/auth/me').length;
+    p.act('vmm', 'act', { action: 'user:role:3:admin' });
+    await p.waitFor(() => p.mainData().screen === 'forbidden', 'forbidden');
+    assert.ok(api.seen.filter((s) => s.path === '/api/auth/me').length > mesBefore, 'releu o /auth/me');
+    const ids = p.mainData().nav.flatMap((g) => g.items.map((i) => i.id));
+    assert.ok(!ids.includes('users') && !ids.includes('audit'), 'a nav de viewer');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('usuários e auditoria (viewer): "Só admins podem fazer isso." e ações forjadas não chamam a API', { timeout: 15000 }, async () => {
+  const { p, close, api } = await openVms({ user: VIEWER, extra: { '/api/users': PEOPLE } });
+  try {
+    p.act('vmm', 'nav', { to: 'users' });
+    await p.waitFor(() => p.mainData().screen === 'forbidden', 'forbidden em users');
+    p.act('vmm', 'nav', { to: 'audit' });
+    await pause(200);
+    assert.equal(p.mainData().screen, 'forbidden');
+    p.act('vmm', 'act', { a: 'user:approve:2' });
+    p.act('vmm', 'act', { action: 'user:role:3:admin' });
+    p.act('vmm', 'act', { action: 'audit:action:vm.start' });
+    p.act('vmm', 'act', { a: 'audit:page:next' });
+    await pause(300);
+    assert.equal(patches(api).length, 0);
+    assert.equal(api.seen.filter((s) => s.path === '/api/users' || s.path === '/api/audit').length, 0);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+const EV = (id, extra = {}) => ({
+  id, createdAt: '2026-10-26T12:00:00Z', userId: 1, userEmail: 'ana@x.com', action: 'vm.start', target: 'vm:177',
+  outcome: 'success', error: null, detail: null, ip: '10.1.1.1', ...extra,
+});
+
+/** A auditoria de mentira: 3 páginas de 2 (5 eventos); cada página/filtro com ids próprios. */
+function auditRoute(opts = {}) {
+  return (req) => {
+    const q = new URL(req.url, 'http://x').searchParams;
+    const page = Number(q.get('page'));
+    const delayMs = opts.delay ? opts.delay(q) : 0;
+    const base = (q.get('action') === 'vm.stop' ? 100 : 0) + page * 10;
+    const data = page === 3 ? [EV(base + 1)] : [EV(base + 1, { detail: { vmid: 177 }, outcome: 'failure', error: 'boom' }), EV(base + 2, { userId: 3, userEmail: 'caio@x.com' })];
+    return { raw: true, delayMs, json: { data, pagination: { currentPage: page, perPage: 2, totalItems: 5, lastPage: 3 } } };
+  };
+}
+const audits = (api) => api.seen.filter((s) => s.path === '/api/audit').map((s) => s.url.split('?')[1]);
+
+test('auditoria: filtros mudam a query e voltam pra página 1, paginação nas pontas, a página anterior fica até a próxima chegar, e o detalhe abre', { timeout: 15000 }, async () => {
+  let slow = false;
+  const { p, close, api } = await openArea('audit', (a) => a.rows.length === 2, {
+    user: { ...ME },
+    extra: { '/api/users': PEOPLE },
+    routes: { 'GET /api/audit': auditRoute({ delay: () => (slow ? 300 : 0) }) },
+  });
+  try {
+    let v = p.mainData().audit;
+    assertNoNull(v);
+    assert.deepEqual(audits(api), ['page=1']);
+    assert.equal(v.count, '5 eventos');
+    assert.equal(v.range, '1–2 de 5');
+    assert.equal(v.page, '1 / 3');
+    assert.equal(v.prevDisabled, true);
+    assert.equal(v.nextDisabled, false);
+    assert.deepEqual(v.filters.map((f) => [f.label, f.value]), [['Ação', 'Todas'], ['Resultado', 'Todos'], ['Pessoa', 'Todas']]);
+    assert.deepEqual(v.filters[2].menu.map((i) => i.label), ['Todas', 'Ana Admin', 'bia@x.com', 'Caio']);
+    assert.equal(v.rows[0].who, 'Ana Admin');
+    assert.equal(v.rows[0].whoSub, 'ana@x.com');
+    assert.equal(v.rows[0].outcome, 'Falha');
+    assert.equal(v.rows[0].toggleTitle, 'Ver detalhe');
+    // anterior na página 1: nada
+    p.act('vmm', 'act', { a: 'audit:page:prev' });
+    await pause(150);
+    assert.equal(audits(api).length, 1);
+    // abrir o detalhe: erro, JSON e IP; a segunda linha sem detail mostra "—"
+    p.act('vmm', 'act', { a: v.rows[0].toggle });
+    await p.waitFor(() => p.mainData().audit.rows[0].expanded === true, 'abriu');
+    v = p.mainData().audit;
+    assert.equal(v.rows[0].toggleTitle, 'Esconder detalhe');
+    assert.deepEqual(v.rows[0].detail, { error: 'boom', json: JSON.stringify({ vmid: 177 }, null, 2), ip: '10.1.1.1' });
+    p.act('vmm', 'act', { a: v.rows[1].toggle });
+    await p.waitFor(() => p.mainData().audit.rows[1].expanded === true && p.mainData().audit.rows[0].expanded === false, 'trocou');
+    assert.equal(p.mainData().audit.rows[1].detail.json, '—');
+    p.act('vmm', 'act', { a: p.mainData().audit.rows[1].toggle });
+    await p.waitFor(() => p.mainData().audit.rows.every((r) => !r.expanded), 'fechou');
+    // próxima (lenta): a página 1 fica na tela até a 2 chegar
+    slow = true;
+    p.act('vmm', 'act', { a: 'audit:page:next' });
+    await p.waitFor(() => audits(api).length === 2, 'pediu a 2');
+    await pause(100);
+    assert.equal(p.mainData().audit.rows[0].id, 11, 'a página 1 ainda na tela');
+    await p.waitFor(() => p.mainData().audit.rows[0].id === 21, 'página 2');
+    slow = false;
+    assert.equal(audits(api)[1], 'page=2');
+    p.act('vmm', 'act', { a: 'audit:page:next' });
+    await p.waitFor(() => p.mainData().audit.page === '3 / 3', 'página 3');
+    assert.equal(p.mainData().audit.nextDisabled, true);
+    assert.equal(p.mainData().audit.range, '5–5 de 5');
+    p.act('vmm', 'act', { a: 'audit:page:next' });
+    await pause(150);
+    assert.equal(audits(api).length, 3, 'próxima na última: nada');
+    // filtros: cada um muda a query e volta pra página 1
+    p.act('vmm', 'act', { action: 'audit:action:vm.stop' });
+    await p.waitFor(() => audits(api).length === 4, 'filtro ação');
+    assert.equal(audits(api)[3], 'page=1&action=vm.stop');
+    await p.waitFor(() => p.mainData().audit.page === '1 / 3' && p.mainData().audit.rows[0].id === 111, 'página 1 da ação');
+    assert.equal(p.mainData().audit.filters[0].value, 'Desligar VM');
+    p.act('vmm', 'act', { action: 'audit:outcome:failure' });
+    await p.waitFor(() => audits(api).length === 5, 'filtro resultado');
+    p.act('vmm', 'act', { action: 'audit:user:3' });
+    await p.waitFor(() => audits(api).length === 6, 'filtro pessoa');
+    assert.equal(audits(api)[5], 'page=1&action=vm.stop&outcome=failure&userId=3');
+    await p.waitFor(() => p.mainData().audit.filters[2].value === 'Caio', 'Pessoa Caio');
+    p.act('vmm', 'act', { action: 'audit:user:99' }); // ninguém
+    p.act('vmm', 'act', { action: 'audit:action:nao.existe' });
+    p.act('vmm', 'act', { action: 'audit:user:3' }); // o mesmo
+    await pause(150);
+    assert.equal(audits(api).length, 6, 'filtro inválido ou igual não busca');
+    p.act('vmm', 'act', { action: 'audit:action:' });
+    await p.waitFor(() => audits(api).length === 7, 'Todas');
+    assert.equal(audits(api)[6], 'page=1&outcome=failure&userId=3');
+    assertNoNull(p.mainData().audit);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('auditoria: uma resposta atrasada é largada (vale a do último filtro); o erro mostra "Não deu para carregar a auditoria."', { timeout: 15000 }, async () => {
+  let fail = false;
+  const route = auditRoute({ delay: (q) => (q.get('action') === 'vm.stop' ? 400 : 0) });
+  const { p, close, api } = await openArea('audit', (a) => a.rows.length === 2, {
+    user: { ...ME },
+    extra: { '/api/users': PEOPLE },
+    routes: { 'GET /api/audit': (req) => (fail ? { status: 500, json: { statusCode: 500, message: 'Banco fora.' }, raw: true } : route(req)) },
+  });
+  try {
+    p.act('vmm', 'act', { action: 'audit:action:vm.stop' }); // lenta
+    await p.waitFor(() => audits(api).length === 2, 'pediu a lenta');
+    p.act('vmm', 'act', { action: 'audit:action:vm.start' }); // rápida
+    await p.waitFor(() => p.mainData().audit.filters[0].value === 'Ligar VM' && audits(api).length === 3, 'pediu a rápida');
+    await pause(600); // a lenta chega depois
+    assert.equal(p.mainData().audit.rows[0].id, 11, 'vale a do último filtro');
+    assert.equal(p.mainData().audit.filters[0].value, 'Ligar VM');
+    fail = true;
+    p.act('vmm', 'act', { action: 'audit:outcome:success' });
+    await p.waitFor(() => p.mainData().audit.error === 'Banco fora.', 'erro');
+    const v = p.mainData().audit;
+    assert.equal(v.empty, 'Não deu para carregar a auditoria.');
+    assert.deepEqual(v.rows, []);
+    assert.equal(v.showPager, false);
+    assertNoNull(v);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('as views de usuários e auditoria aguentam ctx.user null', { timeout: 15000 }, async () => {
+  const dataDir = tmpDir();
+  const script = `
+    const u = m.screens.get('users').view({ user: null, now: Date.now });
+    const a = m.screens.get('audit').view({ user: null, now: Date.now });
+    process.stderr.write('VIEW=' + JSON.stringify({ u, a }) + '\\n');
+  `;
+  const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9', script });
+  try {
+    await p.waitFor(() => /VIEW=.*\n/.test(p.stderr()), 'a view no stderr');
+    const { u, a } = JSON.parse(p.stderr().match(/VIEW=(.*)\n/)[1]);
+    assertNoNull(u);
+    assertNoNull(a);
+    assert.equal(u.empty, 'Carregando…');
+    assert.equal(a.empty, 'Carregando…');
+    assert.equal(a.count, '');
+    assert.equal(a.filters.length, 3);
+  } finally {
+    await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('admin.rfwtxt: sem import, doubles, sem null/args.children, e a casca liga as telas', { timeout: 15000 }, () => {
+  const ui = path.join(__dirname, '..', 'ui');
+  const src = fs.readFileSync(path.join(ui, 'admin.rfwtxt'), 'utf8');
+  assert.ok(!/^import /m.test(src), 'tela sem import');
+  const code = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/0x[0-9a-fA-F]+/g, '0')
+    .replace(/\b(maxLines|flex):\s*\d+/g, '');
+  const ints = code.match(/(?<![\w.])\d+(?![\w.])/g) || [];
+  assert.deepEqual(ints.filter((n) => n !== '0'), [], 'números inteiros no .rfwtxt (use 13.0)');
+  for (const [o, c] of [['(', ')'], ['[', ']'], ['{', '}']]) assert.equal(code.split(o).length, code.split(c).length, `${o}${c} desbalanceados`);
+  assert.ok(!/\bnull\b/.test(code));
+  assert.ok(!/args\.children\b/.test(code));
+  assert.match(src, /widget UsersScreen =/);
+  assert.match(src, /widget AuditScreen =/);
+  const shell = fs.readFileSync(SHELL, 'utf8');
+  assert.match(shell, /"users": UsersScreen\(\)/);
+  assert.match(shell, /"audit": AuditScreen\(\)/);
+  const names = fs.readdirSync(ui).filter((f) => f.endsWith('.rfwtxt'))
+    .flatMap((f) => [...fs.readFileSync(path.join(ui, f), 'utf8').matchAll(/^widget (\w+) =/gm)].map((x) => x[1]));
+  assert.deepEqual(names.filter((n, i) => names.indexOf(n) !== i), [], 'widget repetido entre os .rfwtxt');
+});
 
 // --- Task 12 (revisão): janela de rota fechada com o pedido andando -------------------------
 

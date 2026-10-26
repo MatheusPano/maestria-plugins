@@ -87,7 +87,7 @@ test('target user:<id> resolves email', () => {
   assert.strictEqual(v.rows[1].expanded, false);
   assert.strictEqual(v.rows[1].target, '—');
   assert.strictEqual(v.rows[1].actionLabel, 'weird.new');
-  assert.strictEqual(v.rows[1].detail.json, '');
+  assert.strictEqual(v.rows[1].detail.json, '—', 'web: Detalhe mostra — sem detail');
   assert.strictEqual(v.rows[1].detail.ip, '—');
   assert.strictEqual(v.rows[1].detail.error, 'boom');
   assert.strictEqual(v.rows[1].outcomeTone, 'red');
@@ -141,4 +141,29 @@ test('stale response ignored', () => {
   const b = latest.next();
   assert.strictEqual(latest.isCurrent(a), false);
   assert.strictEqual(latest.isCurrent(b), true);
+});
+
+test('roleMenu: Admin/Viewer/Pendente with the current one checked and disabled', () => {
+  const m = admin.roleMenu(3, 'viewer');
+  assertNoNull(m);
+  assert.deepStrictEqual(m.map((i) => [i.label, i.action, !!i.disabled, i.icon || '']), [
+    ['Admin', 'user:role:3:admin', false, ''],
+    ['Viewer', 'user:role:3:viewer', true, 'check'],
+    ['Pendente', 'user:role:3:pending', false, ''],
+  ]);
+});
+
+test('auditFilters: labels, current values and menus with Todas/Todos', () => {
+  const f = admin.auditFilters({ page: 1, action: 'vm.start', outcome: '', userId: 3 }, users);
+  assertNoNull(f);
+  assert.deepStrictEqual(f.map((x) => [x.label, x.value]), [['Ação', 'Ligar VM'], ['Resultado', 'Todos'], ['Pessoa', 'Caio']]);
+  assert.strictEqual(f[0].menu.length, 1 + Object.keys(admin.ACTION_LABEL).length);
+  assert.deepStrictEqual(f[0].menu[0], { label: 'Todas', action: 'audit:action:' });
+  assert.deepStrictEqual(f[0].menu.find((i) => i.action === 'audit:action:vm.start'), { label: 'Ligar VM', action: 'audit:action:vm.start', icon: 'check', disabled: true });
+  assert.deepStrictEqual(f[1].menu.map((i) => i.label), ['Todos', 'Sucesso', 'Falha']);
+  assert.strictEqual(f[1].menu[0].icon, 'check');
+  assert.deepStrictEqual(f[2].menu.map((i) => [i.label, i.action]), [['Todas', 'audit:user:'], ['Ana', 'audit:user:1'], ['bia@x.com', 'audit:user:2'], ['Caio', 'audit:user:3']]);
+  const none = admin.auditFilters({ page: 1 }, null);
+  assert.deepStrictEqual(none.map((x) => x.value), ['Todas', 'Todos', 'Todas']);
+  assert.strictEqual(none[2].menu.length, 1);
 });

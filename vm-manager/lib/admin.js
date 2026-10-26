@@ -100,7 +100,7 @@ function auditView(res, { users, expanded }) {
           expanded: expanded === e.id,
           detail: {
             error: e.error || '',
-            json: e.detail ? JSON.stringify(e.detail, null, 2) : '',
+            json: e.detail ? JSON.stringify(e.detail, null, 2) : '—', // como na web
             ip: e.ip || '—',
           },
         };
@@ -121,6 +121,34 @@ function auditView(res, { users, expanded }) {
   };
 }
 
+// Um item de menu (o `menu` do MenuButton): a escolha atual vem marcada e travada.
+const menuItem = (label, action, current) => (current ? { label, action, icon: 'check', disabled: true } : { label, action });
+
+/** O menu de papel de uma linha: `user:role:<id>:<papel>` (o onMenu só manda a `action`). */
+function roleMenu(id, role) {
+  return ['admin', 'viewer', 'pending'].map((r) => menuItem(ROLE_LABEL[r], `user:role:${id}:${r}`, r === role));
+}
+
+/** Os três filtros da auditoria (FilterSelect da web): `{ label, value, menu }`. */
+function auditFilters(filters, users) {
+  const f = filters || {};
+  const people = (users || []).map((u) => [String(u.id), u.name || u.email || String(u.id)]);
+  const build = (label, key, verb, empty, options) => {
+    const cur = f[key] === undefined || f[key] === null ? '' : String(f[key]);
+    const hit = options.find(([v]) => v === cur);
+    return {
+      label,
+      value: hit ? hit[1] : empty,
+      menu: [menuItem(empty, `audit:${verb}:`, !hit), ...options.map(([v, text]) => menuItem(text, `audit:${verb}:${v}`, v === cur))],
+    };
+  };
+  return [
+    build('Ação', 'action', 'action', 'Todas', Object.entries(ACTION_LABEL)),
+    build('Resultado', 'outcome', 'outcome', 'Todos', Object.entries(OUTCOME_LABEL)),
+    build('Pessoa', 'userId', 'user', 'Todas', people),
+  ];
+}
+
 // Descarta respostas atrasadas: cada pedido pega next(); só o último isCurrent.
 function createLatest() {
   let n = 0;
@@ -128,5 +156,5 @@ function createLatest() {
 }
 
 module.exports = {
-  ACTION_LABEL, OUTCOME_LABEL, pendingBanner, usersView, auditQuery, withFilter, auditView, createLatest,
+  ACTION_LABEL, OUTCOME_LABEL, pendingBanner, roleMenu, auditFilters, usersView, auditQuery, withFilter, auditView, createLatest,
 };
