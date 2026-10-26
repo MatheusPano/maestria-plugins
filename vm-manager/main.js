@@ -9,6 +9,15 @@
 // onLeave })` liga uma tela; `on('verbo', fn)` atende as ações "verbo:arg";
 // `render()` redesenha; `openWindow`/`updateWindow`/`closeWindow` cuidam das
 // janelas de blocos; `banner(text)` dá o recado. Veja `ctx()`.
+//
+// Nos `values` da janela principal, `a` e `action` são reservados: um
+// `event "act" { a: "verbo:arg" }` e o `onMenu` de um `Pressable` (que põe a
+// escolha em `action`) roteiam por eles. Nas janelas de blocos vale só a
+// `action` do botão, e os campos podem ter qualquer id.
+//
+// Os pollers só correm com a janela principal aberta: o `onEnter` de uma tela
+// (onde ela liga os dela) só roda com a janela na tela, e roda de novo quando
+// ela reabre; um `view.update` com `open: false` para todos.
 
 const fs = require('fs');
 const os = require('os');
@@ -18,7 +27,7 @@ const { createSession } = require('./lib/session');
 const { createTokenStore } = require('./lib/auth');
 const { startLoopback } = require('./lib/loopback');
 const { ApiError } = require('./lib/http');
-const { navFor, gate, initials, ROLE_LABEL } = require('./lib/nav');
+const { navFor, gate, initials, ROLE_LABEL, FORBIDDEN_TEXT } = require('./lib/nav');
 const { createPoller } = require('./lib/poller');
 
 const MAIN = 'vmm';
@@ -27,6 +36,7 @@ const UI_DIR = path.join(__dirname, 'ui');
 const SHELL = 'shell.rfwtxt';
 const DEFAULT_URL = 'https://vm-manager.cefis.cloud';
 const EXPIRED = 'Sua sessão expirou. Entre de novo.';
+const PENDING_TEXT = 'Acesso pendente de aprovação.';
 
 const OUTDATED = [
   { type: 'heading', text: 'Este Maestria não desenha a tela do VM Manager' },
@@ -222,14 +232,20 @@ async function render() {
   }
 }
 
+/** O onEnter da tela na vista, só com a janela principal aberta (é onde os pollers ligam). */
+function enterScreen() {
+  if (!state.mainOpen) return;
+  const scr = screens.get(state.screen);
+  if (scr && scr.onEnter) guard(`onEnter ${state.screen}`, () => scr.onEnter(ctx()));
+}
+
 /** Troca a tela na vista, com o onLeave da que sai e o onEnter da que entra. */
 function switchTo(dest, { force = false } = {}) {
   if (state.screen === dest && !force) return;
   const old = screens.get(state.screen);
   if (old && old.onLeave) guard(`onLeave ${state.screen}`, () => old.onLeave(ctx()));
   state.screen = dest;
-  const next = screens.get(dest);
-  if (next && next.onEnter) guard(`onEnter ${dest}`, () => next.onEnter(ctx()));
+  enterScreen();
 }
 
 /** Mostra uma tela e carrega o que ela precisa. */
@@ -275,6 +291,10 @@ async function navigate(to) {
   if (s !== state.session) return;
   const dest = gate(s.user(), target);
   if (dest === 'create') return openCreate();
+  // `nova vm…` com a janela fechada: sem tela pra mostrar o porquê, o recado.
+  if (target === 'create' && !state.mainOpen && (dest === 'forbidden' || dest === 'pending')) {
+    return banner(dest === 'forbidden' ? FORBIDDEN_TEXT : PENDING_TEXT);
+  }
   return show(dest);
 }
 
@@ -338,8 +358,7 @@ async function openMain() {
   state.screen = dest;
   await mx.request('view.open', { viewId: MAIN, title: TITLE, rfw: { library: library(), root: 'root' }, data: buildData() });
   state.mainOpen = true;
-  const scr = screens.get(dest);
-  if (scr && scr.onEnter) guard(`onEnter ${dest}`, () => scr.onEnter(ctx()));
+  enterScreen();
   if (s.isLoggedIn()) await navigate(state.target);
 }
 
@@ -437,8 +456,9 @@ mx.onRequest('command.invoke', ({ command }) => {
 
 mx.onNotification('view.action', async ({ viewId, action, values }) => {
   const vals = values || {};
-  // Um menu manda a escolha em `values.action`; um botão de blocos, em `action`.
-  const act = String(vals.a || vals.action || action || '');
+  // Na janela principal, `values.a` (event "act") e `values.action` (onMenu do
+  // Pressable) mandam; numa janela de blocos, só a `action` do botão.
+  const act = String((viewId === MAIN && (vals.a || vals.action)) || action || '');
   const i = act.indexOf(':');
   const verb = i < 0 ? act : act.slice(0, i);
   const arg = i < 0 ? '' : act.slice(i + 1);
@@ -474,3 +494,6 @@ process.on('SIGTERM', () => {
 });
 
 mx.start();
+
+// Pras telas das áreas e pros testes (o smoke test liga telas de mentira por aqui).
+module.exports = { state, registerScreen, on, render, navigate, openWindow, updateWindow, closeWindow, banner, ctx, MAIN };

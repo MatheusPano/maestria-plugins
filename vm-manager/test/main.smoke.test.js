@@ -15,12 +15,24 @@ const { assertNoNull } = require('./helpers');
 const MAIN = path.join(__dirname, '..', 'main.js');
 const SHELL = path.join(__dirname, '..', 'ui', 'shell.rfwtxt');
 
-/** Uma API de mentira que só sabe /api/auth/me. */
-function fakeApi(users) {
+/** Uma API de mentira: /api/auth/me pelos tokens de `users`; `failMe` respostas 503 antes; `extra` outras rotas GET. */
+function fakeApi(users, { failMe = 0, extra = {} } = {}) {
   const seen = [];
+  let fails = failMe;
   const server = http.createServer((req, res) => {
     seen.push({ method: req.method, url: req.url, auth: req.headers.authorization || '' });
     const token = (req.headers.authorization || '').replace(/^Bearer /, '');
+    if (req.method === 'GET' && extra[req.url] !== undefined && users[token]) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: extra[req.url] }));
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/api/auth/me' && fails > 0) {
+      fails--;
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ statusCode: 503, message: 'Service Unavailable' }));
+      return;
+    }
     if (req.method === 'GET' && req.url === '/api/auth/me' && users[token]) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ data: users[token] }));
@@ -35,8 +47,11 @@ function fakeApi(users) {
 }
 
 /** Sobe o plugin e fala com ele como a janela. */
-function startPlugin({ dataDir, url }) {
-  const child = spawn(process.execPath, [MAIN], { stdio: ['pipe', 'pipe', 'pipe'] });
+// `script`: código rodado depois do require do main.js (com `m` = o módulo), pra ligar telas de mentira.
+// `openReply()`: o `open` que a janela responde a cada view.update.
+function startPlugin({ dataDir, url, script = '', openReply = () => true }) {
+  const argv = script ? ['-e', `const m = require(${JSON.stringify(MAIN)});\n${script}`] : [MAIN];
+  const child = spawn(process.execPath, argv, { stdio: ['pipe', 'pipe', 'pipe'] });
   const lines = [];
   const bad = [];
   const requests = [];
@@ -69,7 +84,7 @@ function startPlugin({ dataDir, url }) {
         requests.push(msg);
         let result = null;
         if (msg.method === 'view.open') result = { tabId: 'plugin1' };
-        if (msg.method === 'view.update') result = { open: true };
+        if (msg.method === 'view.update') result = { open: msg.params.viewId === 'vmm' ? openReply() : true };
         child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
       } else if (msg.id !== undefined) {
         responses.set(msg.id, msg);
@@ -88,15 +103,19 @@ function startPlugin({ dataDir, url }) {
 
   function waitFor(pred, what, ms = 4000) {
     return new Promise((resolve, reject) => {
+      // Confere a cada linha do plugin e também de 20 em 20 ms (o que vem da API de mentira não passa pelo stdout).
       const check = () => {
         const v = pred();
         if (v) {
           if (waiters.includes(check)) waiters.splice(waiters.indexOf(check), 1);
           clearTimeout(timer);
+          clearInterval(tick);
           resolve(v);
         }
       };
+      const tick = setInterval(check, 20);
       const timer = setTimeout(() => {
+        clearInterval(tick);
         if (waiters.includes(check)) waiters.splice(waiters.indexOf(check), 1);
         reject(new Error(`timeout esperando ${what}\nstdout:\n${lines.join('\n')}\nstderr:\n${stderr}`));
       }, ms);
@@ -273,7 +292,7 @@ test('token recusado (401): volta pro login com o aviso de sessão expirada', as
   assert.deepEqual(p.bad, []);
 });
 
-test('API fora do ar: tela fatal e o tentar de novo', async () => {
+test('API fora do ar: tela fatal com a mensagem, sem o token', async () => {
   const dataDir = tmpDir();
   const url = 'http://127.0.0.1:9';
   seed(dataDir, url, 'tok-x', { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' });
@@ -288,6 +307,28 @@ test('API fora do ar: tela fatal e o tentar de novo', async () => {
     assert.ok(!data.fatal.message.includes('tok-x'));
   } finally {
     await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('tentar de novo: a API volta e a tela sai do fatal', async () => {
+  const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' };
+  const api = await fakeApi({ 'tok-r': user }, { failMe: 1 });
+  const dataDir = tmpDir();
+  seed(dataDir, api.url, 'tok-r', user);
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => p.mainData().screen === 'fatal', 'screen fatal');
+    assert.equal(p.mainData().fatal.message, 'Service Unavailable');
+    p.send('view.action', { viewId: 'vmm', action: 'retry', values: {} }, { notify: true });
+    await p.waitFor(() => p.mainData().screen === 'vms', 'vms depois do tentar de novo');
+    assert.equal(api.seen.filter((r) => r.url === '/api/auth/me').length, 2);
+    assertNoNull(p.mainData());
+  } finally {
+    await p.stop();
+    api.server.close();
   }
   assert.deepEqual(p.bad, []);
 });
@@ -371,5 +412,115 @@ test('shell.rfwtxt: tamanhos em double, chaves e parênteses balanceados', () =>
     assert.equal(code.split(o).length, code.split(c).length, `${o}${c} desbalanceados`);
   }
   assert.ok(!/\bnull\b/.test(code), 'null no .rfwtxt');
+  assert.ok(!/args\.children\b/.test(code), 'lista de widgets por args (use um child só)');
   assert.match(src, /^import core\.widgets;\nimport maestria;/m);
+});
+
+// Uma tela de mentira que faz polling de /api/vms a cada 40 ms enquanto está na vista.
+const POLL_SCREEN = `
+  m.registerScreen('vms', {
+    onEnter: (ctx) => ctx.poller.loop('vms', 40, async () => { await ctx.api.vms(); await ctx.render(); }),
+    onLeave: (ctx) => ctx.poller.stop('vms'),
+    view: () => ({ ticks: 1 }),
+  });
+  m.registerScreen('ceph', {
+    onEnter: (ctx) => ctx.poller.loop('ceph', 40, async () => { await ctx.api.vms(); await ctx.render(); }),
+    onLeave: (ctx) => ctx.poller.stop('ceph'),
+  });
+`;
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('janela fechada (open:false) para o polling e não liga outro até reabrir', async () => {
+  const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' };
+  const api = await fakeApi({ 'tok-p': user }, { extra: { '/api/vms': [] } });
+  const dataDir = tmpDir();
+  seed(dataDir, api.url, 'tok-p', user);
+  let open = true;
+  const p = startPlugin({ dataDir, url: api.url, script: POLL_SCREEN, openReply: () => open });
+  const polls = () => api.seen.filter((r) => r.url === '/api/vms').length;
+  const updates = () => p.requests.filter((r) => r.method === 'view.update').length;
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => polls() >= 3, 'polling de /api/vms');
+    open = false; // a pessoa fechou a janela
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.update' && r.params.data && r.params.data.vms && polls() > 3), 'um update depois de fechar');
+    await pause(150);
+    const [pollsAfter, updatesAfter] = [polls(), updates()];
+    await pause(300);
+    assert.equal(polls(), pollsAfter, 'sem polling com a janela fechada');
+    assert.equal(updates(), updatesAfter, 'sem view.update com a janela fechada');
+
+    // navegar com a janela fechada não liga o poller da outra tela
+    p.send('view.action', { viewId: 'vmm', action: 'nav', values: { to: 'ceph' } }, { notify: true });
+    await p.waitFor(() => api.seen.filter((r) => r.url === '/api/auth/me').length >= 2, '/auth/me do nav');
+    await pause(300);
+    assert.equal(polls(), pollsAfter, 'onEnter não roda com a janela fechada');
+
+    // reabrir liga de novo
+    open = true;
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => polls() >= pollsAfter + 2, 'polling de volta depois de reabrir');
+  } finally {
+    await p.stop();
+    api.server.close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('nova vm… de um viewer com a janela fechada dá o recado', async () => {
+  const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'viewer' };
+  const api = await fakeApi({ 'tok-n': user });
+  const dataDir = tmpDir();
+  seed(dataDir, api.url, 'tok-n', user);
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'nova', context: {} });
+    const b = await p.waitFor(() => p.requests.find((r) => r.method === 'window.showBanner'), 'banner');
+    assert.equal(b.params.text, 'Só admins podem fazer isso.');
+    assert.equal(p.requests.some((r) => r.method === 'view.open'), false);
+  } finally {
+    await p.stop();
+    api.server.close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('nova vm… de um pendente com a janela fechada dá o recado', async () => {
+  const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'pending' };
+  const api = await fakeApi({ 'tok-q': user });
+  const dataDir = tmpDir();
+  seed(dataDir, api.url, 'tok-q', user);
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'nova', context: {} });
+    const b = await p.waitFor(() => p.requests.find((r) => r.method === 'window.showBanner'), 'banner');
+    assert.equal(b.params.text, 'Acesso pendente de aprovação.');
+  } finally {
+    await p.stop();
+    api.server.close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('router: numa janela de blocos, values.action não sequestra a ação', async () => {
+  const dataDir = tmpDir();
+  const script = `
+    m.on('pick', (arg) => m.banner('pick:' + arg));
+    m.on('evil', () => m.banner('evil'));
+  `;
+  const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9', script });
+  try {
+    await p.init();
+    p.send('view.action', { viewId: 'form', action: 'pick:1', values: { action: 'evil', a: 'evil' } }, { notify: true });
+    p.send('view.action', { viewId: 'vmm', action: 'act', values: { a: 'pick:2' } }, { notify: true });
+    await p.waitFor(() => p.requests.filter((r) => r.method === 'window.showBanner').length >= 2, 'banners');
+    assert.deepEqual(p.requests.filter((r) => r.method === 'window.showBanner').map((r) => r.params.text), ['pick:1', 'pick:2']);
+  } finally {
+    await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
 });

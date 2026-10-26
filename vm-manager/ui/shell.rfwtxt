@@ -176,23 +176,27 @@ widget LoginScreen = Center(
   child: SizedBox(
     width: 380.0,
     child: Card(
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 40.0,
-              height: 40.0,
-              decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
-              child: Center(child: Glyph(icon: "server", size: 20.0, color: data.theme.onAccent)),
-            ),
-            SizedBox(width: 12.0),
-            Text(text: "CCS Console", style: { fontSize: 17.0, fontWeight: "w600", color: data.theme.fg }),
-          ],
-        ),
-        SizedBox(height: 26.0),
-        LoginError(text: data.login.message),
-        LoginButton(),
-      ],
+      child: Column(
+        mainAxisSize: "min",
+        crossAxisAlignment: "stretch",
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40.0,
+                height: 40.0,
+                decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
+                child: Center(child: Glyph(icon: "server", size: 20.0, color: data.theme.onAccent)),
+              ),
+              SizedBox(width: 12.0),
+              Text(text: "CCS Console", style: { fontSize: 17.0, fontWeight: "w600", color: data.theme.fg }),
+            ],
+          ),
+          SizedBox(height: 26.0),
+          LoginError(text: data.login.message),
+          LoginButton(),
+        ],
+      ),
     ),
   ),
 );
@@ -245,65 +249,69 @@ widget PendingScreen = Center(
   child: SizedBox(
     width: 440.0,
     child: Card(
-      children: [
-        Align(
-          alignment: { x: -1.0, y: 0.0 },
-          child: Container(
-            width: 44.0,
-            height: 44.0,
-            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 22.0 }] },
-            child: Center(child: Glyph(icon: "icons/hourglass.svg", size: 20.0, color: data.theme.yellow)),
+      child: Column(
+        mainAxisSize: "min",
+        crossAxisAlignment: "stretch",
+        children: [
+          Align(
+            alignment: { x: -1.0, y: 0.0 },
+            child: Container(
+              width: 44.0,
+              height: 44.0,
+              decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 22.0 }] },
+              child: Center(child: Glyph(icon: "icons/hourglass.svg", size: 20.0, color: data.theme.yellow)),
+            ),
           ),
-        ),
-        SizedBox(height: 22.0),
-        Text(text: "Acesso pendente", style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
-        SizedBox(height: 8.0),
-        Text(text: "Peça a um admin para liberar seu acesso.", style: { fontSize: 14.0, color: data.theme.dim }),
-        SizedBox(height: 22.0),
-        Container(
-          padding: [14.0, 12.0, 14.0, 12.0],
-          decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 6.0 }] },
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: "start",
+          SizedBox(height: 22.0),
+          Text(text: "Acesso pendente", style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+          SizedBox(height: 8.0),
+          Text(text: "Peça a um admin para liberar seu acesso.", style: { fontSize: 14.0, color: data.theme.dim }),
+          SizedBox(height: 22.0),
+          Container(
+            padding: [14.0, 12.0, 14.0, 12.0],
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 6.0 }] },
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: "start",
+                    children: [
+                      Text(text: data.me.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 14.0, fontWeight: "w500", color: data.theme.fg }),
+                      Text(text: data.me.email, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim }),
+                    ],
+                  ),
+                ),
+                SizedBox(width: 12.0),
+                Container(
+                  padding: [10.0, 4.0, 10.0, 4.0],
+                  decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.yellow, width: 1.0 }] },
+                  child: Text(text: "Pendente", style: { fontSize: 12.0, fontWeight: "w500", color: data.theme.yellow }),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: 22.0),
+          Align(
+            alignment: { x: -1.0, y: 0.0 },
+            child: Pressable(
+              radius: 6.0,
+              hoverColor: data.theme.hover,
+              onTap: event "logout" {},
+              child: Padding(
+                padding: [6.0, 4.0, 8.0, 4.0],
+                child: Row(
+                  mainAxisSize: "min",
                   children: [
-                    Text(text: data.me.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 14.0, fontWeight: "w500", color: data.theme.fg }),
-                    Text(text: data.me.email, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim }),
+                    Glyph(icon: "icons/logout.svg", size: 16.0, color: data.theme.dim),
+                    SizedBox(width: 8.0),
+                    Text(text: "Sair", style: { fontSize: 13.0, color: data.theme.dim }),
                   ],
                 ),
               ),
-              SizedBox(width: 12.0),
-              Container(
-                padding: [10.0, 4.0, 10.0, 4.0],
-                decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.yellow, width: 1.0 }] },
-                child: Text(text: "Pendente", style: { fontSize: 12.0, fontWeight: "w500", color: data.theme.yellow }),
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: 22.0),
-        Align(
-          alignment: { x: -1.0, y: 0.0 },
-          child: Pressable(
-            radius: 6.0,
-            hoverColor: data.theme.hover,
-            onTap: event "logout" {},
-            child: Padding(
-              padding: [6.0, 4.0, 8.0, 4.0],
-              child: Row(
-                mainAxisSize: "min",
-                children: [
-                  Glyph(icon: "icons/logout.svg", size: 16.0, color: data.theme.dim),
-                  SizedBox(width: 8.0),
-                  Text(text: "Sair", style: { fontSize: 13.0, color: data.theme.dim }),
-                ],
-              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   ),
 );
@@ -366,9 +374,5 @@ widget Card = Container(
     borderRadius: [{ x: 10.0 }],
     border: [{ color: data.theme.border, width: 1.0 }],
   },
-  child: Column(
-    mainAxisSize: "min",
-    crossAxisAlignment: "stretch",
-    children: args.children,
-  ),
+  child: args.child,
 );
