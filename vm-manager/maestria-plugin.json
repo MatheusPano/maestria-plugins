@@ -1,0 +1,51 @@
+{
+  "id": "maestria.vm-manager",
+  "name": "VM Manager",
+  "version": "1.0.0",
+  "description": "O CCS Console numa tela própria: as VMs do Proxmox, o Ceph, os buckets, as rotas do OPNsense, os usuários e a auditoria, com o login \"Entrar com Marrow\" em um clique.",
+  "author": "Arthur Fonseca",
+  "maestria": 1,
+  "icon": "icons/vm.svg",
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:abrir",
+    "onCommand:nova",
+    "onCommand:entrar",
+    "onCommand:sair"
+  ],
+  "permissions": [],
+  "contributes": {
+    "screen": {
+      "home": "abrir"
+    },
+    "commands": [
+      {
+        "id": "abrir",
+        "title": "vm-manager: abrir"
+      },
+      {
+        "id": "nova",
+        "title": "vm-manager: nova vm…"
+      },
+      {
+        "id": "entrar",
+        "title": "vm-manager: entrar"
+      },
+      {
+        "id": "sair",
+        "title": "vm-manager: sair"
+      }
+    ],
+    "settings": [
+      {
+        "id": "url",
+        "type": "string",
+        "default": "https://vm-manager.cefis.cloud",
+        "title": "endereço do console"
+      }
+    ]
+  }
+}
