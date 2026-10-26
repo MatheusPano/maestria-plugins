@@ -385,6 +385,20 @@ function jobNext(job, error) {
   return job && job.status === 'running' ? 'poll' : 'done';
 }
 
+// --- remoção e confirmação ----------------------------------------------------------
+
+/** O plano de remoção em duas listas: o que será apagado e o que fica (porque outra coisa usa). */
+function removalGroups(plan) {
+  const changes = (plan && Array.isArray(plan.changes) && plan.changes) || [];
+  return { remove: changes.filter((c) => c.action === 'remove'), keep: changes.filter((c) => c.action === 'keep') };
+}
+
+/** O hostname digitado pra confirmar: a web apara e põe em minúsculas ao digitar e compara com o hostname em minúsculas. */
+function confirmMatches(typed, hostname) {
+  const want = String(hostname == null ? '' : hostname).toLowerCase();
+  return want !== '' && String(typed == null ? '' : typed).trim().toLowerCase() === want;
+}
+
 const LOST_TEXT = (msg) => `Perdi o acompanhamento: ${msg} Confira o resultado na Auditoria e na lista de rotas.`;
 
 module.exports = {
@@ -392,4 +406,5 @@ module.exports = {
   cells, filterRoutes, routeCounts, routeStats, routesView, drawerBlocks,
   HOSTNAME, IPV4, ACCESS, DEFAULT_HEALTHCHECK, pickHealthCheck, validateRoute, routeBody, addServer, removeServer,
   CHANGE_LABEL, STEP_LABEL, RUNNING_HINT, jobTitle, visibleSteps, jobNext, LOST_TEXT,
+  removalGroups, confirmMatches,
 };

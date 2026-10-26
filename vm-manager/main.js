@@ -34,6 +34,7 @@ const { cephView, defaultPool } = require('./lib/storage');
 const bk = require('./lib/buckets');
 const cf = require('./lib/create-form');
 const { createCreateFlow } = require('./lib/create-flow');
+const rt = require('./lib/routes');
 
 const MAIN = 'vmm';
 const TITLE = 'VM Manager';
@@ -354,6 +355,7 @@ async function updateWindow(viewId, { title, blocks } = {}) {
 function windowGone(viewId) {
   state.views.delete(viewId);
   forgetWindow(viewId);
+  routeWindowGone(viewId);
 }
 
 async function closeWindow(viewId) {
@@ -407,6 +409,7 @@ function forgetAreas() {
   create.gen++; // um catálogo que ainda chega é de quem saiu
   Object.assign(create, { form: null, options: null, bridge: '', loading: false, loadError: '', ip: freshIp(), errors: [], flowError: '', validating: false });
   forgetStorage(); // Ceph, buckets, o "Novo bucket" e as credenciais (com as secret keys)
+  forgetRoutes(); // a lista, a "Nova rota", a remoção e o acompanhamento dos jobs
 }
 
 async function doLogout() {
@@ -422,6 +425,7 @@ async function doLogout() {
 
 function onExpired() {
   state.poller.stopAll();
+  jobPoller.stopAll();
   closeWindows();
   state.login = { message: EXPIRED, busy: false };
   switchTo('login');
@@ -1290,6 +1294,525 @@ registerScreen('buckets', {
   view: (c) => bucketsScreenView(c.user),
 });
 
+// Rotas (RoutesView.tsx, RouteDrawer.tsx, NewRouteDialog.tsx, RemoveRouteDialog.tsx e
+// RouteJobProgress.tsx). A lista carrega ao entrar, no "Ler agora", quando a "Nova rota"
+// ou a remoção fecham e quando um job termina; sem polling. Criar e remover mexem no
+// firewall de produção: cada botão que chama a API tem uma trava síncrona (`busy`, ligada
+// antes de qualquer await), o hostname digitado tem que bater (`confirmMatches`) e toda
+// escrita confere de novo que quem pede é admin. O job é consultado a cada 2 s só com a
+// janela dele aberta (`jobPoller`, à parte dos pollers da janela principal).
+
+const ROUTE_JOB_MS = envMs('VMM_ROUTE_JOB_MS', 2000);
+const ROUTE_NEW = 'route:new';
+const ROUTE_REMOVE = 'route:remove';
+const drawerId = (hostname) => `route:${hostname}`;
+
+const freshRoutes = () => ({ gen: 0, routes: null, error: '', query: '', filter: 'all', loadedAt: '', loading: false });
+const routesState = freshRoutes();
+const jobPoller = createPoller({
+  schedule: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+  },
+});
+let wizard = null; // a "Nova rota" aberta: { step: 'form'|'review'|'job', form, healthchecks, errors, error, busy, plan, body, typed, confirmError, job, lost }
+let removal = null; // a remoção aberta: { hostname, plan, error, busy, loading, typed, confirmError, job, lost }
+
+async function loadRoutes() {
+  const gen = ++routesState.gen;
+  routesState.loading = true;
+  render(); // o "Lendo…" no botão
+  try {
+    const list = await api().routes();
+    if (gen !== routesState.gen) return;
+    routesState.routes = Array.isArray(list) ? list : [];
+    routesState.loadedAt = new Date().toISOString();
+    routesState.error = '';
+  } catch (e) {
+    if (gen !== routesState.gen) return;
+    if (!isUnauthorized(e)) routesState.error = errText(e); // o 401 já leva ao login
+  }
+  routesState.loading = false;
+}
+
+/** Recarrega a lista (e redesenha) se a tela de rotas está na vista e há sessão. */
+async function reloadRoutes() {
+  if (state.screen !== 'routes' || !state.session || !state.session.isLoggedIn()) return;
+  await loadRoutes();
+  await render();
+}
+
+function routesScreenView(user, now) {
+  const v = rt.routesView(routesState, { admin: isAdmin(user), now });
+  const loaded = Array.isArray(routesState.routes);
+  return {
+    ...v,
+    header: { newRoute: false, ...v.header },
+    filters: v.filters.map((f) => ({ ...f, countText: loaded ? String(f.count) : '' })),
+  };
+}
+
+// --- a gaveta ------------------------------------------------------------------------
+
+async function openRouteDrawer(hostname) {
+  const route = (routesState.routes || []).find((r) => r.hostname === hostname);
+  if (!route) return null;
+  return openWindow(drawerId(hostname), hostname, rt.drawerBlocks(route, { admin: currentAdmin(), now: Date.now() }));
+}
+
+// --- o job (compartilhado pela criação e pela remoção) ------------------------------
+
+const STEP_ICON = { pending: 'dot', running: 'clock', done: 'check', failed: 'error', reverted: 'undo', warning: 'warning' };
+
+function jobBlocks(job, lost) {
+  const running = job.status === 'running' && !lost;
+  const blocks = [
+    { type: 'heading', text: `${rt.jobTitle(job)} ${job.hostname}` },
+    {
+      type: 'list',
+      items: rt.visibleSteps(job).map((s) => ({
+        title: s.label,
+        subtitle: s.detail,
+        icon: STEP_ICON[s.status] || 'dot',
+        tone: s.tone === 'dim' ? 'faint' : s.tone,
+      })),
+    },
+  ];
+  if (job.error) blocks.push({ type: 'text', style: 'error', text: String(job.error) });
+  if (lost) blocks.push({ type: 'text', style: 'error', text: rt.LOST_TEXT(lost) });
+  if (running) blocks.push({ type: 'text', style: 'dim', text: rt.RUNNING_HINT[job.kind] || '' });
+  blocks.push({
+    type: 'row',
+    align: 'end',
+    children: [{ type: 'button', action: 'route:close', label: running ? 'Fechar e continuar em segundo plano' : 'Fechar' }],
+  });
+  return blocks;
+}
+
+/**
+ * Acompanha o job da janela `viewId` a cada ROUTE_JOB_MS (a primeira consulta é depois do
+ * intervalo, como na web). Para quando a janela fecha (update com open:false ou view.closed),
+ * no fim do job, num 404 (perdeu o job) e no sair/troca de url. Um erro de rede só tenta de novo.
+ */
+function trackJob(viewId, owner) {
+  let first = true;
+  jobPoller.loop(viewId, ROUTE_JOB_MS, async () => {
+    const w = owner();
+    if (!w || !w.job) return false;
+    if (first) {
+      first = false;
+      return true;
+    }
+    let job = null;
+    let error = null;
+    try {
+      job = await api().routeJob(w.job.id);
+    } catch (e) {
+      error = e;
+    }
+    if (owner() !== w) return false; // fechou ou saiu no meio
+    const next = rt.jobNext(job, error);
+    if (next === 'lost') w.lost = errText(error);
+    else if (job && typeof job === 'object') w.job = job;
+    const open = await renderRouteWindow(viewId);
+    if (!open || next === 'lost') return false;
+    if (next === 'done') {
+      await reloadRoutes();
+      return false;
+    }
+    return true;
+  });
+}
+
+// --- "Nova rota" -----------------------------------------------------------------------
+
+const TLS_OPTIONS = [
+  { key: 'firewall', label: 'No firewall', sub: "certificado Let's Encrypt emitido agora" },
+  { key: 'passthrough', label: 'Passthrough', sub: 'a aplicação termina o TLS' },
+];
+const ACCESS_OPTIONS = [
+  { key: 'internal', label: 'Só interno', sub: 'LOCAL_SUBDOMAINS · rede e VPN' },
+  { key: 'public', label: 'Público', sub: 'PUBLIC_SUBDOMAINS · internet' },
+  { key: 'both', label: 'Os dois', sub: 'as duas mapfiles' },
+];
+
+const freshRouteForm = () => ({
+  hostname: '', tlsMode: 'firewall', access: 'internal', servers: [{ address: '', port: '' }],
+  healthCheck: rt.DEFAULT_HEALTHCHECK, createDnsOverride: true,
+});
+
+/** O que veio digitado na janela (cada ação traz todos os campos) entra no formulário. */
+function mergeRouteValues(values) {
+  const f = wizard.form;
+  const v = values || {};
+  const servers = f.servers.map((s, i) => ({
+    address: v[`addr${i}`] === undefined ? s.address : String(v[`addr${i}`]),
+    port: v[`port${i}`] === undefined ? s.port : String(v[`port${i}`]).replace(/\D/g, ''),
+  }));
+  wizard.form = {
+    ...f,
+    hostname: v.hostname === undefined ? f.hostname : String(v.hostname).trim().toLowerCase(),
+    servers,
+    healthCheck: v.healthCheck === undefined || v.healthCheck === '' ? f.healthCheck : String(v.healthCheck),
+    createDnsOverride: v.createDns === undefined ? f.createDnsOverride : v.createDns === true,
+  };
+}
+
+const changeItems = (changes, numbered, tag, tagTone) =>
+  changes.map((c, i) => {
+    const [what, module] = rt.CHANGE_LABEL[c.kind] || [String(c.kind), ''];
+    return {
+      title: numbered ? `${i + 1}. ${what}` : what,
+      subtitle: c.detail ? `${c.target} · ${c.detail}` : String(c.target),
+      badge: module,
+      meta: tag,
+      metaTone: tagTone,
+      tone: tagTone,
+    };
+  });
+
+function wizardFormBlocks(w) {
+  const f = w.form;
+  const passthrough = f.tlsMode === 'passthrough';
+  const tls = TLS_OPTIONS.find((o) => o.key === f.tlsMode) || TLS_OPTIONS[0];
+  const access = ACCESS_OPTIONS.find((o) => o.key === f.access) || ACCESS_OPTIONS[0];
+  const blocks = [
+    { type: 'text', style: 'faint', text: '1 de 2 · Dados' },
+    { type: 'input', id: 'hostname', label: 'Hostname', placeholder: 'Ex: status.cefis.cloud', value: f.hostname, submit: 'route:review' },
+    {
+      type: 'text',
+      style: f.hostname && !rt.HOSTNAME.test(f.hostname) ? 'error' : 'faint',
+      text: 'Domínio completo; o console confere se está livre ao revisar.',
+    },
+    { type: 'text', text: 'TLS' },
+    { type: 'tabs', items: TLS_OPTIONS.map((o) => ({ label: o.label, action: `route:tls:${o.key}`, active: o.key === f.tlsMode })) },
+    { type: 'text', style: 'faint', text: tls.sub },
+  ];
+  if (!passthrough) {
+    blocks.push(
+      { type: 'text', text: 'Quem acessa' },
+      { type: 'tabs', items: ACCESS_OPTIONS.map((o) => ({ label: o.label, action: `route:access:${o.key}`, active: o.key === f.access })) },
+      { type: 'text', style: 'faint', text: access.sub },
+    );
+  }
+  blocks.push({ type: 'text', text: 'Destino' });
+  f.servers.forEach((s, i) => {
+    const children = [
+      { type: 'input', id: `addr${i}`, width: 280, placeholder: '192.168.100.57', value: s.address },
+      { type: 'input', id: `port${i}`, width: 110, placeholder: '3000', value: s.port },
+    ];
+    if (f.servers.length > 1) children.push({ type: 'button', action: `route:rmserver:${i}`, label: 'x', tooltip: 'Remover servidor' });
+    blocks.push({ type: 'row', children });
+  });
+  blocks.push(
+    { type: 'row', children: [{ type: 'button', action: 'route:addserver', label: 'Adicionar servidor (balanceamento)', icon: 'add' }] },
+    { type: 'select', id: 'healthCheck', label: 'Health check', options: w.healthchecks, value: f.healthCheck },
+    { type: 'checkbox', id: 'createDns', label: 'Criar override no DNS interno', value: f.createDnsOverride },
+    { type: 'text', style: 'faint', text: `${f.hostname || 'hostname'} → HAProxy do firewall` },
+  );
+  if (w.errors.length) blocks.push({ type: 'text', style: 'error', text: w.errors.join(' · ') });
+  if (w.error) blocks.push({ type: 'text', style: 'error', text: w.error });
+  blocks.push({
+    type: 'row',
+    align: 'end',
+    children: [
+      { type: 'button', action: 'route:cancel', label: 'Cancelar', disabled: w.busy },
+      { type: 'button', action: 'route:review', label: w.busy ? 'Conferindo…' : 'Revisar mudanças', style: 'primary', disabled: w.busy },
+    ],
+  });
+  return blocks;
+}
+
+function wizardReviewBlocks(w) {
+  const plan = w.plan;
+  const blocks = [
+    { type: 'heading', text: 'Revisar mudanças no firewall' },
+    { type: 'text', style: 'faint', text: '2 de 2 · Revisão' },
+    { type: 'text', style: 'dim', text: 'Isto será criado no OPNsense, nesta ordem. Nada muda até você aplicar.' },
+    { type: 'list', items: changeItems(plan.changes || [], true, 'criar', 'green') },
+    { type: 'text', style: 'warning', text: 'Aplicar recarrega o HAProxy' },
+    {
+      type: 'text',
+      style: 'dim',
+      text: 'Antes de recarregar, o console roda o configtest; se algo falhar até o reload, desfaz o que criou. No reload, conexões abertas dos outros sites podem cair por cerca de 1 s.',
+    },
+    { type: 'input', id: 'confirm', label: 'Digite o hostname para confirmar', placeholder: plan.hostname, value: w.typed, submit: 'route:apply' },
+  ];
+  if (w.confirmError) blocks.push({ type: 'text', style: 'error', text: w.confirmError });
+  if (w.error) blocks.push({ type: 'text', style: 'error', text: w.error });
+  blocks.push({
+    type: 'row',
+    align: 'end',
+    children: [
+      { type: 'button', action: 'route:back', label: 'Voltar', disabled: w.busy },
+      { type: 'button', action: 'route:cancel', label: 'Cancelar', disabled: w.busy },
+      { type: 'button', action: 'route:apply', label: 'Aplicar no firewall', style: 'primary', icon: 'shield', disabled: w.busy },
+    ],
+  });
+  return blocks;
+}
+
+function wizardBlocks(w) {
+  if (w.step === 'job' && w.job) return jobBlocks(w.job, w.lost);
+  if (w.step === 'review' && w.plan) return wizardReviewBlocks(w);
+  return wizardFormBlocks(w);
+}
+
+// --- a remoção ---------------------------------------------------------------------------
+
+function removalBlocks(r) {
+  if (r.job) return jobBlocks(r.job, r.lost);
+  const blocks = [];
+  if (!r.plan && !r.error) blocks.push({ type: 'text', style: 'dim', text: 'Conferindo o que a rota usa no OPNsense…' });
+  if (r.plan) {
+    const { remove, keep } = rt.removalGroups(r.plan);
+    blocks.push(
+      { type: 'text', style: 'dim', text: 'Primeiro a rota sai do ar (com rollback se algo falhar); depois o console apaga o que ficou sem uso.' },
+      { type: 'section', text: 'SERÁ APAGADO' },
+      { type: 'list', items: changeItems(remove, false, 'apagar', 'red') },
+    );
+    if (keep.length) {
+      blocks.push(
+        { type: 'section', text: 'FICA, PORQUE OUTRA COISA AINDA USA' },
+        { type: 'list', items: changeItems(keep, false, 'fica', 'faint') },
+      );
+    }
+    blocks.push(
+      { type: 'text', style: 'warning', text: 'Remover recarrega o HAProxy' },
+      { type: 'text', style: 'dim', text: 'O hostname para de responder na hora. No reload, conexões abertas dos outros sites podem cair por cerca de 1 s.' },
+      { type: 'input', id: 'confirm', label: 'Digite o hostname para confirmar', placeholder: r.hostname, value: r.typed, submit: 'route:delete' },
+    );
+  }
+  if (r.confirmError) blocks.push({ type: 'text', style: 'error', text: r.confirmError });
+  if (r.error) blocks.push({ type: 'text', style: 'error', text: r.error });
+  blocks.push({
+    type: 'row',
+    align: 'end',
+    children: [
+      { type: 'button', action: 'route:cancel', label: 'Cancelar', disabled: r.busy },
+      { type: 'button', action: 'route:delete', label: 'Remover do firewall', style: 'danger', icon: 'trash', disabled: !r.plan || r.busy },
+    ],
+  });
+  return blocks;
+}
+
+/** Redesenha a janela de criação ou de remoção; false se ela não está aberta. */
+async function renderRouteWindow(viewId) {
+  if (!state.views.has(viewId)) return false;
+  if (viewId === ROUTE_NEW && wizard) return updateWindow(viewId, { blocks: wizardBlocks(wizard) });
+  if (viewId === ROUTE_REMOVE && removal) return updateWindow(viewId, { blocks: removalBlocks(removal) });
+  return false;
+}
+
+/** Uma janela de rotas que fechou: para o job dela, larga o estado e relê a lista. */
+function routeWindowGone(viewId) {
+  if (viewId !== ROUTE_NEW && viewId !== ROUTE_REMOVE) return;
+  jobPoller.stop(viewId);
+  const had = viewId === ROUTE_NEW ? wizard : removal;
+  if (viewId === ROUTE_NEW) wizard = null;
+  else removal = null;
+  if (had) guard('rotas', () => reloadRoutes());
+}
+
+function forgetRoutes() {
+  jobPoller.stopAll();
+  wizard = null;
+  removal = null;
+  Object.assign(routesState, freshRoutes(), { gen: routesState.gen + 1 });
+}
+
+async function openWizard() {
+  // Já aberta (conferindo, revisando ou acompanhando o job): só traz pra frente.
+  if (wizard && state.views.has(ROUTE_NEW)) return openWindow(ROUTE_NEW, 'Nova rota', wizardBlocks(wizard));
+  const w = {
+    step: 'form', form: freshRouteForm(), healthchecks: [rt.DEFAULT_HEALTHCHECK], errors: [], error: '',
+    busy: false, plan: null, body: null, typed: '', confirmError: '', job: null, lost: '',
+  };
+  wizard = w;
+  await openWindow(ROUTE_NEW, 'Nova rota', wizardBlocks(w));
+  try {
+    const names = await api().healthchecks();
+    if (wizard !== w || !Array.isArray(names) || !names.length) return null;
+    w.healthchecks = names.map(String);
+    w.form = { ...w.form, healthCheck: rt.pickHealthCheck(w.healthchecks, w.form.healthCheck) };
+  } catch {
+    return null; // como na web: fica o tcp-check
+  }
+  return renderRouteWindow(ROUTE_NEW);
+}
+
+async function reviewRoute(values) {
+  const w = wizard;
+  if (!w || w.busy || w.step !== 'form') return null; // um clique (ou enter) por vez
+  mergeRouteValues(values);
+  w.errors = rt.validateRoute(w.form);
+  w.error = '';
+  if (w.errors.length) return renderRouteWindow(ROUTE_NEW);
+  const body = rt.routeBody(w.form);
+  w.busy = true; // antes de qualquer await
+  renderRouteWindow(ROUTE_NEW); // o "Conferindo…"
+  try {
+    const plan = await api().planRoute(body);
+    if (wizard !== w) return null;
+    w.plan = plan && typeof plan === 'object' ? { hostname: body.hostname, ...plan, changes: Array.isArray(plan.changes) ? plan.changes : [] } : { hostname: body.hostname, changes: [] };
+    w.body = body;
+    w.typed = '';
+    w.confirmError = '';
+    w.step = 'review';
+  } catch (e) {
+    if (wizard !== w) return null;
+    w.error = errText(e);
+  }
+  w.busy = false;
+  return renderRouteWindow(ROUTE_NEW);
+}
+
+async function applyRoute(values) {
+  const w = wizard;
+  if (!w || w.busy || w.step !== 'review' || !w.plan || !w.body) return null;
+  w.typed = String((values && values.confirm) || '');
+  if (!rt.confirmMatches(w.typed, w.plan.hostname)) {
+    w.confirmError = `Digite ${w.plan.hostname} para confirmar.`;
+    return renderRouteWindow(ROUTE_NEW);
+  }
+  w.confirmError = '';
+  w.error = '';
+  w.busy = true; // antes de qualquer await: o segundo clique não manda outro POST
+  renderRouteWindow(ROUTE_NEW);
+  try {
+    const job = await api().createRoute(w.body);
+    if (wizard !== w) return null;
+    w.busy = false;
+    if (!job || typeof job !== 'object' || !job.id) throw new Error('a API não devolveu o job da criação');
+    w.job = job;
+    w.step = 'job';
+  } catch (e) {
+    if (wizard !== w) return null;
+    w.busy = false;
+    w.error = errText(e);
+    return renderRouteWindow(ROUTE_NEW);
+  }
+  await renderRouteWindow(ROUTE_NEW);
+  if (w.job.status === 'running') trackJob(ROUTE_NEW, () => wizard);
+  else await reloadRoutes();
+  return null;
+}
+
+async function openRemoval(hostname) {
+  closeWindow(drawerId(hostname)); // como na web: a gaveta sai e a remoção entra
+  // A mesma remoção já aberta (conferindo, removendo ou acompanhando): só traz pra frente.
+  const cur = removal;
+  if (cur && state.views.has(ROUTE_REMOVE) && (cur.hostname === hostname || cur.busy || cur.job)) {
+    return openWindow(ROUTE_REMOVE, `Remover rota ${cur.hostname}`, removalBlocks(cur));
+  }
+  const r = { hostname, plan: null, error: '', busy: false, typed: '', confirmError: '', job: null, lost: '' };
+  removal = r;
+  await openWindow(ROUTE_REMOVE, `Remover rota ${hostname}`, removalBlocks(r));
+  try {
+    const plan = await api().removalPlan(hostname);
+    if (removal !== r) return null;
+    r.plan = plan && typeof plan === 'object' ? plan : null;
+    if (!r.plan || !r.plan.fingerprint) {
+      r.plan = null;
+      r.error = 'a API não devolveu o plano de remoção';
+    }
+  } catch (e) {
+    if (removal !== r) return null;
+    r.error = errText(e);
+  }
+  return renderRouteWindow(ROUTE_REMOVE);
+}
+
+async function deleteRoute(values) {
+  const r = removal;
+  if (!r || r.busy || r.job || !r.plan) return null;
+  r.typed = String((values && values.confirm) || '');
+  if (!rt.confirmMatches(r.typed, r.hostname)) {
+    r.confirmError = `Digite ${r.hostname} para confirmar.`;
+    return renderRouteWindow(ROUTE_REMOVE);
+  }
+  r.confirmError = '';
+  r.error = '';
+  r.busy = true; // antes de qualquer await: o segundo clique não manda outro DELETE
+  renderRouteWindow(ROUTE_REMOVE);
+  try {
+    const job = await api().removeRoute(r.hostname, r.plan.fingerprint);
+    if (removal !== r) return null;
+    r.busy = false;
+    if (!job || typeof job !== 'object' || !job.id) throw new Error('a API não devolveu o job da remoção');
+    r.job = job;
+  } catch (e) {
+    if (removal !== r) return null;
+    r.busy = false;
+    r.error = errText(e);
+    return renderRouteWindow(ROUTE_REMOVE);
+  }
+  await renderRouteWindow(ROUTE_REMOVE);
+  if (r.job.status === 'running') trackJob(ROUTE_REMOVE, () => removal);
+  else await reloadRoutes();
+  return null;
+}
+
+on('route', async (arg, values, { viewId }) => {
+  const i = arg.indexOf(':');
+  const kind = i < 0 ? arg : arg.slice(0, i);
+  const rest = i < 0 ? '' : arg.slice(i + 1);
+  // a tela (todos os papéis)
+  if (viewId === MAIN) {
+    if (kind === 'reload') {
+      if (routesState.loading) return null; // como na web, o botão fica travado lendo
+      await loadRoutes();
+      return render();
+    }
+    if (kind === 'filter') {
+      routesState.filter = rest || 'all';
+      return render();
+    }
+    if (kind === 'search') {
+      routesState.query = String(values.text === undefined ? '' : values.text);
+      return render();
+    }
+    if (kind === 'open') return openRouteDrawer(rest);
+  }
+  // fechar é de todos (a gaveta do viewer, inclusive)
+  if (kind === 'close' || kind === 'cancel') {
+    if (viewId === ROUTE_NEW && wizard && wizard.busy) return null; // a web não fecha no meio de um pedido
+    if (viewId === ROUTE_REMOVE && removal && removal.busy) return null;
+    if (viewId && viewId.startsWith('route:')) return closeWindow(viewId);
+    return null;
+  }
+  // daqui pra baixo, escrita no firewall: só admin, conferido de novo aqui
+  if (!currentAdmin()) return null;
+  if (kind === 'new' && viewId === MAIN) return openWizard();
+  if (kind === 'remove' && viewId && viewId !== ROUTE_NEW && viewId !== ROUTE_REMOVE) {
+    return rest && (routesState.routes || []).some((r) => r.hostname === rest) ? openRemoval(rest) : null;
+  }
+  if (viewId === ROUTE_NEW && wizard) {
+    if (kind === 'review') return reviewRoute(values);
+    if (kind === 'apply') return applyRoute(values);
+    if (kind === 'back') {
+      if (wizard.busy || wizard.step !== 'review') return null;
+      Object.assign(wizard, { step: 'form', plan: null, body: null, error: '', confirmError: '' });
+      return renderRouteWindow(ROUTE_NEW);
+    }
+    if (wizard.busy || wizard.step !== 'form') return null;
+    mergeRouteValues(values); // a troca de aba e de servidor não apaga o que foi digitado
+    if (kind === 'tls' && TLS_OPTIONS.some((o) => o.key === rest)) wizard.form.tlsMode = rest;
+    else if (kind === 'access' && ACCESS_OPTIONS.some((o) => o.key === rest)) wizard.form.access = rest;
+    else if (kind === 'addserver') wizard.form.servers = rt.addServer(wizard.form.servers);
+    else if (kind === 'rmserver') wizard.form.servers = rt.removeServer(wizard.form.servers, Number(rest));
+    return renderRouteWindow(ROUTE_NEW);
+  }
+  if (viewId === ROUTE_REMOVE && removal && kind === 'delete') return deleteRoute(values);
+  return null;
+});
+
+registerScreen('routes', {
+  load: () => loadRoutes(),
+  // `ctx.user` pode ser null (um render logo depois do sair): aí é só leitura.
+  view: (c) => routesScreenView(c.user, c.now()),
+});
+
 // --- o protocolo -----------------------------------------------------------------------
 
 mx.onRequest('initialize', (params) => {
@@ -1368,6 +1891,7 @@ mx.onNotification('event', (e) => {
 
 function shutdown() {
   state.poller.stopAll();
+  jobPoller.stopAll();
   if (state.lb) state.lb.close();
 }
 

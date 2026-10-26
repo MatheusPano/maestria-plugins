@@ -1,0 +1,312 @@
+// Rotas (RoutesView.tsx): o topo com o "Ler agora"/"Lido …" e o "Nova rota" (só admin),
+// os quatro cartões, a busca (no enter) e os filtros com as contagens, o erro em
+// vermelho e a tabela. Sem `import`: o main.js junta este arquivo depois da casca, e as
+// peças do vms.rfwtxt e do storage.rfwtxt (HeadCell, HaChip, VmsError, EmptyBox) valem aqui.
+//
+// Os dados chegam em `data.routes` (lib/routes.js `routesView` + `countText` por filtro).
+// Os cliques voltam como `event "act" { a: … }`: `route:reload`, `route:new`,
+// `route:filter:<f>`, `route:search` (com o `text`) e `route:open:<hostname>` por linha.
+// A gaveta, a "Nova rota", a remoção e o job são janelas de blocos (main.js).
+
+widget RoutesScreen = SingleChildScrollView(
+  primary: false,
+  padding: [28.0, 24.0, 28.0, 28.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      RoutesHeader(h: data.routes.header),
+      SizedBox(height: 20.0),
+      Row(
+        crossAxisAlignment: "start",
+        children: [
+          ...for s in data.routes.stats:
+            Expanded(child: Padding(padding: [0.0, 0.0, 12.0, 0.0], child: RouteStat(s: s))),
+        ],
+      ),
+      SizedBox(height: 20.0),
+      RoutesToolbar(),
+      VmsError(text: data.routes.error),
+      SizedBox(height: 14.0),
+      RoutesTable(),
+    ],
+  ),
+);
+
+// --- o topo ------------------------------------------------------------------------
+
+widget RoutesHeader = Row(
+  children: [
+    Expanded(
+      child: Column(
+        crossAxisAlignment: "start",
+        children: [
+          Text(text: args.h.title, style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+          SizedBox(height: 4.0),
+          Text(text: args.h.subtitle, style: { fontSize: 12.5, color: data.theme.faint }),
+        ],
+      ),
+    ),
+    // Lendo: o botão fica travado, com o relógio no lugar do refresh.
+    switch args.h.loading {
+      true: Opacity(
+        opacity: 0.6,
+        child: RefreshBox(icon: "clock", text: args.h.refresh),
+      ),
+      default: Pressable(
+        radius: 4.0,
+        hoverColor: data.theme.hover,
+        onTap: event "act" { a: "route:reload" },
+        child: RefreshBox(icon: "refresh", text: args.h.refresh),
+      ),
+    },
+    switch args.h.newRoute {
+      true: Padding(
+        padding: [8.0, 0.0, 0.0, 0.0],
+        child: Pressable(
+          radius: 6.0,
+          color: data.theme.accent,
+          hoverColor: data.theme.accent,
+          onTap: event "act" { a: "route:new" },
+          child: Padding(
+            padding: [14.0, 8.0, 14.0, 8.0],
+            child: Row(
+              mainAxisSize: "min",
+              children: [
+                Glyph(icon: "add", size: 16.0, color: data.theme.onAccent),
+                SizedBox(width: 8.0),
+                Text(text: "Nova rota", style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.onAccent }),
+              ],
+            ),
+          ),
+        ),
+      ),
+      default: SizedBox(),
+    },
+  ],
+);
+
+widget RefreshBox = Container(
+  padding: [10.0, 6.0, 10.0, 6.0],
+  decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Glyph(icon: args.icon, size: 14.0, color: data.theme.dim),
+      SizedBox(width: 6.0),
+      Text(text: args.text, maxLines: 1, style: { fontSize: 12.0, color: data.theme.dim }),
+    ],
+  ),
+);
+
+widget RouteStat = Container(
+  padding: [16.0, 14.0, 16.0, 14.0],
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "start",
+    children: [
+      Text(text: args.s.label, style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.dim }),
+      SizedBox(height: 4.0),
+      Text(
+        text: args.s.value,
+        maxLines: 1,
+        style: {
+          fontSize: 22.0,
+          fontWeight: "w600",
+          color: switch args.s.tone { "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.fg },
+        },
+      ),
+      switch args.s.sub {
+        "": SizedBox(),
+        default: Text(
+          text: args.s.sub,
+          maxLines: 1,
+          overflow: "ellipsis",
+          style: {
+            fontSize: 11.5,
+            color: switch args.s.tone { "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.faint },
+          },
+        ),
+      },
+    ],
+  ),
+);
+
+// --- a busca e os filtros --------------------------------------------------------------
+
+widget RoutesToolbar = Wrap(
+  spacing: 8.0,
+  runSpacing: 8.0,
+  children: [
+    SizedBox(
+      width: 360.0,
+      child: TextInput(
+        id: "routes.search",
+        placeholder: "Buscar hostname, backend ou IP",
+        allowEmpty: true,
+        onSubmit: event "act" { a: "route:search" },
+      ),
+    ),
+    ...for f in data.routes.filters:
+      RouteFilter(f: f),
+  ],
+);
+
+widget RouteFilter = Pressable(
+  radius: 4.0,
+  color: switch args.f.active { true: data.theme.active, default: 0x00000000 },
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.f.a },
+  child: Container(
+    padding: [12.0, 7.0, 12.0, 7.0],
+    decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Text(
+          text: args.f.label,
+          style: {
+            fontSize: 12.0,
+            fontWeight: switch args.f.active { true: "w600", default: "w400" },
+            color: switch args.f.active { true: data.theme.fg, default: data.theme.dim },
+          },
+        ),
+        SizedBox(width: 6.0),
+        Text(text: args.f.countText, style: { fontSize: 11.0, fontFamily: data.theme.mono, color: data.theme.faint }),
+      ],
+    ),
+  ),
+);
+
+// --- a tabela ----------------------------------------------------------------------
+
+widget RoutesTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        color: data.theme.active,
+        child: Row(
+          children: [
+            Expanded(flex: 26, child: HeadCell(text: "Hostname")),
+            Expanded(flex: 12, child: HeadCell(text: "Modo")),
+            Expanded(flex: 16, child: HeadCell(text: "Backend")),
+            Expanded(flex: 16, child: HeadCell(text: "Destino")),
+            Expanded(flex: 14, child: HeadCell(text: "DNS interno")),
+            Expanded(flex: 14, child: HeadCell(text: "Certificado")),
+            SizedBox(width: 24.0),
+          ],
+        ),
+      ),
+      switch data.routes.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for r in data.routes.rows:
+              RouteRow(r: r),
+          ],
+        ),
+        default: EmptyBox(text: data.routes.empty),
+      },
+      switch data.routes.footer {
+        "": SizedBox(),
+        default: Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            Container(height: 1.0, color: data.theme.border),
+            Padding(
+              padding: [16.0, 10.0, 16.0, 10.0],
+              child: Row(
+                children: [
+                  Expanded(child: Text(text: data.routes.footer, style: { fontSize: 12.0, color: data.theme.faint })),
+                  Text(text: data.routes.source, style: { fontSize: 12.0, color: data.theme.faint }),
+                ],
+              ),
+            ),
+          ],
+        ),
+      },
+    ],
+  ),
+);
+
+// A linha inteira abre a gaveta; as colunas usam os mesmos flex do cabeçalho.
+widget RouteRow = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Container(height: 1.0, color: data.theme.border),
+    Pressable(
+      radius: 4.0,
+      hoverColor: data.theme.hover,
+      onTap: event "act" { a: args.r.open },
+      child: Padding(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        child: Row(
+          children: [
+            Expanded(
+              flex: 26,
+              child: Row(
+                children: [
+                  Glyph(
+                    icon: "globe",
+                    size: 14.0,
+                    color: switch args.r.tone { "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.faint },
+                  ),
+                  SizedBox(width: 8.0),
+                  Expanded(
+                    child: Text(text: args.r.hostname, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, fontFamily: data.theme.mono, color: data.theme.fg }),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              flex: 12,
+              child: switch args.r.passthrough {
+                true: HaChip(text: args.r.mode, color: data.theme.dim),
+                default: HaChip(text: args.r.mode, color: data.theme.green),
+              },
+            ),
+            Expanded(flex: 16, child: RouteCell(c: args.r.backend)),
+            Expanded(flex: 16, child: RouteDestino(c: args.r.destino)),
+            Expanded(flex: 14, child: RouteCell(c: args.r.dns)),
+            Expanded(flex: 14, child: RouteCell(c: args.r.cert)),
+            SizedBox(width: 24.0, child: Glyph(icon: "chevron", size: 14.0, color: data.theme.faint)),
+          ],
+        ),
+      ),
+    ),
+  ],
+);
+
+// Uma célula `{ text, tone }`: vermelho e amarelo pintam; "dim" é o apagado; o resto é o normal.
+widget RouteCell = Text(
+  text: args.c.text,
+  maxLines: 1,
+  overflow: "ellipsis",
+  style: {
+    fontSize: 12.0,
+    fontFamily: data.theme.mono,
+    color: switch args.c.tone { "red": data.theme.red, "yellow": data.theme.yellow, "dim": data.theme.faint, default: data.theme.dim },
+  },
+);
+
+// O destino: a bolinha na cor da saúde dos servidores e o endereço (ou "x/y servidores no ar").
+widget RouteDestino = switch args.c.tone {
+  "dim": RouteCell(c: args.c),
+  default: Row(
+    children: [
+      Container(
+        width: 7.0,
+        height: 7.0,
+        decoration: {
+          type: "box",
+          shape: "circle",
+          color: switch args.c.tone { "green": data.theme.green, "yellow": data.theme.yellow, "red": data.theme.red, default: data.theme.faint },
+        },
+      ),
+      SizedBox(width: 8.0),
+      Expanded(child: RouteCell(c: args.c)),
+    ],
+  ),
+};

@@ -219,3 +219,34 @@ test('jobNext', () => {
   assert.equal(r.jobNext({ status: 'rolled_back' }, null), 'done');
   assert.equal(r.LOST_TEXT('Job não encontrado.'), 'Perdi o acompanhamento: Job não encontrado. Confira o resultado na Auditoria e na lista de rotas.');
 });
+
+test('removalGroups splits the plan by action', () => {
+  const plan = {
+    hostname: 'app.cefis.cloud',
+    fingerprint: 'fp',
+    changes: [
+      { action: 'remove', kind: 'mapfile_line', target: 'a', detail: '' },
+      { action: 'keep', kind: 'certificate', target: 'b', detail: 'usado por x' },
+      { action: 'remove', kind: 'backend', target: 'c', detail: '' },
+      { action: 'create', kind: 'server', target: 'd', detail: '' },
+    ],
+  };
+  const g = r.removalGroups(plan);
+  assert.deepEqual(g.remove.map((c) => c.target), ['a', 'c']);
+  assert.deepEqual(g.keep.map((c) => c.target), ['b']);
+  assert.deepEqual(r.removalGroups({ changes: [{ action: 'remove', kind: 'backend', target: 'c', detail: '' }] }).keep, []);
+  assert.deepEqual(r.removalGroups(null), { remove: [], keep: [] });
+  assert.deepEqual(r.removalGroups({}), { remove: [], keep: [] });
+});
+
+test('confirmMatches: trimmed (and lower-cased, as the web input does) equals the hostname', () => {
+  assert.equal(r.confirmMatches('app.cefis.cloud', 'app.cefis.cloud'), true);
+  assert.equal(r.confirmMatches('  app.cefis.cloud ', 'app.cefis.cloud'), true);
+  assert.equal(r.confirmMatches('APP.cefis.cloud', 'app.cefis.cloud'), true);
+  assert.equal(r.confirmMatches('app.cefis.cloud', 'App.Cefis.Cloud'), true);
+  assert.equal(r.confirmMatches('app.cefis.clou', 'app.cefis.cloud'), false);
+  assert.equal(r.confirmMatches('app.cefis.cloud.', 'app.cefis.cloud'), false);
+  assert.equal(r.confirmMatches('', ''), false);
+  assert.equal(r.confirmMatches(undefined, 'app.cefis.cloud'), false);
+  assert.equal(r.confirmMatches('x', undefined), false);
+});

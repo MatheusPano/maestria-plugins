@@ -118,7 +118,8 @@ function closeApi(api) {
 // `openReply()`: o `open` que a janela responde a cada view.update.
 // `env`: variáveis a mais (os ganchos de teste do main.js, como VMM_CREATE_TIMEOUT_MS).
 // `failMethods`: pedidos do plugin que a janela responde com erro (um clipboard.write que falha).
-function startPlugin({ dataDir, url, script = '', openReply = () => true, env = {}, failMethods = [] }) {
+// `windowReply(viewId)`: o `open` que a janela responde a um view.update de uma janela de blocos.
+function startPlugin({ dataDir, url, script = '', openReply = () => true, windowReply = () => true, env = {}, failMethods = [] }) {
   const argv = script ? ['-e', `const m = require(${JSON.stringify(MAIN)});\n${script}`] : [MAIN];
   const child = spawn(process.execPath, argv, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...env } });
   const lines = [];
@@ -153,7 +154,7 @@ function startPlugin({ dataDir, url, script = '', openReply = () => true, env = 
         requests.push(msg);
         let result = null;
         if (msg.method === 'view.open') result = { tabId: 'plugin1' };
-        if (msg.method === 'view.update') result = { open: msg.params.viewId === 'vmm' ? openReply() : true };
+        if (msg.method === 'view.update') result = { open: msg.params.viewId === 'vmm' ? openReply() : windowReply(msg.params.viewId) };
         const reply = failMethods.includes(msg.method)
           ? { jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'falhou' } }
           : { jsonrpc: '2.0', id: msg.id, result };
@@ -635,12 +636,12 @@ const VIEWER = { id: 'u2', email: 'v@b.c', name: 'Vera Viewer', role: 'viewer' }
 
 /** Um plugin já logado (admin por padrão) com a tela de VMs aberta. */
 // `open: false` só sobe e inicializa (a janela principal fica fechada).
-async function openVms({ user = ADMIN, routes = {}, extra = {}, env = {}, open = true, failMethods = [] } = {}) {
+async function openVms({ user = ADMIN, routes = {}, extra = {}, env = {}, open = true, failMethods = [], windowReply } = {}) {
   const token = `tok-${user.role}-${Math.random().toString(36).slice(2)}`;
   const api = await fakeApi({ [token]: user }, { routes, extra: { ...CATALOG, '/api/vms/177': DETAIL, ...extra } });
   const dataDir = tmpDir();
   seed(dataDir, api.url, token, user);
-  const p = startPlugin({ dataDir, url: api.url, env, failMethods });
+  const p = startPlugin({ dataDir, url: api.url, env, failMethods, windowReply });
   const close = async () => {
     await p.stop();
     closeApi(api);
@@ -1686,4 +1687,513 @@ test('secret: fechar a janela (view.closed) apaga a secret; reabrir mostra a má
     await close();
   }
   assert.deepEqual(p.bad, []);
+});
+
+// --- Task 12: Rotas ---------------------------------------------------------------------
+
+const R_CERT = { name: 'app', source: 'acme', validation: 'http01', issuedAt: '2026-09-01T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z', attached: true, issued: true, autoRenewal: true, wildcard: false };
+const R_OK = {
+  hostname: 'app.cefis.cloud', tlsMode: 'firewall', access: ['internal'], backendName: 'app_pool',
+  backend: { enabled: true, healthCheck: 'tcp-check', servers: [{ name: 's1', address: '10.0.0.5', port: 3000, health: 'up' }] },
+  dnsAddress: '10.0.0.1', conflictingBackends: [], problems: [], certificate: R_CERT,
+};
+const R_BAD = {
+  hostname: 'old.cefis.cloud', tlsMode: 'passthrough', access: [], backendName: 'old_pool',
+  backend: null, dnsAddress: null, conflictingBackends: [], problems: ['backend_missing', 'dns_missing'], certificate: null,
+};
+const ROUTE_GETS = { '/api/routes': [R_OK, R_BAD], '/api/routes/healthchecks': ['http-check', 'tcp-check'] };
+const PLAN = {
+  hostname: 'novo.cefis.cloud',
+  tlsMode: 'firewall',
+  changes: [
+    { action: 'create', kind: 'certificate', target: 'novo.cefis.cloud', detail: 'http-01' },
+    { action: 'create', kind: 'backend', target: 'novo_pool', detail: '' },
+  ],
+};
+const REMOVAL = {
+  hostname: 'app.cefis.cloud',
+  fingerprint: 'fp-123',
+  changes: [
+    { action: 'remove', kind: 'mapfile_line', target: 'LOCAL_SUBDOMAINS_mapfile', detail: 'app.cefis.cloud app_pool' },
+    { action: 'remove', kind: 'backend', target: 'app_pool', detail: '' },
+    { action: 'keep', kind: 'certificate', target: '*.cefis.cloud', detail: 'outras rotas usam' },
+  ],
+};
+const jobOf = (kind, status, steps) => ({
+  id: `job-${kind}`, kind, hostname: kind === 'create' ? 'novo.cefis.cloud' : 'app.cefis.cloud', status,
+  steps, error: null, startedAt: '2026-10-26T12:00:00Z', finishedAt: null,
+});
+const RJ = 'VMM_ROUTE_JOB_MS';
+
+/** Logado na tela de rotas com as duas rotas lidas. */
+function openRoutes(opts = {}) {
+  return openArea('routes', (r) => r.rows.length === 2, { ...opts, extra: { ...ROUTE_GETS, ...(opts.extra || {}) } });
+}
+const NEW_VALUES = { hostname: ' Novo.Cefis.Cloud ', addr0: '10.0.0.9', port0: '80a80', healthCheck: 'tcp-check', createDns: false };
+
+test('rotas (admin): cartões, filtros, linhas, busca no enter, "Ler agora" com trava, sem null e sem polling', { timeout: 15000 }, async () => {
+  let slow = false;
+  const { p, close, count } = await openRoutes({
+    routes: { 'GET /api/routes': () => ({ json: [R_OK, R_BAD], delayMs: slow ? 300 : 0 }) },
+  });
+  try {
+    const v = p.mainData().routes;
+    assertNoNull(v);
+    assert.equal(p.mainData().screen, 'routes');
+    assert.equal(v.header.title, 'Rotas');
+    assert.equal(v.header.newRoute, true);
+    assert.equal(v.header.loading, false);
+    assert.equal(v.header.refresh, 'Lido agora');
+    assert.deepEqual(v.stats.map((s) => [s.label, s.value]), [['Hostnames', '2'], ['Backends', '1'], ['Certificados', '1'], ['Com problema', '1']]);
+    assert.equal(v.stats[0].sub, '1 em passthrough');
+    assert.deepEqual(v.filters.map((f) => [f.label, f.countText, f.active]), [['Todas', '2', true], ['Com problema', '1', false], ['TLS no firewall', '1', false], ['Passthrough', '1', false]]);
+    const [ok, bad] = v.rows;
+    assert.equal(ok.hostname, 'app.cefis.cloud');
+    assert.deepEqual(ok.destino, { text: '10.0.0.5:3000', tone: 'green' });
+    assert.equal(ok.open, 'route:open:app.cefis.cloud');
+    assert.deepEqual(bad.backend, { text: 'old_pool (não existe)', tone: 'red' });
+    assert.deepEqual(bad.dns, { text: 'sem override', tone: 'red' });
+    assert.deepEqual(bad.cert, { text: 'no servidor', tone: 'dim' });
+    assert.equal(v.footer, '2 de 2 hostnames');
+    // filtro e busca
+    p.act('vmm', 'act', { a: 'route:filter:problems' });
+    await p.waitFor(() => p.mainData().routes.rows.length === 1 && p.mainData().routes.rows[0].hostname === 'old.cefis.cloud', 'filtro com problema');
+    p.act('vmm', 'act', { a: 'route:filter:all' });
+    p.act('vmm', 'act', { a: 'route:search', text: '10.0.0.5' });
+    await p.waitFor(() => p.mainData().routes.rows.length === 1 && p.mainData().routes.rows[0].hostname === 'app.cefis.cloud' && p.mainData().routes.footer === '1 de 2 hostnames', 'busca');
+    // sem polling
+    const before = count('GET', '/api/routes');
+    assert.equal(before, 1, 'leu uma vez ao entrar');
+    await pause(300);
+    assert.equal(count('GET', '/api/routes'), 1, 'sem polling');
+    // "Ler agora" duas vezes com a leitura lenta: uma leitura só, e o "lendo" no topo
+    slow = true;
+    p.act('vmm', 'act', { a: 'route:reload' });
+    await p.waitFor(() => p.mainData().routes.header.loading === true, 'lendo');
+    p.act('vmm', 'act', { a: 'route:reload' });
+    await p.waitFor(() => p.mainData().routes.header.loading === false, 'leu');
+    await pause(100);
+    assert.equal(count('GET', '/api/routes'), 2, 'um GET por clique, não dois');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('rotas: a gaveta mostra o caminho; o admin vê "Remover rota"', { timeout: 15000 }, async () => {
+  const { p, close } = await openRoutes();
+  try {
+    p.act('vmm', 'act', { a: 'route:open:app.cefis.cloud' });
+    const open = await p.waitFor(() => p.requests.find((r) => r.method === 'view.open' && r.params.viewId === 'route:app.cefis.cloud'), 'gaveta');
+    assertNoNull(open.params.blocks);
+    const texts = allTexts(open.params.blocks);
+    assert.ok(texts.includes('CAMINHO'));
+    assert.ok(texts.includes('CERTIFICADO'));
+    assert.ok(button(open.params.blocks, 'route:remove:app.cefis.cloud'));
+    p.act('vmm', 'act', { a: 'route:open:nao.existe' });
+    p.act('route:app.cefis.cloud', 'route:close', {});
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === 'route:app.cefis.cloud'), 'fecha a gaveta');
+    assert.ok(!p.requests.some((r) => r.method === 'view.open' && r.params.viewId === 'route:nao.existe'));
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('rotas (viewer): sem "Nova rota" nem "Remover rota"; ações forjadas não chamam a API', { timeout: 15000 }, async () => {
+  const hits = [];
+  const record = (name) => () => {
+    hits.push(name);
+    return { json: {} };
+  };
+  const { p, close } = await openRoutes({
+    user: VIEWER,
+    routes: {
+      'POST /api/routes/plan': record('plan'),
+      'POST /api/routes': record('create'),
+      'POST /api/routes/app.cefis.cloud/removal-plan': record('removal-plan'),
+      'DELETE /api/routes/app.cefis.cloud': record('delete'),
+    },
+  });
+  try {
+    assert.equal(p.mainData().routes.header.newRoute, false);
+    p.act('vmm', 'act', { a: 'route:open:app.cefis.cloud' });
+    const open = await p.waitFor(() => p.requests.find((r) => r.method === 'view.open' && r.params.viewId === 'route:app.cefis.cloud'), 'gaveta');
+    assert.equal(button(open.params.blocks, 'route:remove:app.cefis.cloud'), null, 'viewer sem Remover rota');
+    assert.ok(!allTexts(open.params.blocks).includes('Remover rota'));
+    // forjadas
+    p.act('vmm', 'act', { a: 'route:new' });
+    p.act('route:app.cefis.cloud', 'route:remove:app.cefis.cloud', {});
+    p.act('route:new', 'route:review', NEW_VALUES);
+    p.act('route:new', 'route:apply', { confirm: 'novo.cefis.cloud' });
+    p.act('route:remove', 'route:delete', { confirm: 'app.cefis.cloud' });
+    await pause(300);
+    assert.deepEqual(hits, [], 'nenhuma escrita');
+    assert.ok(!p.requests.some((r) => r.method === 'view.open' && (r.params.viewId === 'route:new' || r.params.viewId === 'route:remove')), 'nenhuma janela de escrita');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('Nova rota: formulário, validação, um POST de plano por clique, confirmação errada não aplica, dois "Aplicar" mandam UM POST, e o job até "Rota criada"', { timeout: 15000 }, async () => {
+  let polls = 0;
+  const RUNNING = jobOf('create', 'running', [
+    { step: 'certificate', status: 'running', detail: null },
+    { step: 'servers', status: 'pending', detail: null },
+    { step: 'dns_override', status: 'skipped', detail: null },
+  ]);
+  const DONE = jobOf('create', 'done', [
+    { step: 'certificate', status: 'done', detail: 'R11' },
+    { step: 'servers', status: 'done', detail: null },
+    { step: 'dns_override', status: 'skipped', detail: null },
+  ]);
+  const { p, close, count, api } = await openRoutes({
+    env: { [RJ]: '100' },
+    routes: {
+      'POST /api/routes/plan': () => ({ json: PLAN, delayMs: 300 }),
+      'POST /api/routes': () => ({ json: RUNNING, delayMs: 300 }),
+      'GET /api/routes/jobs/job-create': () => {
+        polls++;
+        return { json: polls < 3 ? RUNNING : DONE };
+      },
+    },
+  });
+  const W = 'route:new';
+  try {
+    p.act('vmm', 'act', { a: 'route:new' });
+    const open = await p.waitFor(() => p.requests.find((r) => r.method === 'view.open' && r.params.viewId === W), 'abre a Nova rota');
+    assert.equal(open.params.title, 'Nova rota');
+    assert.equal(open.params.modal, true);
+    await p.waitFor(() => (blockWith(p.windowBlocks(W), (b) => b.type === 'select') || {}).options.length === 2, 'health checks');
+    let blocks = p.windowBlocks(W);
+    assertNoNull(blocks);
+    const texts = allTexts(blocks);
+    for (const t of ['1 de 2 · Dados', 'Domínio completo; o console confere se está livre ao revisar.', 'Criar override no DNS interno', 'hostname → HAProxy do firewall']) assert.ok(texts.includes(t), t);
+    assert.equal(blockWith(blocks, (b) => b.id === 'hostname').placeholder, 'Ex: status.cefis.cloud');
+    assert.deepEqual(blockWith(blocks, (b) => b.type === 'tabs').items.map((t) => [t.label, t.active]), [['No firewall', true], ['Passthrough', false]]);
+    assert.ok(texts.includes('Só interno') && texts.includes('Público') && texts.includes('Os dois'));
+    const hc = blockWith(blocks, (b) => b.type === 'select');
+    assert.deepEqual([hc.id, hc.options, hc.value], ['healthCheck', ['http-check', 'tcp-check'], 'tcp-check']);
+    assert.equal(blockWith(blocks, (b) => b.type === 'checkbox').value, true);
+    assert.ok(blockWith(blocks, (b) => b.id === 'addr0') && blockWith(blocks, (b) => b.id === 'port0'));
+    assert.equal(button(blocks, 'route:rmserver:0'), null, 'um servidor só: sem x');
+    assert.equal(button(blocks, 'route:review').label, 'Revisar mudanças');
+    assert.ok(button(blocks, 'route:addserver') && button(blocks, 'route:cancel'));
+    // passthrough esconde o "Quem acessa"; o que foi digitado fica
+    p.act(W, 'route:tls:passthrough', { hostname: 'x.cefis.cloud', addr0: '10.0.0.9' });
+    await p.waitFor(() => !allTexts(p.windowBlocks(W)).includes('Só interno'), 'passthrough');
+    assert.equal(blockWith(p.windowBlocks(W), (b) => b.id === 'hostname').value, 'x.cefis.cloud');
+    p.act(W, 'route:tls:firewall', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Só interno'), 'firewall de novo');
+    // balanceamento: o segundo servidor herda a porta; o x aparece e tira
+    p.act(W, 'route:addserver', { addr0: '10.0.0.9', port0: '8080' });
+    await p.waitFor(() => blockWith(p.windowBlocks(W), (b) => b.id === 'port1'), 'segundo servidor');
+    assert.equal(blockWith(p.windowBlocks(W), (b) => b.id === 'port1').value, '8080');
+    assert.ok(button(p.windowBlocks(W), 'route:rmserver:1'));
+    p.act(W, 'route:rmserver:0', { addr0: '10.0.0.9', port0: '8080', addr1: '10.0.0.10', port1: '8080' });
+    await p.waitFor(() => !blockWith(p.windowBlocks(W), (b) => b.id === 'port1'), 'tirou um');
+    assert.equal(blockWith(p.windowBlocks(W), (b) => b.id === 'addr0').value, '10.0.0.10');
+    // inválido: os erros voltam, sem plano
+    p.act(W, 'route:review', { hostname: 'nada', addr0: '999.1.1.1', port0: '' });
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).some((t) => t.startsWith('Hostname inválido') && t.includes('Servidor 1: IP inválido.')), 'erros');
+    assert.equal(count('POST', '/api/routes/plan'), 0);
+    // dois "Revisar" (clique + enter): UM plano
+    p.act(W, 'route:review', NEW_VALUES);
+    p.act(W, 'route:review', NEW_VALUES);
+    await p.waitFor(() => (button(p.windowBlocks(W), 'route:review') || {}).label === 'Conferindo…', 'conferindo');
+    assert.equal(button(p.windowBlocks(W), 'route:review').disabled, true);
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('2 de 2 · Revisão'), 'revisão');
+    assert.equal(count('POST', '/api/routes/plan'), 1, 'um POST de plano só');
+    assert.deepEqual(api.seen.find((r) => r.path === '/api/routes/plan').body, {
+      hostname: 'novo.cefis.cloud', tlsMode: 'firewall', access: ['internal'], servers: [{ address: '10.0.0.9', port: 8080 }], healthCheck: 'tcp-check', createDnsOverride: false,
+    });
+    blocks = p.windowBlocks(W);
+    assertNoNull(blocks);
+    const list = blockWith(blocks, (b) => b.type === 'list');
+    assert.deepEqual(list.items.map((i) => [i.title, i.badge, i.meta]), [['1. Certificado', 'ACME', 'criar'], ['2. Backend Pool', 'HAProxy', 'criar']]);
+    assert.equal(list.items[0].subtitle, 'novo.cefis.cloud · http-01');
+    const rtexts = allTexts(blocks);
+    assert.ok(rtexts.includes('Aplicar recarrega o HAProxy'));
+    assert.ok(rtexts.includes('Antes de recarregar, o console roda o configtest; se algo falhar até o reload, desfaz o que criou. No reload, conexões abertas dos outros sites podem cair por cerca de 1 s.'));
+    assert.equal(blockWith(blocks, (b) => b.id === 'confirm').label, 'Digite o hostname para confirmar');
+    assert.ok(button(blocks, 'route:back') && button(blocks, 'route:cancel'));
+    assert.equal(button(blocks, 'route:apply').label, 'Aplicar no firewall');
+    // confirmação errada: nada sai
+    p.act(W, 'route:apply', { confirm: 'novo.cefis.clou' });
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Digite novo.cefis.cloud para confirmar.'), 'confirmação errada');
+    await pause(100);
+    assert.equal(count('POST', '/api/routes'), 0, 'hostname errado não aplica');
+    // Voltar e revisar de novo mantém o formulário
+    p.act(W, 'route:back', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('1 de 2 · Dados'), 'voltou');
+    assert.equal(blockWith(p.windowBlocks(W), (b) => b.id === 'hostname').value, 'novo.cefis.cloud');
+    p.act(W, 'route:review', NEW_VALUES);
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('2 de 2 · Revisão'), 'revisão de novo');
+    // dois "Aplicar" (com maiúsculas e espaço) + um enter no meio: UM POST
+    p.act(W, 'route:apply', { confirm: ' Novo.cefis.cloud ' });
+    p.act(W, 'route:apply', { confirm: ' Novo.cefis.cloud ' });
+    p.act(W, 'route:apply', { confirm: 'novo.cefis.cloud' });
+    p.act(W, 'route:cancel', {}); // cancelar no meio não fecha
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Aplicando novo.cefis.cloud'), 'job aplicando');
+    assert.equal(count('POST', '/api/routes'), 1, 'um POST /routes só');
+    assert.deepEqual(api.seen.find((r) => r.method === 'POST' && r.path === '/api/routes').body.hostname, 'novo.cefis.cloud');
+    assert.ok(!p.requests.some((r) => r.method === 'view.close' && r.params.viewId === W));
+    blocks = p.windowBlocks(W);
+    assertNoNull(blocks);
+    assert.equal(button(blocks, 'route:close').label, 'Fechar e continuar em segundo plano');
+    assert.ok(allTexts(blocks).includes('Pode fechar: a criação continua na API e fica registrada na Auditoria. A emissão do certificado leva de 1 a 2 minutos.'));
+    const steps = blockWith(blocks, (b) => b.type === 'list').items;
+    assert.deepEqual(steps.map((s) => [s.title, s.icon]), [["Emitir certificado (Let's Encrypt)", 'clock'], ['Criar Real Server(s)', 'dot']]);
+    const routesBefore = count('GET', '/api/routes');
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Rota criada novo.cefis.cloud'), 'rota criada');
+    blocks = p.windowBlocks(W);
+    assert.equal(button(blocks, 'route:close').label, 'Fechar');
+    assert.ok(!allTexts(blocks).some((t) => t.startsWith('Pode fechar')));
+    assert.deepEqual(blockWith(blocks, (b) => b.type === 'list').items.map((s) => [s.icon, s.subtitle]), [['check', 'R11'], ['check', '']]);
+    await p.waitFor(() => count('GET', '/api/routes') === routesBefore + 1, 'a lista relê no fim do job');
+    const n = polls;
+    await pause(400);
+    assert.equal(polls, n, 'para de consultar no fim');
+    assert.equal(n, 3);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+/** A Nova rota já no job, aplicando. */
+async function startCreateJob(opts, jobRoute) {
+  const RUNNING = jobOf('create', 'running', [{ step: 'certificate', status: 'running', detail: null }]);
+  const ctx = await openRoutes({
+    ...opts,
+    env: { [RJ]: '80' },
+    routes: { 'POST /api/routes/plan': () => ({ json: PLAN }), 'POST /api/routes': () => ({ json: RUNNING }), 'GET /api/routes/jobs/job-create': jobRoute || (() => ({ json: RUNNING })) },
+  });
+  const { p } = ctx;
+  try {
+    p.act('vmm', 'act', { a: 'route:new' });
+    await p.waitFor(() => p.windowBlocks('route:new'), 'abre');
+    p.act('route:new', 'route:review', NEW_VALUES);
+    await p.waitFor(() => allTexts(p.windowBlocks('route:new')).includes('2 de 2 · Revisão'), 'revisão');
+    p.act('route:new', 'route:apply', { confirm: 'novo.cefis.cloud' });
+    await p.waitFor(() => allTexts(p.windowBlocks('route:new')).includes('Aplicando novo.cefis.cloud'), 'aplicando');
+  } catch (e) {
+    await ctx.close();
+    throw e;
+  }
+  return ctx;
+}
+const jobPolls = (count) => count('GET', '/api/routes/jobs/job-create');
+
+test('job: fechar a janela (view.closed) para a consulta e relê a lista', { timeout: 15000 }, async () => {
+  const { p, close, count } = await startCreateJob();
+  try {
+    await p.waitFor(() => jobPolls(count) >= 2, 'consultando');
+    const routesBefore = count('GET', '/api/routes');
+    p.send('event', { type: 'view.closed', viewId: 'route:new' }, { notify: true });
+    await p.waitFor(() => count('GET', '/api/routes') === routesBefore + 1, 'relê a lista ao fechar');
+    const n = await waitStable(() => jobPolls(count), 300, 'consultas do job');
+    await pause(300);
+    assert.equal(jobPolls(count), n, 'parou');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('job: o update que volta open:false para a consulta', { timeout: 15000 }, async () => {
+  let gone = false;
+  const { p, close, count } = await startCreateJob({ windowReply: (id) => !(gone && id === 'route:new') });
+  try {
+    await p.waitFor(() => jobPolls(count) >= 1, 'consultando');
+    gone = true;
+    const n = await waitStable(() => jobPolls(count), 300, 'consultas do job');
+    await pause(300);
+    assert.equal(jobPolls(count), n, 'parou');
+    assert.ok(n <= 3);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('job: 404 vira "Perdi o acompanhamento" e para; erro de rede só tenta de novo', { timeout: 15000 }, async () => {
+  let n = 0;
+  const { p, close, count } = await startCreateJob({}, () => {
+    n++;
+    if (n === 1) return { status: 502, json: { statusCode: 502, message: 'Bad Gateway' }, raw: true };
+    return { status: 404, json: { statusCode: 404, message: 'Job não encontrado.' }, raw: true };
+  });
+  try {
+    const W = 'route:new';
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Perdi o acompanhamento: Job não encontrado. Confira o resultado na Auditoria e na lista de rotas.'), 'perdeu');
+    assert.equal(button(p.windowBlocks(W), 'route:close').label, 'Fechar');
+    await pause(300);
+    assert.equal(jobPolls(count), 2, 'o 502 tentou de novo, o 404 parou');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('job: sair no meio para a consulta e fecha a janela', { timeout: 15000 }, async () => {
+  const { p, close, count } = await startCreateJob();
+  try {
+    await p.waitFor(() => jobPolls(count) >= 1, 'consultando');
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    assert.ok(p.requests.some((r) => r.method === 'view.close' && r.params.viewId === 'route:new'));
+    const n = await waitStable(() => jobPolls(count), 300, 'consultas do job');
+    await pause(300);
+    assert.equal(jobPolls(count), n, 'parou');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('remover: um plano por clique, as duas listas, hostname errado não apaga, dois "Remover" mandam UM DELETE, e o job até "Rota removida"', { timeout: 15000 }, async () => {
+  let polls = 0;
+  const RUNNING = jobOf('remove', 'running', [{ step: 'remove_mapfiles', status: 'running', detail: null }, { step: 'delete_backend', status: 'pending', detail: null }]);
+  const DONE = jobOf('remove', 'done', [{ step: 'remove_mapfiles', status: 'done', detail: null }, { step: 'delete_backend', status: 'done', detail: null }]);
+  const { p, close, count, api } = await openRoutes({
+    env: { [RJ]: '100' },
+    routes: {
+      'POST /api/routes/app.cefis.cloud/removal-plan': () => ({ json: REMOVAL, delayMs: 300 }),
+      'DELETE /api/routes/app.cefis.cloud': () => ({ json: RUNNING, delayMs: 300 }),
+      'GET /api/routes/jobs/job-remove': () => {
+        polls++;
+        return { json: polls < 2 ? RUNNING : DONE };
+      },
+    },
+  });
+  const W = 'route:remove';
+  try {
+    p.act('vmm', 'act', { a: 'route:open:app.cefis.cloud' });
+    await p.waitFor(() => p.windowBlocks('route:app.cefis.cloud'), 'gaveta');
+    p.act('route:app.cefis.cloud', 'route:remove:app.cefis.cloud', {});
+    p.act('route:app.cefis.cloud', 'route:remove:app.cefis.cloud', {});
+    const open = await p.waitFor(() => p.requests.find((r) => r.method === 'view.open' && r.params.viewId === W), 'abre a remoção');
+    assert.equal(open.params.title, 'Remover rota app.cefis.cloud');
+    assert.equal(open.params.modal, true);
+    assert.ok(allTexts(open.params.blocks).includes('Conferindo o que a rota usa no OPNsense…'));
+    assert.equal(button(open.params.blocks, 'route:delete').disabled, true, 'sem plano não remove');
+    assert.ok(p.requests.some((r) => r.method === 'view.close' && r.params.viewId === 'route:app.cefis.cloud'), 'a gaveta sai');
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('SERÁ APAGADO'), 'plano');
+    assert.equal(count('POST', '/api/routes/app.cefis.cloud/removal-plan'), 1, 'um plano só');
+    let blocks = p.windowBlocks(W);
+    assertNoNull(blocks);
+    const texts = allTexts(blocks);
+    assert.ok(texts.includes('FICA, PORQUE OUTRA COISA AINDA USA'));
+    assert.ok(texts.includes('Remover recarrega o HAProxy'));
+    assert.ok(texts.includes('O hostname para de responder na hora. No reload, conexões abertas dos outros sites podem cair por cerca de 1 s.'));
+    assert.ok(texts.includes('Primeiro a rota sai do ar (com rollback se algo falhar); depois o console apaga o que ficou sem uso.'));
+    const lists = [];
+    blockWith(blocks, (b) => {
+      if (b.type === 'list') lists.push(b);
+      return false;
+    });
+    assert.deepEqual(lists.map((l) => l.items.map((i) => [i.title, i.meta])), [
+      [['Linha na mapfile', 'apagar'], ['Backend Pool', 'apagar']],
+      [['Certificado', 'fica']],
+    ]);
+    assert.equal(blockWith(blocks, (b) => b.id === 'confirm').placeholder, 'app.cefis.cloud');
+    assert.equal(button(blocks, 'route:delete').label, 'Remover do firewall');
+    assert.equal(button(blocks, 'route:delete').style, 'danger');
+    // hostname errado: nada sai
+    p.act(W, 'route:delete', { confirm: 'old.cefis.cloud' });
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Digite app.cefis.cloud para confirmar.'), 'confirmação errada');
+    await pause(100);
+    assert.equal(count('DELETE', '/api/routes/app.cefis.cloud'), 0, 'hostname errado não remove');
+    // dois "Remover" + um enter: UM DELETE, com o fingerprint
+    p.act(W, 'route:delete', { confirm: 'app.cefis.cloud' });
+    p.act(W, 'route:delete', { confirm: 'app.cefis.cloud' });
+    p.act(W, 'route:delete', { confirm: 'app.cefis.cloud' });
+    p.act(W, 'route:cancel', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Removendo app.cefis.cloud'), 'removendo');
+    assert.equal(count('DELETE', '/api/routes/app.cefis.cloud'), 1, 'um DELETE só');
+    assert.deepEqual(api.seen.find((r) => r.method === 'DELETE').body, { fingerprint: 'fp-123' });
+    assert.ok(allTexts(p.windowBlocks(W)).includes('Pode fechar: a remoção continua na API e fica registrada na Auditoria.'));
+    const routesBefore = count('GET', '/api/routes');
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('Rota removida app.cefis.cloud'), 'removida');
+    await p.waitFor(() => count('GET', '/api/routes') === routesBefore + 1, 'relê no fim');
+    blocks = p.windowBlocks(W);
+    assert.equal(button(blocks, 'route:close').label, 'Fechar');
+    p.act(W, 'route:close', {});
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === W), 'fecha');
+    await p.waitFor(() => count('GET', '/api/routes') === routesBefore + 2, 'relê ao fechar');
+    assert.equal(polls, 2);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('remover: sem nada que fica, a lista "FICA" some; erro no plano aparece e trava o botão', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openRoutes({
+    routes: {
+      'POST /api/routes/app.cefis.cloud/removal-plan': () => ({ json: { ...REMOVAL, changes: REMOVAL.changes.filter((c) => c.action === 'remove') } }),
+      'POST /api/routes/old.cefis.cloud/removal-plan': () => ({ status: 409, json: { statusCode: 409, message: 'A rota mudou no OPNsense.' }, raw: true }),
+      'DELETE /api/routes/old.cefis.cloud': () => ({ json: {} }),
+    },
+  });
+  const W = 'route:remove';
+  try {
+    p.act('route:app.cefis.cloud', 'route:remove:app.cefis.cloud', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('SERÁ APAGADO'), 'plano');
+    assert.ok(!allTexts(p.windowBlocks(W)).includes('FICA, PORQUE OUTRA COISA AINDA USA'));
+    p.act(W, 'route:cancel', {});
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === W), 'fecha');
+    p.act('route:old.cefis.cloud', 'route:remove:old.cefis.cloud', {});
+    await p.waitFor(() => allTexts(p.windowBlocks(W)).includes('A rota mudou no OPNsense.'), 'erro do plano');
+    assert.equal(button(p.windowBlocks(W), 'route:delete').disabled, true);
+    p.act(W, 'route:delete', { confirm: 'old.cefis.cloud' });
+    await pause(200);
+    assert.equal(count('DELETE', '/api/routes/old.cefis.cloud'), 0, 'sem plano não remove');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('a view de rotas aguenta ctx.user null', { timeout: 15000 }, async () => {
+  const dataDir = tmpDir();
+  const script = `
+    const out = m.screens.get('routes').view({ user: null, now: Date.now });
+    process.stderr.write('VIEW=' + JSON.stringify(out) + '\\n');
+  `;
+  const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9', script });
+  try {
+    await p.waitFor(() => /VIEW=.*\n/.test(p.stderr()), 'a view no stderr');
+    const v = JSON.parse(p.stderr().match(/VIEW=(.*)\n/)[1]);
+    assertNoNull(v);
+    assert.equal(v.header.newRoute, false);
+    assert.equal(v.empty, 'Lendo o OPNsense…');
+    assert.deepEqual(v.filters.map((f) => f.countText), ['', '', '', '']);
+  } finally {
+    await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('routes.rfwtxt: sem import, doubles, sem null/args.children, e a casca liga a tela', { timeout: 15000 }, () => {
+  const ui = path.join(__dirname, '..', 'ui');
+  const src = fs.readFileSync(path.join(ui, 'routes.rfwtxt'), 'utf8');
+  assert.ok(!/^import /m.test(src), 'tela sem import');
+  const code = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/0x[0-9a-fA-F]+/g, '0')
+    .replace(/\b(maxLines|flex):\s*\d+/g, '');
+  const ints = code.match(/(?<![\w.])\d+(?![\w.])/g) || [];
+  assert.deepEqual(ints.filter((n) => n !== '0'), [], 'números inteiros no .rfwtxt (use 13.0)');
+  for (const [o, c] of [['(', ')'], ['[', ']'], ['{', '}']]) assert.equal(code.split(o).length, code.split(c).length, `${o}${c} desbalanceados`);
+  assert.ok(!/\bnull\b/.test(code));
+  assert.ok(!/args\.children\b/.test(code));
+  assert.match(src, /widget RoutesScreen =/);
+  assert.match(fs.readFileSync(SHELL, 'utf8'), /"routes": RoutesScreen\(\)/);
+  const names = fs.readdirSync(ui).filter((f) => f.endsWith('.rfwtxt'))
+    .flatMap((f) => [...fs.readFileSync(path.join(ui, f), 'utf8').matchAll(/^widget (\w+) =/gm)].map((x) => x[1]));
+  assert.deepEqual(names.filter((n, i) => names.indexOf(n) !== i), [], 'widget repetido entre os .rfwtxt');
 });
