@@ -36,11 +36,16 @@ function startLoopback({ state, timeoutMs = 600000 }) {
     };
 
     server.on('request', (req, res) => {
-      const u = new URL(req.url, 'http://127.0.0.1');
       const send = (code, body) => {
         res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', connection: 'close' });
         res.end(body);
       };
+      let u;
+      try {
+        u = new URL(req.url, 'http://127.0.0.1');
+      } catch {
+        return send(400, page('Pedido inválido'));
+      }
       if (u.pathname !== '/callback') return send(404, page('Não encontrado'));
       if (done || !sameState(u.searchParams.get('state'), state)) {
         return send(400, page('Pedido inválido'));
@@ -50,7 +55,9 @@ function startLoopback({ state, timeoutMs = 600000 }) {
         send(200, OK_HTML);
         return finish({ code });
       }
-      const error = u.searchParams.get('error') === 'expired' ? 'expired' : 'sso';
+      const err = u.searchParams.get('error');
+      if (!err) return send(400, page('Pedido inválido'));
+      const error = err === 'expired' ? 'expired' : 'sso';
       send(200, ERR_HTML);
       return finish({ error });
     });

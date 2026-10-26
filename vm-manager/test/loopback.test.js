@@ -55,3 +55,28 @@ test('binds to 127.0.0.1 only', async () => {
   lb.close();
   await lb.result;
 });
+
+test('malformed request url answers 400 and keeps waiting', async () => {
+  const net = require('node:net');
+  const lb = await startLoopback({ state: 's' });
+  const raw = await new Promise((resolve, reject) => {
+    const sock = net.connect(lb.port, '127.0.0.1', () => {
+      sock.write('GET http://[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    });
+    let data = '';
+    sock.on('data', (d) => (data += d));
+    sock.on('end', () => resolve(data));
+    sock.on('error', reject);
+  });
+  assert.match(raw, /^HTTP\/1\.1 400/);
+  await fetch(`${base(lb)}/callback?code=ok&state=s`);
+  assert.deepEqual(await lb.result, { code: 'ok' });
+});
+
+test('correct state without code or error is 400 and keeps waiting', async () => {
+  const lb = await startLoopback({ state: 's' });
+  const res = await fetch(`${base(lb)}/callback?state=s`);
+  assert.equal(res.status, 400);
+  await fetch(`${base(lb)}/callback?code=ok&state=s`);
+  assert.deepEqual(await lb.result, { code: 'ok' });
+});
