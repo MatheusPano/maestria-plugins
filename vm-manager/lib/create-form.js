@@ -112,4 +112,125 @@ function successBlocks(result) {
   ];
 }
 
-module.exports = { IPV4, IPV4_CIDR, initialForm, applyDefaults, optionsFrom, mergeValues, validate, buildBody, ipHint, successBlocks };
+// --- a janela "Nova VM" em blocos ------------------------------------------------
+
+const HINT_STYLE = { green: 'success', red: 'error', yellow: 'warning', dim: 'dim' };
+const SUBMITTING_TEXT = 'Clonando, configurando e ligando. Leva cerca de 1 minuto.';
+const TRACKING_TEXT = 'criando… (acompanhando)';
+const NO_FREE_IP = 'Nenhum IP livre encontrado no prefixo (ou NetBox desligado).';
+
+function ipBlocks(form, ip) {
+  if (form.ipAuto) {
+    const auto = ip.auto || {};
+    let text = { type: 'text', style: 'warning', text: 'sem IP livre / NetBox off' };
+    if (auto.loading) text = { type: 'text', style: 'faint', text: 'buscando…' };
+    else if (auto.cidr) text = { type: 'text', style: 'success', text: String(auto.cidr) };
+    return [
+      text,
+      { type: 'text', style: 'faint', text: 'próximo IP livre' },
+      { type: 'row', children: [{ type: 'button', action: 'create:nextfree', label: 'atualizar', icon: 'refresh' }] },
+    ];
+  }
+  const blocks = [
+    { type: 'input', id: 'ipCidr', label: 'IP / CIDR', placeholder: '192.168.100.80/24', value: String(form.ipCidr) },
+    {
+      type: 'row',
+      children: [
+        { type: 'button', action: 'create:check', label: 'verificar IP', icon: 'search' },
+        { type: 'button', action: 'create:suggest', label: 'sugerir IP livre' },
+      ],
+    },
+  ];
+  if (ip.checking) blocks.push({ type: 'text', style: 'faint', text: 'Verificando no NetBox…' });
+  const hint = ipHint(ip.check);
+  if (hint.text) blocks.push({ type: 'text', style: HINT_STYLE[hint.tone] || 'dim', text: hint.text });
+  if (ip.suggestEmpty) blocks.push({ type: 'text', style: 'warning', text: NO_FREE_IP });
+  if (ip.suggestError) blocks.push({ type: 'text', style: 'error', text: String(ip.suggestError) });
+  return blocks;
+}
+
+function formBlocks(v) {
+  const f = v.form;
+  const o = v.options || {};
+  const submitting = v.phase === 'submitting';
+  const blocks = [];
+  if (v.flowError) blocks.push({ type: 'text', style: 'error', text: String(v.flowError) });
+  blocks.push(
+    { type: 'input', id: 'name', label: 'Nome (minúsculas, dígitos e hífen)', placeholder: 'ex: jibri-1', value: String(f.name) },
+    { type: 'section', text: 'Endereço IP' },
+    { type: 'checkbox', id: 'ipAuto', label: 'automático (NetBox)', value: !!f.ipAuto, action: 'create:ipmode' },
+    ...ipBlocks(f, v.ip || {}),
+    { type: 'input', id: 'gateway', label: 'Gateway', placeholder: '192.168.100.1', value: String(f.gateway) },
+    {
+      type: 'columns',
+      children: [
+        { type: 'input', id: 'cores', label: 'vCPU', value: String(f.cores) },
+        { type: 'input', id: 'memory', label: 'Memória (MiB)', value: String(f.memory) },
+        { type: 'input', id: 'diskGiB', label: 'Disco (GiB)', value: String(f.diskGiB) },
+      ],
+    },
+    {
+      type: 'columns',
+      children: [
+        { type: 'select', id: 'node', label: 'Node', value: String(f.node), options: o.nodes || [] },
+        { type: 'select', id: 'storage', label: 'Storage do disco', value: String(f.storage), options: o.storages || [] },
+        { type: 'select', id: 'template', label: 'Template', value: String(f.template), options: o.templates || [] },
+      ],
+    },
+    { type: 'input', id: 'sshKeys', label: 'Chaves SSH públicas (uma por linha, opcional)', placeholder: 'ssh-ed25519 AAAA... user@host', multiline: true, value: String(f.sshKeys || '') },
+    { type: 'checkbox', id: 'startAfterCreate', label: 'Ligar a VM após criar', value: !!f.startAfterCreate },
+    { type: 'checkbox', id: 'backup', label: 'Backup diário no PBS (entra no horário com menos VMs)', value: !!f.backup },
+    { type: 'checkbox', id: 'ha', label: 'Alta disponibilidade (HA do cluster)', value: !!f.ha },
+  );
+  if (v.errors && v.errors.length) blocks.push({ type: 'text', style: 'error', text: v.errors.join(' · ') });
+  blocks.push({
+    type: 'row',
+    children: [
+      { type: 'button', action: 'create:submit', label: submitting ? 'Provisionando…' : 'Criar VM', style: 'primary', disabled: submitting },
+    ],
+  });
+  if (submitting) blocks.push({ type: 'text', style: 'dim', text: SUBMITTING_TEXT });
+  else if (v.bridge) blocks.push({ type: 'text', style: 'faint', text: `Bridge ${v.bridge}` });
+  return blocks;
+}
+
+function successWindowBlocks(result) {
+  const [s] = successBlocks(result);
+  const blocks = [
+    { type: 'heading', text: s.title },
+    { type: 'kv', items: s.rows.map((r) => ({ key: r.k, value: r.v, ...(r.k === 'NetBox' && r.url ? { tone: 'accent' } : {}) })) },
+  ];
+  const nb = s.rows.find((r) => r.k === 'NetBox' && r.url);
+  if (nb) blocks.push({ type: 'markdown', text: `[Abrir no NetBox ↗](${nb.url})` });
+  for (const w of s.warnings) blocks.push({ type: 'text', style: 'warning', text: w });
+  blocks.push({ type: 'row', children: [{ type: 'button', action: 'create:done', label: 'Ver todas as VMs', style: 'primary' }] });
+  return blocks;
+}
+
+/**
+ * Os blocos da janela "Nova VM" para a fase do fluxo de criação:
+ * `phase` (idle|submitting|tracking|succeeded|unconfirmed; rejected/failed chegam
+ * aqui como idle com `flowError`), `form`, `options`, `bridge`, `loading`,
+ * `loadError`, `ip { auto { cidr, loading }, check, checking, suggestEmpty,
+ * suggestError }`, `errors`, `flowError`, `result`, `name` e `message`.
+ */
+function createBlocks(v) {
+  if (v.phase === 'tracking') {
+    return [
+      { type: 'text', text: TRACKING_TEXT },
+      { type: 'text', style: 'dim', text: v.name ? `VM ${v.name}` : '' },
+    ];
+  }
+  if (v.phase === 'succeeded') return successWindowBlocks(v.result);
+  if (v.phase === 'unconfirmed') {
+    return [
+      { type: 'text', style: 'warning', text: String(v.message || '') },
+      { type: 'row', children: [{ type: 'button', action: 'create:back', label: 'voltar ao formulário' }] },
+    ];
+  }
+  if (v.loadError) return [{ type: 'text', style: 'error', text: String(v.loadError) }];
+  if (v.loading || !v.form) return [{ type: 'text', style: 'dim', text: 'Carregando…' }];
+  return formBlocks(v);
+}
+
+module.exports = { createBlocks, SUBMITTING_TEXT, TRACKING_TEXT, NO_FREE_IP, IPV4, IPV4_CIDR, initialForm, applyDefaults, optionsFrom, mergeValues, validate, buildBody, ipHint, successBlocks };

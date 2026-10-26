@@ -116,3 +116,103 @@ test('success blocks', () => {
   for (const t of ['sem IP', 'não registrado', 'fora do backup', 'fora do HA']) assert.ok(bare.includes(t), t);
   assertNoNull(cf.successBlocks({ vm: { name: 'a', vmid: 1, node: 'n', ipConfigured: null }, netbox: null, backupSlot: null, ha: false }));
 });
+
+// --- Task 8: a janela "Nova VM" em blocos ---
+
+const OPTIONS = { nodes: [{ value: 'pve1', label: 'pve1' }], storages: [{ value: 'ceph', label: 'ceph' }], templates: [{ value: 'ubuntu', label: 'ubuntu' }] };
+const view = (over = {}) => ({
+  phase: 'idle', form: ok({ node: 'pve1', storage: 'ceph', template: 'ubuntu' }), options: OPTIONS, bridge: 'vmbr0',
+  loading: false, loadError: '', ip: { auto: { cidr: '192.168.100.80/24', loading: false }, check: null, suggestEmpty: false, suggestError: '' },
+  errors: [], flowError: '', result: null, name: 'jibri-1', message: '', ...over,
+});
+const find = (blocks, pred) => {
+  const out = [];
+  const walk = (bs) => bs.forEach((b) => { if (pred(b)) out.push(b); if (b.children) walk(b.children); });
+  walk(blocks);
+  return out;
+};
+const texts = (blocks) => find(blocks, (b) => b.type === 'text').map((b) => b.text);
+const byId = (blocks, id) => find(blocks, (b) => b.id === id)[0];
+const button = (blocks, action) => find(blocks, (b) => b.type === 'button' && b.action === action)[0];
+
+test('form blocks: loading and load error', () => {
+  assert.deepEqual(cf.createBlocks(view({ loading: true })), [{ type: 'text', style: 'dim', text: 'Carregando…' }]);
+  const e = cf.createBlocks(view({ loadError: 'catálogo fora' }));
+  assert.deepEqual(e, [{ type: 'text', style: 'error', text: 'catálogo fora' }]);
+});
+
+test('form blocks: auto ip, fields, selects, checkboxes, bridge and button', () => {
+  const b = cf.createBlocks(view());
+  assertNoNull(b);
+  assert.equal(byId(b, 'name').value, 'jibri-1');
+  const ipAuto = byId(b, 'ipAuto');
+  assert.deepEqual([ipAuto.type, ipAuto.label, ipAuto.value, ipAuto.action], ['checkbox', 'automático (NetBox)', true, 'create:ipmode']);
+  assert.ok(texts(b).includes('192.168.100.80/24'));
+  assert.ok(button(b, 'create:nextfree'));
+  assert.equal(button(b, 'create:nextfree').label, 'atualizar');
+  assert.equal(byId(b, 'ipCidr'), undefined);
+  assert.equal(byId(b, 'gateway').value, '192.168.100.1');
+  assert.equal(byId(b, 'cores').value, '2');
+  assert.equal(byId(b, 'memory').value, '4096');
+  assert.equal(byId(b, 'diskGiB').value, '40');
+  for (const [id, v] of [['node', 'pve1'], ['storage', 'ceph'], ['template', 'ubuntu']]) {
+    assert.equal(byId(b, id).type, 'select');
+    assert.equal(byId(b, id).value, v);
+    assert.deepEqual(byId(b, id).options, OPTIONS[`${id}s`]);
+  }
+  assert.equal(byId(b, 'sshKeys').multiline, true);
+  assert.equal(byId(b, 'startAfterCreate').label, 'Ligar a VM após criar');
+  assert.equal(byId(b, 'backup').label, 'Backup diário no PBS (entra no horário com menos VMs)');
+  assert.equal(byId(b, 'ha').label, 'Alta disponibilidade (HA do cluster)');
+  assert.ok(texts(b).includes('Bridge vmbr0'));
+  const submit = button(b, 'create:submit');
+  assert.deepEqual([submit.label, submit.style, !!submit.disabled], ['Criar VM', 'primary', false]);
+});
+
+test('form blocks: auto ip loading / none', () => {
+  assert.ok(texts(cf.createBlocks(view({ ip: { auto: { cidr: '', loading: true }, check: null } }))).includes('buscando…'));
+  assert.ok(texts(cf.createBlocks(view({ ip: { auto: { cidr: '', loading: false }, check: null } }))).includes('sem IP livre / NetBox off'));
+});
+
+test('form blocks: manual ip with check, hint and empty suggestion', () => {
+  const form = ok({ ipAuto: false, ipCidr: '192.168.100.90/24' });
+  const b = cf.createBlocks(view({ form, ip: { auto: { cidr: '', loading: false }, check: { available: true, skipped: false, managedPrefix: '192.168.100.0/24' }, suggestEmpty: true } }));
+  assertNoNull(b);
+  assert.equal(byId(b, 'ipCidr').value, '192.168.100.90/24');
+  assert.equal(button(b, 'create:check').label, 'verificar IP');
+  assert.equal(button(b, 'create:suggest').label, 'sugerir IP livre');
+  assert.ok(texts(b).includes('✓ Disponível no prefixo 192.168.100.0/24'));
+  assert.ok(texts(b).includes('Nenhum IP livre encontrado no prefixo (ou NetBox desligado).'));
+  assert.equal(button(b, 'create:nextfree'), undefined);
+});
+
+test('form blocks: errors joined in red, flow error on top', () => {
+  const b = cf.createBlocks(view({ errors: ['Informe o nome.', 'vCPU entre 1 e 64.'], flowError: 'name inválido' }));
+  const red = find(b, (x) => x.type === 'text' && x.style === 'error').map((x) => x.text);
+  assert.deepEqual(red, ['name inválido', 'Informe o nome. · vCPU entre 1 e 64.']);
+});
+
+test('phase blocks: submitting, tracking, succeeded, unconfirmed', () => {
+  const s = cf.createBlocks(view({ phase: 'submitting' }));
+  const btn = button(s, 'create:submit');
+  assert.deepEqual([btn.label, btn.disabled], ['Provisionando…', true]);
+  assert.ok(texts(s).includes('Clonando, configurando e ligando. Leva cerca de 1 minuto.'));
+  assert.ok(!texts(s).includes('Bridge vmbr0'));
+
+  const t = cf.createBlocks(view({ phase: 'tracking' }));
+  assertNoNull(t);
+  assert.ok(texts(t).includes('criando… (acompanhando)'));
+  assert.equal(find(t, (x) => x.type === 'button').length, 0);
+
+  const ok2 = cf.createBlocks(view({ phase: 'succeeded', result: { vm: { name: 'jibri-1', vmid: 177, node: 'pve1', ipConfigured: '1.2.3.4/24' }, netbox: { id: 3, url: 'https://nb/3' }, backupSlot: '02:00', ha: true, warnings: ['x'] } }));
+  assertNoNull(ok2);
+  assert.ok(find(ok2, (x) => x.type === 'heading' && x.text === 'VM criada 🎉').length);
+  assert.ok(JSON.stringify(ok2).includes('registrado (#3)'));
+  assert.ok(texts(ok2).includes('⚠ x'));
+  assert.equal(button(ok2, 'create:done').label, 'Ver todas as VMs');
+  assertNoNull(cf.createBlocks(view({ phase: 'succeeded', result: null })));
+
+  const u = cf.createBlocks(view({ phase: 'unconfirmed', message: 'não deu pra confirmar — confira a lista antes de tentar de novo' }));
+  assert.ok(texts(u).includes('não deu pra confirmar — confira a lista antes de tentar de novo'));
+  assert.equal(button(u, 'create:back').label, 'voltar ao formulário');
+});

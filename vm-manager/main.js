@@ -29,6 +29,9 @@ const { startLoopback } = require('./lib/loopback');
 const { ApiError } = require('./lib/http');
 const { navFor, gate, initials, ROLE_LABEL, FORBIDDEN_TEXT } = require('./lib/nav');
 const { createPoller } = require('./lib/poller');
+const { vmsView, overviewView, detailWindowBlocks, destroyBlocks, createBusy } = require('./lib/vms');
+const cf = require('./lib/create-form');
+const { createCreateFlow } = require('./lib/create-flow');
 
 const MAIN = 'vmm';
 const TITLE = 'VM Manager';
@@ -37,6 +40,17 @@ const SHELL = 'shell.rfwtxt';
 const DEFAULT_URL = 'https://vm-manager.cefis.cloud';
 const EXPIRED = 'Sua sessão expirou. Entre de novo.';
 const PENDING_TEXT = 'Acesso pendente de aprovação.';
+
+// Ganchos só pros testes (o smoke test encurta os tempos pelo ambiente). Sem eles,
+// os valores da web: o POST /vms espera 90 s e a criação é consultada a cada 5 s.
+const envMs = (name, fallback) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+const CREATE_TIMEOUT_MS = envMs('VMM_CREATE_TIMEOUT_MS', 90000);
+const CREATE_POLL_MS = envMs('VMM_CREATE_POLL_MS', 5000);
+const VMS_MS = 10000;
+const OVERVIEW_MS = 15000;
 
 const OUTDATED = [
   { type: 'heading', text: 'Este Maestria não desenha a tela do VM Manager' },
@@ -136,6 +150,7 @@ function buildSession() {
     // Sem logar o endereço: ele leva o state e o challenge do login.
     openUrl: (u) => mx.request('window.openUrl', { url: u }).catch((e) => mx.log('não abriu o navegador:', errText(e))),
     startLoopback: trackedLoopback,
+    apiOptions: { createTimeoutMs: CREATE_TIMEOUT_MS },
   });
   s.on('expired', () => {
     if (s === state.session) onExpired();
@@ -375,9 +390,15 @@ async function doLogin() {
   return navigate(state.target);
 }
 
+// O que as áreas guardaram de quem estava logado (a lista, o destruir pela metade).
+function forgetAreas() {
+  Object.assign(vmsState, { vms: [], loading: true, error: '', overview: null, destroy: null });
+}
+
 async function doLogout() {
   state.session.logout();
   state.poller.stopAll();
+  forgetAreas();
   await closeWindows();
   state.login = { message: '', busy: false };
   state.target = 'vms';
@@ -401,7 +422,353 @@ on('logout', () => doLogout());
 on('retry', () => navigate(state.target));
 
 // --- as telas das áreas ------------------------------------------------------------------
-// (Tasks 6+: registerScreen('vms', …), registerScreen('ceph', …), …)
+
+const api = () => state.session.api;
+const isAdmin = (user) => !!user && user.role === 'admin';
+const currentAdmin = () => !!state.session && isAdmin(state.session.user());
+
+// Máquinas virtuais (VmDashboard.tsx + OverviewBar.tsx). A lista vem a cada 10 s e
+// o overview a cada 15 s, só com a janela principal aberta; o erro do overview é
+// ignorado, como na web. Cada ação de linha passa pela trava por VM (`busy`).
+
+const vmsState = { vms: [], loading: true, error: '', query: '', filter: 'all', overview: null, destroy: null };
+const busy = createBusy();
+
+async function loadVms() {
+  try {
+    const list = await api().vms();
+    vmsState.vms = Array.isArray(list) ? list : [];
+    vmsState.error = '';
+  } catch (e) {
+    if (!isUnauthorized(e)) vmsState.error = errText(e); // o 401 já leva ao login
+  } finally {
+    vmsState.loading = false;
+  }
+}
+
+async function loadOverview() {
+  try {
+    vmsState.overview = await api().overview();
+  } catch {
+    // como na web: o overview some quieto
+  }
+}
+
+const vmById = (vmid) => vmsState.vms.find((v) => v.vmid === vmid);
+
+/** Liga/desliga/backup/HA/destruir: uma por VM, recarrega a lista e põe o erro na tela. */
+async function runRowAction(vmid, kind, call) {
+  if (busy.get(vmid)) return;
+  const vm = vmById(vmid);
+  vmsState.error = '';
+  const p = busy.run(
+    vmid,
+    kind,
+    async () => {
+      await call();
+      await loadVms();
+    },
+    { name: vm ? vm.name : String(vmid) },
+  );
+  render(); // mostra o "Aguarde…"
+  const r = await p;
+  if (r.ran && r.error) vmsState.error = r.error;
+  await render();
+}
+
+const ROW_CALLS = { start: 'startVm', stop: 'stopVm', backup: 'backupVm', ha: 'haVm' };
+
+/** A gaveta de detalhes: "Carregando…", uma busca, e as seções (ou o erro em vermelho). */
+async function openDetail(vmid) {
+  const viewId = `vm:${vmid}`;
+  const vm = vmById(vmid);
+  await openWindow(viewId, vm ? vm.name : `VM ${vmid}`, detailWindowBlocks({ loading: true }));
+  let blocks;
+  try {
+    blocks = detailWindowBlocks({ detail: await api().vm(vmid) });
+  } catch (e) {
+    blocks = detailWindowBlocks({ error: errText(e) });
+  }
+  await updateWindow(viewId, { blocks });
+}
+
+async function openDestroy(vmid) {
+  const vm = vmById(vmid);
+  if (!vm) return;
+  vmsState.destroy = { vmid, name: vm.name, error: '' };
+  await openWindow('vm:destroy', 'Destruir VM', destroyBlocks(vmsState.destroy));
+}
+
+async function confirmDestroy(vmid, values) {
+  const d = vmsState.destroy;
+  if (!d || d.vmid !== vmid) return; // já foi (um enter atrasado) ou é de outra VM
+  if (String(values.confirm || '').trim() !== d.name) {
+    d.error = `Digite ${d.name} para confirmar.`;
+    await updateWindow('vm:destroy', { blocks: destroyBlocks(d) });
+    return;
+  }
+  vmsState.destroy = null;
+  await closeWindow('vm:destroy');
+  await runRowAction(vmid, 'destroy', () => api().destroyVm(vmid));
+}
+
+on('vm', async (arg, values) => {
+  const i = arg.indexOf(':');
+  const kind = i < 0 ? arg : arg.slice(0, i);
+  const rest = i < 0 ? '' : arg.slice(i + 1);
+  const vmid = Number(rest || values.vmid);
+  if (kind === 'filter') {
+    vmsState.filter = rest || values.filter || 'all';
+    return render();
+  }
+  if (kind === 'search') {
+    vmsState.query = String(values.text === undefined ? '' : values.text);
+    return render();
+  }
+  if (!Number.isFinite(vmid)) return;
+  if (kind === 'open') return openDetail(vmid);
+  if (kind === 'cancel') {
+    vmsState.destroy = null;
+    return closeWindow('vm:destroy');
+  }
+  // Daqui pra baixo é escrita: só admin (o viewer nem vê os botões).
+  if (!currentAdmin()) return;
+  if (kind === 'destroy') return openDestroy(vmid);
+  if (kind === 'confirm') return confirmDestroy(vmid, values);
+  if (ROW_CALLS[kind]) return runRowAction(vmid, kind, () => api()[ROW_CALLS[kind]](vmid));
+  mx.log('ação de vm desconhecida:', kind);
+});
+
+registerScreen('vms', {
+  // `ctx.user` pode ser null (um render logo depois do sair): aí é só leitura.
+  view: (c) => ({
+    ...vmsView({ ...vmsState, busy: busy.snapshot() }, { admin: isAdmin(c.user), now: c.now() }),
+    overview: overviewView(vmsState.overview),
+  }),
+  onEnter: (c) => {
+    c.poller.loop('vms', VMS_MS, async () => {
+      await loadVms();
+      await render();
+      return state.mainOpen;
+    });
+    c.poller.loop('overview', OVERVIEW_MS, async () => {
+      await loadOverview();
+      await render();
+      return state.mainOpen;
+    });
+  },
+  onLeave: (c) => {
+    c.poller.stop('vms');
+    c.poller.stop('overview');
+  },
+});
+
+// Nova VM (CreateVmForm.tsx), uma janela de blocos em modal. O POST sai uma vez só
+// pelo `flow` (lib/create-flow.js), que é um por processo: um `create:submit` ou um
+// `nova vm…` com a criação andando só redesenha o estado dela.
+
+const flow = createCreateFlow({
+  api: {
+    createVm: (body) => api().createVm(body),
+    vmCreation: (name) => api().vmCreation(name),
+    vms: () => api().vms(),
+  },
+  now: Date.now,
+  schedule: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+  },
+  pollMs: CREATE_POLL_MS,
+});
+
+const freshIp = () => ({ auto: { cidr: '', loading: false }, check: null, checking: false, suggestEmpty: false, suggestError: '' });
+const create = {
+  gen: 0, form: null, options: null, bridge: '', loading: false, loadError: '',
+  ip: freshIp(), errors: [], flowError: '', validating: false,
+};
+
+function createView() {
+  const st = flow.state();
+  return {
+    phase: st.phase,
+    form: create.form,
+    options: create.options,
+    bridge: create.bridge,
+    loading: create.loading,
+    loadError: create.loadError,
+    ip: create.ip,
+    errors: create.errors,
+    flowError: create.flowError,
+    result: st.result,
+    name: st.name,
+    message: st.error,
+  };
+}
+
+/** Redesenha a "Nova VM" (ou a abre, com `open`); devolve false se ela não está aberta. */
+async function renderCreate({ open = false } = {}) {
+  const st = flow.state();
+  if (st.phase === 'rejected' || st.phase === 'failed') {
+    // A recusa volta pro formulário, com o erro em cima, e libera um novo envio.
+    create.flowError = st.error;
+    create.errors = [];
+    flow.reset();
+  }
+  const blocks = cf.createBlocks(createView());
+  if (open) {
+    await openWindow('create', 'Nova VM', blocks);
+    return true;
+  }
+  if (!state.views.has('create')) return false;
+  return updateWindow('create', { blocks });
+}
+
+function announce(st) {
+  if (st.phase === 'succeeded') return banner(`VM ${st.name} criada.`);
+  if (st.phase === 'failed' || st.phase === 'rejected') return banner(`Falhou ao criar ${st.name}: ${st.error}`);
+  if (st.phase === 'unconfirmed') return banner(st.error);
+  return null;
+}
+
+flow.onChange((st) => {
+  if (st.phase === 'idle') return; // o reset é nosso, e quem resetou redesenha
+  guard('nova vm', async () => {
+    const shown = await renderCreate();
+    if (!shown) announce(st); // janela fechada: o fim da criação vira banner
+  });
+});
+
+async function fetchAutoIp({ quiet = false } = {}) {
+  const gw = String(create.form.gateway).trim();
+  if (!cf.IPV4.test(gw)) {
+    create.ip.auto = { cidr: '', loading: false };
+    return quiet ? null : renderCreate();
+  }
+  if (!quiet) {
+    create.ip.auto = { cidr: create.ip.auto.cidr, loading: true };
+    await renderCreate();
+  }
+  let cidr = '';
+  try {
+    const free = await api().ipamNextFree(gw);
+    cidr = (Array.isArray(free) && free[0]) || '';
+  } catch {
+    // sem IP livre / NetBox off
+  }
+  create.ip.auto = { cidr, loading: false };
+  return quiet ? null : renderCreate();
+}
+
+async function checkIp() {
+  const ip = String(create.form.ipCidr).trim();
+  create.ip.suggestEmpty = false;
+  create.ip.check = null;
+  if (!cf.IPV4_CIDR.test(ip)) return renderCreate();
+  create.ip.checking = true;
+  await renderCreate();
+  try {
+    create.ip.check = await api().ipamCheck(ip);
+  } catch {
+    create.ip.check = null;
+  }
+  create.ip.checking = false;
+  return renderCreate();
+}
+
+async function suggestIp() {
+  create.ip.suggestEmpty = false;
+  create.ip.suggestError = '';
+  try {
+    const free = await api().ipamNextFree(String(create.form.gateway).trim() || undefined);
+    if (Array.isArray(free) && free[0]) {
+      create.form = { ...create.form, ipCidr: free[0] };
+      create.ip.check = null;
+    } else create.ip.suggestEmpty = true;
+  } catch (e) {
+    create.ip.suggestError = errText(e);
+  }
+  return renderCreate();
+}
+
+async function submitCreate() {
+  // Com uma criação andando (ou a anterior ainda validando), só mostra o estado dela.
+  if (flow.state().phase !== 'idle' || create.validating) return renderCreate();
+  create.validating = true;
+  try {
+    const f = create.form;
+    if (!f.ipAuto) {
+      const ip = String(f.ipCidr).trim();
+      if (cf.IPV4_CIDR.test(ip)) {
+        try {
+          create.ip.check = await api().ipamCheck(ip);
+        } catch {
+          create.ip.check = null;
+        }
+      }
+    } else if (!create.ip.auto.cidr) {
+      await fetchAutoIp({ quiet: true });
+    }
+    create.flowError = '';
+    create.errors = cf.validate(f, { auto: { cidr: create.ip.auto.cidr }, manual: create.ip.check });
+    if (create.errors.length) return renderCreate();
+    flow.submit(cf.buildBody(f)); // a fase vira `submitting` aqui mesmo; o onChange redesenha
+  } finally {
+    create.validating = false;
+  }
+  return null;
+}
+
+/** `nova vm…` e o "Nova VM": a criação em curso, se houver; senão um formulário novo. */
+async function openCreateWindow() {
+  const phase = flow.state().phase;
+  if (phase !== 'idle' || (create.form && (create.flowError || state.views.has('create')))) {
+    return renderCreate({ open: true });
+  }
+  const gen = ++create.gen;
+  Object.assign(create, { form: null, options: null, bridge: '', loading: true, loadError: '', ip: freshIp(), errors: [], flowError: '' });
+  await renderCreate({ open: true });
+  try {
+    const a = api();
+    const [d, nodes, templates, storages] = await Promise.all([a.catalogDefaults(), a.catalogNodes(), a.catalogTemplates(), a.catalogStorages()]);
+    if (gen !== create.gen) return null;
+    create.form = cf.applyDefaults(cf.initialForm(), d);
+    create.options = cf.optionsFrom({ nodes, storages, templates });
+    create.bridge = (d && d.networkBridge) || '';
+  } catch (e) {
+    if (gen !== create.gen) return null;
+    create.loadError = errText(e);
+  }
+  create.loading = false;
+  await renderCreate();
+  if (create.form && create.form.ipAuto) await fetchAutoIp();
+  return null;
+}
+
+on('create', async (arg, values) => {
+  if (arg === 'done') {
+    flow.reset();
+    await closeWindow('create');
+    return navigate('vms');
+  }
+  if (arg === 'back') {
+    flow.reset();
+    return renderCreate();
+  }
+  if (!create.form || !currentAdmin()) return; // ainda carregando
+  create.form = cf.mergeValues(create.form, values); // o redesenho não apaga o que foi digitado
+  if (arg === 'submit') return submitCreate();
+  if (arg === 'ipmode') {
+    create.ip = { ...freshIp(), auto: create.ip.auto };
+    if (create.form.ipAuto && !create.ip.auto.cidr) return fetchAutoIp();
+    return renderCreate();
+  }
+  if (arg === 'nextfree') return fetchAutoIp();
+  if (arg === 'check') return checkIp();
+  if (arg === 'suggest') return suggestIp();
+  return null;
+});
+
+registerScreen('create', { open: () => openCreateWindow() });
 
 // --- o protocolo -----------------------------------------------------------------------
 
@@ -421,6 +788,7 @@ mx.onNotification('settings.changed', async ({ settings }) => {
   // O token do console antigo não vale aqui (a sessão nem o enxerga): volta pro login.
   state.url = url;
   state.poller.stopAll();
+  forgetAreas();
   await closeWindows();
   buildSession();
   state.login = { message: '', busy: false };
@@ -496,4 +864,4 @@ process.on('SIGTERM', () => {
 mx.start();
 
 // Pras telas das áreas e pros testes (o smoke test liga telas de mentira por aqui).
-module.exports = { state, registerScreen, on, render, navigate, openWindow, updateWindow, closeWindow, banner, ctx, MAIN };
+module.exports = { state, screens, registerScreen, on, render, navigate, openWindow, updateWindow, closeWindow, banner, ctx, MAIN };

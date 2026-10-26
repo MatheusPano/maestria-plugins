@@ -23,6 +23,7 @@ function createSession({
   now = Date.now,
   startLoopback = loopbackLib.startLoopback,
   randomBytes,
+  apiOptions,
 }) {
   const listeners = { expired: [], changed: [] };
   let loginPromise = null;
@@ -118,7 +119,7 @@ function createSession({
     getAuth: authHeader,
     onUnauthorized: expire,
   });
-  const api = createApi(http);
+  const api = createApi(http, apiOptions);
 
   async function runLogin() {
     const verifier = auth.makeVerifier(randomBytes);

@@ -77,7 +77,8 @@ test('ram cell without guest data, stopped vm, busy and empty states', () => {
   assertNoNull(v);
   assert.equal(v.rows[0].ram.text, 'sem dado do guest');
   assert.equal(v.rows[0].busy, true);
-  assert.equal(v.rows[0].busyLabel, 'Aguarde…');
+  assert.equal(v.rows[0].busyAction, 'stop');
+  assert.equal(v.rows[1].busyAction, '');
   assert.equal(v.rows[1].cpu.text, '');
   assert.equal(v.rows[1].ram.text, '');
   assert.equal(v.rows[1].uptime, 'parada');
@@ -179,4 +180,113 @@ test('busy error message is "{name}: {message}"', async () => {
   assert.equal(busy.get(1), undefined);
   const r2 = await busy.run(1, 'stop', async () => { throw new Error('boom'); });
   assert.equal(r2.error, 'boom');
+});
+
+// --- Task 8 (revisão da Task 7): só o botão da ação em curso diz "Aguarde…" ---
+
+test('busy row: only the matching button waits and the menu hides', () => {
+  const view = (busy, o = {}) => vms.vmsView({ vms: [vm(o)], busy }, { admin: true, now: NOW }).rows[0];
+  const stopping = view({ 177: 'stop' });
+  assertNoNull(stopping);
+  assert.equal(stopping.busyAction, 'stop');
+  assert.equal(stopping.actions.primary.busy, true);
+  assert.equal(stopping.actions.primary.text, 'Aguarde…');
+  assert.equal(stopping.actions.hasMenu, false);
+  assert.deepEqual(stopping.actions.menu, []);
+  // outra ação em curso (backup pelo menu): o Desligar não diz "Aguarde…", mas o menu some
+  const backing = view({ 177: 'backup' }, { backupSlot: null });
+  assert.equal(backing.actions.primary.busy, false);
+  assert.equal(backing.actions.primary.text, 'Desligar');
+  assert.equal(backing.actions.hasMenu, false);
+  const idle = view({});
+  assert.equal(idle.busy, false);
+  assert.equal(idle.busyAction, '');
+  assert.equal(idle.actions.primary.text, 'Desligar');
+  assert.equal(idle.actions.hasMenu, true);
+});
+
+test('row actions carry the routed action strings', () => {
+  const r = vms.vmsView({ vms: [vm({ backupSlot: null, haState: null })] }, { admin: true, now: NOW }).rows[0];
+  assert.equal(r.open, 'vm:open:177');
+  assert.equal(r.actions.primary.a, 'vm:stop:177');
+  assert.deepEqual(r.actions.menu.map((m) => m.action), ['vm:open:177', 'vm:backup:177', 'vm:ha:177', 'vm:destroy:177']);
+  assert.deepEqual(r.actions.menu.map((m) => m.red), [false, false, false, true]);
+  const f = vms.vmsView({ vms: [vm()], filter: 'running' }, { admin: false, now: NOW }).filters;
+  assert.deepEqual(f.map((x) => x.a), ['vm:filter:all', 'vm:filter:running', 'vm:filter:stopped', 'vm:filter:backup']);
+});
+
+test('meters carry integer flex fill/rest', () => {
+  const r = vms.vmsView({ vms: [vm({ cpuUsagePct: 12.4 })] }, { admin: false, now: NOW }).rows[0];
+  assert.equal(r.cpu.fill, 124);
+  assert.equal(r.cpu.rest, 876);
+  assert.ok(Number.isInteger(r.ram.fill) && Number.isInteger(r.ram.rest));
+  const stopped = vms.vmsView({ vms: [vm({ status: 'stopped' })] }, { admin: false, now: NOW }).rows[0];
+  assert.equal(stopped.cpu.show, false);
+  assert.equal(r.cpu.show, true);
+  const ov = vms.overviewView({
+    nodes: { online: 1, total: 1, cpuUsagePct: 100, memUsedGiB: 1, memTotalGiB: 2 },
+    vms: { running: 1, stopped: 0 },
+    storages: [],
+    ipam: { prefix: 'p', size: 10, used: 5, free: 5, usedPct: 50 },
+  });
+  assert.equal(ov.cluster.lines[0].fill, 1000);
+  assert.equal(ov.cluster.lines[0].rest, 1);
+  assert.equal(ov.ipam.fill, 500);
+  // o RFW não converte número em texto: os que viram Text já vão como string
+  assert.equal(ov.vms.runningText, '1');
+  assert.equal(r.vmidText, '177');
+  assertNoNull(ov);
+});
+
+test('busy snapshot lists the vms in flight', async () => {
+  const busy = vms.createBusy();
+  let release;
+  const p = busy.run(7, 'start', () => new Promise((r) => { release = r; }));
+  assert.deepEqual(busy.snapshot(), { 7: 'start' });
+  release();
+  await p;
+  assert.deepEqual(busy.snapshot(), {});
+});
+
+test('destroy confirm blocks', () => {
+  const b = vms.destroyBlocks({ vmid: 177, name: 'jibri-1', error: '' });
+  assertNoNull(b);
+  assert.deepEqual(b[0], { type: 'heading', text: 'Destruir jibri-1?' });
+  assert.equal(b[1].text, 'A VM 177 e os discos dela são apagados no Proxmox e o registro sai do NetBox. Não dá para desfazer.');
+  const input = b.find((x) => x.type === 'input');
+  assert.equal(input.id, 'confirm');
+  assert.equal(input.label, 'Digite jibri-1 para confirmar');
+  assert.equal(input.submit, 'vm:confirm:177');
+  const s = JSON.stringify(b);
+  assert.match(s, /"label":"Cancelar"/);
+  assert.match(s, /"action":"vm:confirm:177","label":"Destruir VM","style":"danger"/);
+  assert.doesNotMatch(s, /"style":"error"/);
+  const e = vms.destroyBlocks({ vmid: 177, name: 'jibri-1', error: 'Digite jibri-1 para confirmar.' });
+  assert.deepEqual(e.find((x) => x.style === 'error'), { type: 'text', style: 'error', text: 'Digite jibri-1 para confirmar.' });
+});
+
+test('detail window blocks: loading, error and sections', () => {
+  assert.deepEqual(vms.detailWindowBlocks({ loading: true }), [{ type: 'text', style: 'dim', text: 'Carregando…' }]);
+  assert.deepEqual(vms.detailWindowBlocks({ error: 'boom' }), [{ type: 'text', style: 'error', text: 'boom' }]);
+  const detail = {
+    vm: vm(),
+    proxmox: {
+      vcpus: 2, cores: 2, sockets: 1, cpuType: 'host', memoryProvisionedMiB: 4096, balloonMinMiB: null,
+      memUsedMiB: 2048, memSource: 'guest', osType: 'l26', machine: 'q35', boot: 'order=scsi0', agentEnabled: true,
+      disks: [], networks: [],
+    },
+    netbox: { id: 1, url: 'https://nb/1', role: null, tenant: null, platform: null, status: 'active', description: null, ips: [], interfaces: [] },
+  };
+  const b = vms.detailWindowBlocks({ detail });
+  assertNoNull(b);
+  assert.equal(b[0].type, 'header');
+  assert.equal(b[0].title, 'jibri-1');
+  assert.equal(b[0].subtitle, 'VM 177 em pve1 · ligada');
+  const s = JSON.stringify(b);
+  for (const t of ['Provisionamento', 'Uso ao vivo', 'Rede', 'NetBox']) assert.ok(b.some((x) => x.type === 'section' && x.text === t), t);
+  assert.match(s, /\[Abrir no NetBox ↗\]\(https:\/\/nb\/1\)/);
+  assert.match(s, /2 \/ 4 GB · guest/);
+  const none = vms.detailWindowBlocks({ detail: { ...detail, netbox: null } });
+  assert.ok(none.some((x) => x.type === 'text' && x.text === 'Não registrada no NetBox.'));
+  assertNoNull(none);
 });

@@ -4,7 +4,8 @@
 
 const enc = encodeURIComponent;
 
-function createApi(http) {
+// `createTimeoutMs`: o tempo do POST /vms (90 s, como a web); só os testes trocam.
+function createApi(http, { createTimeoutMs = 90000 } = {}) {
   const get = (path, opts) => http.request('GET', path, opts);
   const post = (path, body, opts) => http.request('POST', path, { body, ...opts });
 
@@ -19,7 +20,7 @@ function createApi(http) {
     overview: () => get('/overview'),
     vms: () => get('/vms'),
     vm: (vmid) => get(`/vms/${enc(vmid)}`),
-    createVm: (body) => post('/vms', body, { timeoutMs: 90000 }),
+    createVm: (body) => post('/vms', body, { timeoutMs: createTimeoutMs }),
     vmCreation: (name) => get(`/vms/creations/${enc(name)}`),
     startVm: (vmid) => post(`/vms/${enc(vmid)}/start`),
     stopVm: (vmid) => post(`/vms/${enc(vmid)}/stop`),

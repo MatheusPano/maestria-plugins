@@ -90,11 +90,19 @@ const FILTERS = [
   { value: 'backup', label: 'Backup a revisar' },
 ];
 
-function usage(pct, text) {
-  return { text, pct, tone: meterTone(pct), width: meterWidth(pct), tooltip: '' };
+// A barrinha no RFW é um Row com dois Expanded: `fill` e `rest` são os flex
+// (inteiros, 0–1000; o rest fica >= 1 pra nunca ser um flex 0).
+function flex(width) {
+  const fill = Math.round(width * 10);
+  return { fill, rest: Math.max(1, 1000 - fill) };
 }
 
-const NO_USAGE = { text: '', pct: 0, tone: 'dim', width: 0, tooltip: '' };
+function usage(pct, text) {
+  const width = meterWidth(pct);
+  return { text, pct, tone: meterTone(pct), width, ...flex(width), show: true, tooltip: '' };
+}
+
+const NO_USAGE = { text: '', pct: 0, tone: 'dim', width: 0, fill: 0, rest: 1000, show: false, tooltip: '' };
 
 function rowOf(vm, { admin, now, busyAction }) {
   const on = vm.status === 'running';
@@ -116,6 +124,7 @@ function rowOf(vm, { admin, now, busyAction }) {
 
   const row = {
     vmid: vm.vmid,
+    vmidText: String(vm.vmid),
     name: vm.name,
     node: vm.node || '',
     tags: (vm.tags || []).map((text) => ({ text, tone: tagTone(text) })),
@@ -128,17 +137,24 @@ function rowOf(vm, { admin, now, busyAction }) {
     ha: haCell(vm.haState),
     running: on,
     busy: !!busyAction,
-    busyLabel: busyAction ? 'Aguarde…' : '',
+    busyAction: busyAction || '',
+    open: `vm:open:${vm.vmid}`,
   };
 
   if (admin) {
-    const menu = [{ id: 'details', label: 'Detalhes', tone: 'accent' }];
-    if (!vm.backupSlot) menu.push({ id: 'backup', label: 'Incluir no backup', tone: 'accent' });
-    if (!vm.haState) menu.push({ id: 'ha', label: 'Ativar HA', tone: 'accent' });
-    menu.push({ id: 'destroy', label: 'Destruir', tone: 'red' });
+    // As ações vão no texto da ação ("vm:<ação>:<vmid>"): o onMenu do Pressable só manda a `action`.
+    const item = (id, label, tone) => ({ id, label, tone, action: `vm:${id === 'details' ? 'open' : id}:${vm.vmid}`, red: tone === 'red' });
+    const menu = [item('details', 'Detalhes', 'accent')];
+    if (!vm.backupSlot) menu.push(item('backup', 'Incluir no backup', 'accent'));
+    if (!vm.haState) menu.push(item('ha', 'Ativar HA', 'accent'));
+    menu.push(item('destroy', 'Destruir', 'red'));
+    const primary = on ? { id: 'stop', label: 'Desligar', tone: 'red' } : { id: 'start', label: 'Ligar', tone: 'green' };
+    // Como na web: só o botão da ação em curso diz "Aguarde…", e o menu some enquanto a VM está ocupada.
+    const waiting = busyAction === primary.id;
     row.actions = {
-      primary: on ? { id: 'stop', label: 'Desligar', tone: 'red' } : { id: 'start', label: 'Ligar', tone: 'green' },
-      menu,
+      primary: { ...primary, a: `vm:${primary.id}:${vm.vmid}`, busy: waiting, text: waiting ? 'Aguarde…' : primary.label },
+      menu: busyAction ? [] : menu,
+      hasMenu: !busyAction,
     };
   }
   return row;
@@ -162,6 +178,7 @@ function vmsView(state, { admin, now } = {}) {
       label: f.value === 'backup' ? `${f.label} · ${c.backup}` : f.label,
       count: c[f.value],
       active: f.value === filter,
+      a: `vm:filter:${f.value}`,
     })),
     rows,
     empty,
@@ -178,14 +195,14 @@ function overviewView(ov) {
     return {
       loaded: false,
       cluster: { title: 'Cluster', aside: '', lines: [] },
-      vms: { running: 0, stopped: 0 },
+      vms: { running: 0, stopped: 0, runningText: '0', stoppedText: '0' },
       ceph: [],
-      ipam: { available: false, text: '' },
+      ipam: { available: false, prefix: '', text: '', pct: 0, width: 0, fill: 0, rest: 1000, detail: '' },
     };
   }
   const n = ov.nodes;
   const memPct = Math.round((n.memUsedGiB / Math.max(n.memTotalGiB, 1)) * 100);
-  const line = (label, pct, value, tone) => ({ label, pct, value, tone: tone || meterTone(pct), width: meterWidth(pct) });
+  const line = (label, pct, value, tone) => ({ label, pct, value, tone: tone || meterTone(pct), width: meterWidth(pct), ...flex(meterWidth(pct)) });
   const ipam = ov.ipam
     ? {
         available: true,
@@ -193,9 +210,10 @@ function overviewView(ov) {
         text: `${ov.ipam.free} IPs livres`,
         pct: ov.ipam.usedPct,
         width: meterWidth(ov.ipam.usedPct),
+        ...flex(meterWidth(ov.ipam.usedPct)),
         detail: `${ov.ipam.used} de ${ov.ipam.size} em uso`,
       }
-    : { available: false, text: 'NetBox indisponível' };
+    : { available: false, prefix: '', text: 'NetBox indisponível', pct: 0, width: 0, fill: 0, rest: 1000, detail: '' };
   return {
     loaded: true,
     cluster: {
@@ -203,7 +221,7 @@ function overviewView(ov) {
       aside: `${n.online} de ${n.total} nodes`,
       lines: [line('CPU', n.cpuUsagePct, `${n.cpuUsagePct}%`), line('RAM', memPct, `${n.memUsedGiB}/${n.memTotalGiB} GB`)],
     },
-    vms: { running: ov.vms.running, stopped: ov.vms.stopped },
+    vms: { running: ov.vms.running, stopped: ov.vms.stopped, runningText: String(ov.vms.running), stoppedText: String(ov.vms.stopped) },
     ceph: (ov.storages || [])
       .filter((x) => x.storage.startsWith('ceph'))
       .map((x) => line(x.storage, x.usedPct, `${formatTb(x.usedGiB)}/${formatTb(x.totalGiB)} TB`, x.usedPct >= 90 ? 'red' : x.usedPct >= 75 ? 'yellow' : 'accent')),
@@ -272,6 +290,8 @@ function createBusy() {
   const busy = new Map();
   return {
     get: (vmid) => busy.get(vmid),
+    /** `{ vmid: ação }` das VMs ocupadas, o `busy` do `vmsView`. */
+    snapshot: () => Object.fromEntries(busy),
     async run(vmid, action, fn, opts = {}) {
       if (busy.has(vmid)) return { ran: false };
       busy.set(vmid, action);
@@ -288,7 +308,65 @@ function createBusy() {
   };
 }
 
+// --- as janelas de blocos ---------------------------------------------------------
+
+/** A confirmação do destruir (DestroyVmDialog.tsx): digitar o nome da VM. */
+function destroyBlocks({ vmid, name, error }) {
+  const blocks = [
+    { type: 'heading', text: `Destruir ${name}?` },
+    { type: 'text', text: `A VM ${vmid} e os discos dela são apagados no Proxmox e o registro sai do NetBox. Não dá para desfazer.` },
+    { type: 'input', id: 'confirm', label: `Digite ${name} para confirmar`, submit: `vm:confirm:${vmid}` },
+  ];
+  if (error) blocks.push({ type: 'text', style: 'error', text: error });
+  blocks.push({
+    type: 'row',
+    align: 'end',
+    children: [
+      { type: 'button', action: `vm:cancel:${vmid}`, label: 'Cancelar' },
+      { type: 'button', action: `vm:confirm:${vmid}`, label: 'Destruir VM', style: 'danger' },
+    ],
+  });
+  return blocks;
+}
+
+const STATUS_LABEL = { running: 'ligada', stopped: 'desligada', paused: 'pausada', unknown: 'desconhecido' };
+const STATUS_TONE = { running: 'green', paused: 'yellow' };
+
+/** A gaveta de detalhes (VmDetailDrawer.tsx) em blocos: "Carregando…", o erro em vermelho ou as seções. */
+function detailWindowBlocks({ loading, error, detail } = {}) {
+  if (error) return [{ type: 'text', style: 'error', text: String(error) }];
+  if (loading || !detail) return [{ type: 'text', style: 'dim', text: 'Carregando…' }];
+  const vm = detail.vm;
+  const tone = STATUS_TONE[vm.status] || 'faint';
+  const blocks = [
+    {
+      type: 'header',
+      avatar: { icon: 'device', color: tone },
+      status: tone,
+      title: String(vm.name),
+      subtitle: `VM ${vm.vmid} em ${vm.node} · ${STATUS_LABEL[vm.status] || STATUS_LABEL.unknown}`,
+    },
+  ];
+  for (const sec of detailBlocks(detail)) {
+    blocks.push({ type: 'section', text: sec.title });
+    if (sec.rows.length) {
+      blocks.push({
+        type: 'kv',
+        items: sec.rows.map((r) => {
+          const item = { key: r.k, value: r.badge ? `${r.v} · ${r.badge}` : r.v };
+          if (r.badge) item.tone = r.badgeTone;
+          return item;
+        }),
+      });
+    }
+    if (sec.note) blocks.push({ type: 'text', style: 'dim', text: sec.note });
+    if (sec.link && sec.link.url) blocks.push({ type: 'markdown', text: `[${sec.link.text}](${sec.link.url})` });
+  }
+  return blocks;
+}
+
 module.exports = {
+  destroyBlocks, detailWindowBlocks,
   backupState, needsBackupAttention, backupAge, backupCell, filterVms, counts, haCell,
   overviewView, vmsView, detailBlocks, createBusy,
 };

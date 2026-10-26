@@ -1,0 +1,541 @@
+// Máquinas virtuais (VmDashboard.tsx + OverviewBar.tsx): o topo com "Nova VM"
+// (ou "Somente leitura"), os quatro cartões do overview, a busca e os filtros, o
+// erro em vermelho e a tabela. Sem `import`: o main.js junta este arquivo depois
+// da casca.
+//
+// Os dados chegam em `data.vms` (lib/vms.js: `vmsView` + `overview`). Os cliques
+// voltam como `event "act" { a: "vm:<ação>:<vmid>" }`; o menu "⋯" manda a
+// `action` do item; a busca manda `vm:search` com o `text` no enter; o "Nova VM"
+// manda `event "nav" { to: "create" }`.
+
+widget VmsScreen = SingleChildScrollView(
+  primary: false,
+  padding: [28.0, 24.0, 28.0, 28.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      VmsHeader(h: data.vms.header),
+      SizedBox(height: 20.0),
+      Overview(o: data.vms.overview),
+      SizedBox(height: 20.0),
+      VmsToolbar(),
+      VmsError(text: data.vms.error),
+      SizedBox(height: 14.0),
+      VmsTable(),
+    ],
+  ),
+);
+
+// --- o topo ------------------------------------------------------------------------
+
+widget VmsHeader = Row(
+  children: [
+    Expanded(
+      child: Text(text: args.h.title, style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+    ),
+    switch args.h.newVm {
+      true: Pressable(
+        radius: 6.0,
+        color: data.theme.accent,
+        hoverColor: data.theme.accent,
+        onTap: event "nav" { to: "create" },
+        child: Padding(
+          padding: [14.0, 8.0, 14.0, 8.0],
+          child: Row(
+            mainAxisSize: "min",
+            children: [
+              Glyph(icon: "add", size: 16.0, color: data.theme.onAccent),
+              SizedBox(width: 8.0),
+              Text(text: "Nova VM", style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.onAccent }),
+            ],
+          ),
+        ),
+      ),
+      default: Container(
+        padding: [10.0, 6.0, 10.0, 6.0],
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+        child: Text(text: args.h.badge, style: { fontSize: 12.0, fontWeight: "w500", color: data.theme.dim }),
+      ),
+    },
+  ],
+);
+
+// --- o overview (OverviewBar.tsx) ----------------------------------------------------
+
+widget Overview = switch args.o.loaded {
+  true: Row(
+    crossAxisAlignment: "start",
+    children: [
+      Expanded(
+        flex: 3,
+        child: Panel(
+          title: args.o.cluster.title,
+          aside: args.o.cluster.aside,
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              ...for l in args.o.cluster.lines:
+                MeterLine(l: l),
+            ],
+          ),
+        ),
+      ),
+      SizedBox(width: 16.0),
+      Expanded(
+        flex: 2,
+        child: Panel(
+          title: "VMs",
+          aside: "",
+          child: Row(
+            children: [
+              Count(value: args.o.vms.runningText, label: "ligadas", tone: "green"),
+              SizedBox(width: 20.0),
+              Count(value: args.o.vms.stoppedText, label: "desligadas", tone: "faint"),
+            ],
+          ),
+        ),
+      ),
+      SizedBox(width: 16.0),
+      Expanded(
+        flex: 3,
+        child: Panel(
+          title: "Ceph",
+          aside: "",
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              ...for l in args.o.ceph:
+                MeterLine(l: l),
+            ],
+          ),
+        ),
+      ),
+      SizedBox(width: 16.0),
+      Expanded(
+        flex: 3,
+        child: Panel(title: "IPAM", aside: args.o.ipam.prefix, child: Ipam(i: args.o.ipam)),
+      ),
+    ],
+  ),
+  default: Container(
+    height: 118.0,
+    decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  ),
+};
+
+widget Panel = Container(
+  padding: [16.0, 14.0, 16.0, 14.0],
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Expanded(child: Text(text: args.title, style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.dim })),
+          Text(text: args.aside, maxLines: 1, style: { fontSize: 11.0, fontFamily: data.theme.mono, color: data.theme.faint }),
+        ],
+      ),
+      Padding(padding: [0.0, 12.0, 0.0, 0.0], child: args.child),
+    ],
+  ),
+);
+
+widget MeterLine = Padding(
+  padding: [0.0, 0.0, 0.0, 8.0],
+  child: Row(
+    children: [
+      SizedBox(
+        width: 84.0,
+        child: Text(text: args.l.label, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim }),
+      ),
+      Expanded(child: Bar(fill: args.l.fill, rest: args.l.rest, tone: args.l.tone)),
+      SizedBox(
+        width: 100.0,
+        child: Align(
+          alignment: { x: 1.0, y: 0.0 },
+          child: Text(text: args.l.value, maxLines: 1, style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.fg }),
+        ),
+      ),
+    ],
+  ),
+);
+
+// A barrinha: dois Expanded com os flex `fill` e `rest` (inteiros, de 0 a 1000).
+widget Bar = Container(
+  height: 6.0,
+  decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 3.0 }] },
+  child: Row(
+    crossAxisAlignment: "stretch",
+    children: [
+      Expanded(
+        flex: args.fill,
+        child: Container(
+          decoration: {
+            type: "box",
+            borderRadius: [{ x: 3.0 }],
+            color: switch args.tone {
+              "green": data.theme.green,
+              "yellow": data.theme.yellow,
+              "red": data.theme.red,
+              "accent": data.theme.accent,
+              default: data.theme.faint,
+            },
+          },
+        ),
+      ),
+      Expanded(flex: args.rest, child: SizedBox()),
+    ],
+  ),
+);
+
+widget Count = Column(
+  crossAxisAlignment: "start",
+  children: [
+    Text(
+      text: args.value,
+      style: {
+        fontSize: 24.0,
+        fontWeight: "w600",
+        color: switch args.tone { "green": data.theme.green, default: data.theme.faint },
+      },
+    ),
+    Text(text: args.label, style: { fontSize: 12.0, color: data.theme.dim }),
+  ],
+);
+
+widget Ipam = switch args.i.available {
+  true: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Text(text: args.i.text, style: { fontSize: 18.0, fontWeight: "w600", color: data.theme.fg }),
+      SizedBox(height: 6.0),
+      Bar(fill: args.i.fill, rest: args.i.rest, tone: "accent"),
+      SizedBox(height: 6.0),
+      Text(text: args.i.detail, style: { fontSize: 12.0, color: data.theme.dim }),
+    ],
+  ),
+  default: Text(text: args.i.text, style: { fontSize: 13.0, color: data.theme.dim }),
+};
+
+// --- a busca e os filtros --------------------------------------------------------------
+
+widget VmsToolbar = Wrap(
+  spacing: 8.0,
+  runSpacing: 8.0,
+  children: [
+    SizedBox(
+      width: 320.0,
+      child: TextInput(
+        id: "vms.search",
+        placeholder: "Buscar",
+        allowEmpty: true,
+        onSubmit: event "act" { a: "vm:search" },
+      ),
+    ),
+    ...for f in data.vms.filters:
+      FilterChip(f: f),
+  ],
+);
+
+widget FilterChip = Pressable(
+  radius: 4.0,
+  color: switch args.f.active { true: data.theme.active, default: 0x00000000 },
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.f.a },
+  child: Container(
+    padding: [12.0, 7.0, 12.0, 7.0],
+    decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Text(
+      text: args.f.label,
+      style: {
+        fontSize: 12.0,
+        fontWeight: switch args.f.active { true: "w600", default: "w400" },
+        color: switch args.f.active { true: data.theme.fg, default: data.theme.dim },
+      },
+    ),
+  ),
+);
+
+widget VmsError = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 14.0, 0.0, 0.0],
+    child: Container(
+      padding: [16.0, 12.0, 16.0, 12.0],
+      decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.red, width: 1.0 }] },
+      child: Text(text: args.text, style: { fontSize: 13.0, color: data.theme.red }),
+    ),
+  ),
+};
+
+// --- a tabela ----------------------------------------------------------------------
+
+widget VmsTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      TableHead(),
+      switch data.vms.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for r in data.vms.rows:
+              VmRow(r: r),
+          ],
+        ),
+        default: Padding(
+          padding: [16.0, 48.0, 16.0, 48.0],
+          child: Center(child: Text(text: data.vms.empty, style: { fontSize: 13.0, color: data.theme.dim })),
+        ),
+      },
+    ],
+  ),
+);
+
+widget HeadCell = Text(text: args.text, maxLines: 1, style: { fontSize: 12.0, fontWeight: "w500", color: data.theme.faint });
+
+widget TableHead = Container(
+  padding: [16.0, 10.0, 16.0, 10.0],
+  color: data.theme.active,
+  child: Row(
+    children: [
+      Expanded(flex: 30, child: HeadCell(text: "VM")),
+      Expanded(flex: 7, child: HeadCell(text: "VMID")),
+      Expanded(flex: 8, child: HeadCell(text: "Node")),
+      Expanded(flex: 13, child: HeadCell(text: "IP")),
+      Expanded(flex: 12, child: HeadCell(text: "CPU")),
+      Expanded(flex: 13, child: HeadCell(text: "RAM")),
+      Expanded(flex: 9, child: HeadCell(text: "Uptime")),
+      Expanded(flex: 15, child: HeadCell(text: "Backup")),
+      Expanded(flex: 7, child: HeadCell(text: "HA")),
+      switch data.vms.header.newVm {
+        true: SizedBox(width: 136.0),
+        default: SizedBox(),
+      },
+    ],
+  ),
+);
+
+widget VmRow = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Container(height: 1.0, color: data.theme.border),
+    Opacity(
+      opacity: switch args.r.busy { true: 0.6, default: 1.0 },
+      child: Padding(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        child: Row(
+          children: [
+            Expanded(flex: 30, child: NameCell(r: args.r)),
+            Expanded(flex: 7, child: Mono(text: args.r.vmidText)),
+            Expanded(flex: 8, child: Text(text: args.r.node, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, color: data.theme.dim })),
+            Expanded(flex: 13, child: Mono(text: args.r.ip)),
+            Expanded(flex: 12, child: Usage(u: args.r.cpu)),
+            Expanded(flex: 13, child: Usage(u: args.r.ram)),
+            Expanded(
+              flex: 9,
+              child: switch args.r.running {
+                true: Mono(text: args.r.uptime),
+                default: Text(text: args.r.uptime, style: { fontSize: 12.0, color: data.theme.faint }),
+              },
+            ),
+            Expanded(flex: 15, child: BackupCell(b: args.r.backup)),
+            Expanded(flex: 7, child: HaCell(h: args.r.ha)),
+            switch data.vms.header.newVm {
+              true: SizedBox(width: 136.0, child: RowActions(r: args.r)),
+              default: SizedBox(),
+            },
+          ],
+        ),
+      ),
+    ),
+  ],
+);
+
+widget Mono = Text(text: args.text, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.dim });
+
+widget NameCell = Row(
+  children: [
+    Container(
+      width: 8.0,
+      height: 8.0,
+      decoration: { type: "box", shape: "circle", color: switch args.r.running { true: data.theme.green, default: data.theme.faint } },
+    ),
+    SizedBox(width: 10.0),
+    Expanded(
+      child: Column(
+        crossAxisAlignment: "start",
+        children: [
+          Wrap(
+            spacing: 8.0,
+            runSpacing: 4.0,
+            children: [
+              Pressable(
+                radius: 4.0,
+                hoverColor: data.theme.hover,
+                onTap: event "act" { a: args.r.open },
+                child: Text(
+                  text: args.r.name,
+                  style: {
+                    fontSize: 13.0,
+                    fontWeight: "w500",
+                    color: switch args.r.running { true: data.theme.fg, default: data.theme.dim },
+                  },
+                ),
+              ),
+              ...for t in args.r.tags:
+                Tag(t: t),
+            ],
+          ),
+          SizedBox(height: 2.0),
+          Text(text: args.r.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+        ],
+      ),
+    ),
+  ],
+);
+
+widget Tag = Container(
+  padding: [6.0, 0.0, 6.0, 0.0],
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 2.0 }],
+    border: [{
+      color: switch args.t.tone {
+        "accent": data.theme.accent,
+        "green": data.theme.green,
+        "yellow": data.theme.yellow,
+        "red": data.theme.red,
+        default: data.theme.dim,
+      },
+      width: 1.0,
+    }],
+  },
+  child: Text(
+    text: args.t.text,
+    style: {
+      fontSize: 10.5,
+      fontFamily: data.theme.mono,
+      color: switch args.t.tone {
+        "accent": data.theme.accent,
+        "green": data.theme.green,
+        "yellow": data.theme.yellow,
+        "red": data.theme.red,
+        default: data.theme.dim,
+      },
+    },
+  ),
+);
+
+// CPU e RAM: a barrinha e o número; sem dado, o texto (com o porquê no tooltip).
+widget Usage = switch args.u.show {
+  true: Row(
+    children: [
+      SizedBox(width: 48.0, child: Bar(fill: args.u.fill, rest: args.u.rest, tone: args.u.tone)),
+      SizedBox(width: 8.0),
+      Expanded(child: Mono(text: args.u.text)),
+    ],
+  ),
+  default: switch args.u.tooltip {
+    "": Text(text: args.u.text, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+    default: Tooltip(
+      message: args.u.tooltip,
+      child: Text(text: args.u.text, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint }),
+    ),
+  },
+};
+
+widget BackupCell = Tooltip(
+  message: args.b.tooltip,
+  child: Row(
+    children: [
+      Glyph(
+        icon: "shield",
+        size: 13.0,
+        color: switch args.b.tone {
+          "green": data.theme.green,
+          "yellow": data.theme.yellow,
+          "red": data.theme.red,
+          default: data.theme.faint,
+        },
+      ),
+      SizedBox(width: 6.0),
+      Expanded(
+        child: Text(
+          text: args.b.text,
+          maxLines: 1,
+          overflow: "ellipsis",
+          style: {
+            fontSize: 12.0,
+            fontFamily: data.theme.mono,
+            color: switch args.b.tone {
+              "green": data.theme.dim,
+              "yellow": data.theme.yellow,
+              "red": data.theme.red,
+              default: data.theme.faint,
+            },
+          },
+        ),
+      ),
+    ],
+  ),
+);
+
+widget HaCell = switch args.h.tone {
+  "green": HaChip(text: args.h.text, color: data.theme.green),
+  "red": HaChip(text: args.h.text, color: data.theme.red),
+  default: switch args.h.text {
+    "–": Text(text: args.h.text, style: { fontSize: 12.0, color: data.theme.faint }),
+    default: HaChip(text: args.h.text, color: data.theme.dim),
+  },
+};
+
+widget HaChip = Align(
+  alignment: { x: -1.0, y: 0.0 },
+  child: Container(
+    padding: [6.0, 1.0, 6.0, 1.0],
+    decoration: { type: "box", borderRadius: [{ x: 2.0 }], border: [{ color: args.color, width: 1.0 }] },
+    child: Text(text: args.text, style: { fontSize: 10.5, fontWeight: "w600", color: args.color }),
+  ),
+);
+
+// Ligar/Desligar e o "⋯". Só o botão da ação em curso diz "Aguarde…"; com a VM
+// ocupada o menu some (como na web).
+widget RowActions = Row(
+  children: [
+    Expanded(child: SizedBox()),
+    PrimaryAction(p: args.r.actions.primary),
+    SizedBox(width: 6.0),
+    switch args.r.actions.hasMenu {
+      true: MenuButton(icon: "more", tooltip: "Mais ações", menu: args.r.actions.menu, onMenu: event "act" {}),
+      default: SizedBox(width: 26.0),
+    },
+  ],
+);
+
+widget PrimaryAction = switch args.p.busy {
+  true: Opacity(
+    opacity: 0.5,
+    child: ActionBox(text: args.p.text, tone: args.p.tone),
+  ),
+  default: Pressable(
+    radius: 4.0,
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: args.p.a },
+    child: ActionBox(text: args.p.text, tone: args.p.tone),
+  ),
+};
+
+widget ActionBox = Container(
+  padding: [10.0, 4.0, 10.0, 4.0],
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 4.0 }],
+    border: [{ color: switch args.tone { "red": data.theme.red, default: data.theme.green }, width: 1.0 }],
+  },
+  child: Text(
+    text: args.text,
+    style: { fontSize: 12.0, fontWeight: "w500", color: switch args.tone { "red": data.theme.red, default: data.theme.green } },
+  ),
+);

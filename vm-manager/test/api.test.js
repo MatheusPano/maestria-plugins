@@ -69,6 +69,9 @@ test('createVm uses a 90s timeout', async () => {
   const http = { request: (...a) => { calls.push(a); return Promise.resolve(null); } };
   await createApi(http).createVm({ name: 'a' });
   assert.equal(calls[0][2].timeoutMs, 90000);
+  // o smoke test encurta o timeout pra simular o proxy que não responde
+  await createApi(http, { createTimeoutMs: 150 }).createVm({ name: 'a' });
+  assert.equal(calls[1][2].timeoutMs, 150);
 });
 
 test('audit returns raw body', async () => {
