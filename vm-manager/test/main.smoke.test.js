@@ -2197,3 +2197,65 @@ test('routes.rfwtxt: sem import, doubles, sem null/args.children, e a casca liga
     .flatMap((f) => [...fs.readFileSync(path.join(ui, f), 'utf8').matchAll(/^widget (\w+) =/gm)].map((x) => x[1]));
   assert.deepEqual(names.filter((n, i) => names.indexOf(n) !== i), [], 'widget repetido entre os .rfwtxt');
 });
+
+const banners = (p) => p.requests.filter((r) => r.method === 'window.showBanner').map((r) => r.params.text);
+
+// --- Task 12 (revisão): janela de rota fechada com o pedido andando -------------------------
+
+test('rotas: fechar a "Nova rota" com o POST andando avisa que a criação continua em segundo plano', { timeout: 15000 }, async () => {
+  const RUNNING = jobOf('create', 'running', [{ step: 'certificate', status: 'running', detail: null }]);
+  const { p, close } = await openRoutes({
+    routes: { 'POST /api/routes/plan': () => ({ json: PLAN }), 'POST /api/routes': () => ({ json: RUNNING, delayMs: 400 }) },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'route:new' });
+    await p.waitFor(() => p.windowBlocks('route:new'), 'abre');
+    p.act('route:new', 'route:review', NEW_VALUES);
+    await p.waitFor(() => allTexts(p.windowBlocks('route:new')).includes('2 de 2 · Revisão'), 'revisão');
+    p.act('route:new', 'route:apply', { confirm: 'novo.cefis.cloud' });
+    await p.waitFor(() => button(p.windowBlocks('route:new'), 'route:apply').disabled === true, 'aplicando');
+    p.send('event', { type: 'view.closed', viewId: 'route:new' }, { notify: true });
+    await p.waitFor(() => banners(p).length > 0, 'banner');
+    assert.deepEqual(banners(p), ['A criação de novo.cefis.cloud continua em segundo plano; confira na Auditoria e use Ler agora.']);
+    await pause(600);
+    assert.equal(banners(p).length, 1);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('rotas: fechar a remoção com o DELETE andando avisa; fechar sem pedido andando não', { timeout: 15000 }, async () => {
+  const RUNNING = jobOf('remove', 'running', [{ step: 'remove_mapfiles', status: 'running', detail: null }]);
+  const { p, close } = await openRoutes({
+    routes: {
+      'POST /api/routes/app.cefis.cloud/removal-plan': () => ({ json: REMOVAL }),
+      'DELETE /api/routes/app.cefis.cloud': () => ({ json: RUNNING, delayMs: 400 }),
+    },
+  });
+  const W = 'route:remove';
+  const opens = (id) => p.requests.filter((r) => r.method === 'view.open' && r.params.viewId === id).length;
+  const openIt = async () => {
+    const [drawers, windows] = [opens('route:app.cefis.cloud'), opens(W)];
+    p.act('vmm', 'act', { a: 'route:open:app.cefis.cloud' });
+    await p.waitFor(() => opens('route:app.cefis.cloud') > drawers, 'gaveta');
+    p.act('route:app.cefis.cloud', 'route:remove:app.cefis.cloud', {});
+    await p.waitFor(() => opens(W) > windows, 'abre a remoção');
+    await p.waitFor(() => { const b = button(p.windowBlocks(W), 'route:delete'); return b && b.disabled === false; }, 'plano');
+  };
+  try {
+    await openIt();
+    p.send('event', { type: 'view.closed', viewId: W }, { notify: true }); // nada andando
+    await pause(200);
+    assert.deepEqual(banners(p), []);
+    await openIt();
+    p.act(W, 'route:delete', { confirm: 'app.cefis.cloud' });
+    await p.waitFor(() => button(p.windowBlocks(W), 'route:delete').disabled === true && allTexts(p.windowBlocks(W)).includes('SERÁ APAGADO'), 'removendo');
+    p.send('event', { type: 'view.closed', viewId: W }, { notify: true });
+    await p.waitFor(() => banners(p).length > 0, 'banner');
+    assert.deepEqual(banners(p), ['A remoção de app.cefis.cloud continua em segundo plano; confira na Auditoria e use Ler agora.']);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});

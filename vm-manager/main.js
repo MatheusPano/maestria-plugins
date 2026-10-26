@@ -1611,6 +1611,13 @@ function routeWindowGone(viewId) {
   const had = viewId === ROUTE_NEW ? wizard : removal;
   if (viewId === ROUTE_NEW) wizard = null;
   else removal = null;
+  // Fechada pelo X da Maestria com o POST/DELETE no ar: a mudança segue na API, sem a gente
+  // acompanhar. Na criação, `busy` na revisão é só o "Aplicar"; na remoção, `busy` é o DELETE.
+  if (had && had.busy && (viewId === ROUTE_REMOVE || had.step === 'review')) {
+    const host = viewId === ROUTE_REMOVE ? had.hostname : had.plan.hostname;
+    const what = viewId === ROUTE_REMOVE ? 'remoção' : 'criação';
+    banner(`A ${what} de ${host} continua em segundo plano; confira na Auditoria e use Ler agora.`);
+  }
   if (had) guard('rotas', () => reloadRoutes());
 }
 
