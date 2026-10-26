@@ -21,6 +21,9 @@ function classify(outcome) {
 
 function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 }) {
   let st = { phase: 'idle', name: '', result: null, error: '', startedAt: 0 };
+  // A geração da criação: `abandon()` a troca, e o que estava no ar (a resposta do
+  // POST, os ticks do acompanhamento) passa a ser ignorado.
+  let gen = 0;
   const listeners = new Set();
 
   function set(patch) {
@@ -45,17 +48,22 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
   }
 
   function track() {
+    const g = gen;
+    const put = (patch) => {
+      if (g === gen) set(patch);
+    };
     const name = st.name;
     let sawRunning = false;
 
     const finishFound = (vm) =>
-      set({
+      put({
         phase: 'succeeded',
         result: { vm, netbox: null, backupSlot: null, ha: false, warnings: [FALLBACK_WARNING] },
         error: '',
       });
 
     const tick = async () => {
+      if (g !== gen) return; // abandonada
       let creation = null;
       let err = null;
       try {
@@ -64,7 +72,7 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
         err = e;
       }
       if (creation && creation.status === 'succeeded') {
-        set({ phase: 'succeeded', result: creation.result || null, error: '' });
+        put({ phase: 'succeeded', result: creation.result || null, error: '' });
         return;
       }
       if (creation && creation.status === 'failed') {
@@ -73,7 +81,7 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
           const vm = await findVm(name);
           if (vm) return finishFound(vm);
         }
-        set({ phase: 'failed', error: msg });
+        put({ phase: 'failed', error: msg });
         return;
       }
       if (creation && creation.status === 'running') sawRunning = true;
@@ -82,8 +90,9 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
         const vm = await findVm(name);
         if (vm) return finishFound(vm);
       }
+      if (g !== gen) return;
       if (now() - st.startedAt >= maxMs) {
-        set({ phase: 'unconfirmed', error: UNCONFIRMED });
+        put({ phase: 'unconfirmed', error: UNCONFIRMED });
         return;
       }
       schedule(tick, pollMs);
@@ -95,6 +104,7 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
   function submit(body) {
     if (st.phase !== 'idle') return Promise.resolve({ ...st });
     set({ phase: 'submitting', name: String((body && body.name) || ''), result: null, error: '', startedAt: now() });
+    const g = gen;
     return (async () => {
       let outcome;
       try {
@@ -102,6 +112,7 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
       } catch (error) {
         outcome = { ok: false, error };
       }
+      if (g !== gen) return { ...st }; // abandonada no meio do POST
       const kind = classify(outcome);
       if (kind === 'succeeded') set({ phase: 'succeeded', result: outcome.data, error: '' });
       else if (kind === 'rejected') set({ phase: 'rejected', error: outcome.error.message });
@@ -119,10 +130,20 @@ function createCreateFlow({ api, now, schedule, pollMs = 5000, maxMs = 600000 })
     return true;
   }
 
+  // Larga a criação em curso (a sessão acabou: sair ou trocar o url) sem esperar o
+  // fim: para de acompanhar e volta pra idle. A VM pode sair mesmo assim; quem
+  // entra depois a vê na lista.
+  function abandon() {
+    gen++;
+    if (st.phase === 'idle') return;
+    set({ phase: 'idle', name: '', result: null, error: '', startedAt: 0 });
+  }
+
   return {
     state: () => ({ ...st }),
     submit,
     reset,
+    abandon,
     onChange(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);

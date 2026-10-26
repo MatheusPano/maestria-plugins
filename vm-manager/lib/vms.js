@@ -311,11 +311,11 @@ function createBusy() {
 // --- as janelas de blocos ---------------------------------------------------------
 
 /** A confirmação do destruir (DestroyVmDialog.tsx): digitar o nome da VM. */
-function destroyBlocks({ vmid, name, error }) {
+function destroyBlocks({ vmid, name, error, typed = '' }) {
   const blocks = [
     { type: 'heading', text: `Destruir ${name}?` },
     { type: 'text', text: `A VM ${vmid} e os discos dela são apagados no Proxmox e o registro sai do NetBox. Não dá para desfazer.` },
-    { type: 'input', id: 'confirm', label: `Digite ${name} para confirmar`, submit: `vm:confirm:${vmid}` },
+    { type: 'input', id: 'confirm', label: `Digite ${name} para confirmar`, value: String(typed), submit: `vm:confirm:${vmid}` },
   ];
   if (error) blocks.push({ type: 'text', style: 'error', text: error });
   blocks.push({

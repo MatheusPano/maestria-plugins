@@ -294,3 +294,30 @@ test('after unconfirmed, the clock makes no more vmCreation calls', async () => 
   await clock.advance(120000);
   assert.equal(calls.creation, n);
 });
+
+// --- Task 8, fix 1: a sessão acabou (sair / outro url) ---
+
+test('abandon while tracking: back to idle, no more vmCreation calls', async () => {
+  const { flow, clock, calls } = setup({ create: async () => { throw new ApiError('x', 502); }, creations: [running] });
+  await flow.submit(BODY);
+  await clock.advance(5000);
+  const n = calls.creation;
+  flow.abandon();
+  assert.equal(flow.state().phase, 'idle');
+  await clock.advance(60000);
+  assert.equal(calls.creation, n);
+});
+
+test('abandon during the POST: the late answer is ignored and a new submit works', async () => {
+  let answer;
+  let creates = 0;
+  const { flow } = setup({ create: () => { creates++; return creates === 1 ? new Promise((r) => { answer = r; }) : Promise.resolve({ vm: { vmid: 2 } }); } });
+  const first = flow.submit(BODY);
+  flow.abandon();
+  answer({ vm: { vmid: 1 } });
+  await first;
+  assert.equal(flow.state().phase, 'idle');
+  const s = await flow.submit(BODY);
+  assert.equal(s.phase, 'succeeded');
+  assert.equal(s.result.vm.vmid, 2);
+});

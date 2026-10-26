@@ -261,7 +261,9 @@ test('destroy confirm blocks', () => {
   assert.match(s, /"label":"Cancelar"/);
   assert.match(s, /"action":"vm:confirm:177","label":"Destruir VM","style":"danger"/);
   assert.doesNotMatch(s, /"style":"error"/);
-  const e = vms.destroyBlocks({ vmid: 177, name: 'jibri-1', error: 'Digite jibri-1 para confirmar.' });
+  assert.equal(input.value, '');
+  const e = vms.destroyBlocks({ vmid: 177, name: 'jibri-1', error: 'Digite jibri-1 para confirmar.', typed: 'jibri' });
+  assert.equal(e.find((x) => x.type === 'input').value, 'jibri', 'o que foi digitado volta no redesenho');
   assert.deepEqual(e.find((x) => x.style === 'error'), { type: 'text', style: 'error', text: 'Digite jibri-1 para confirmar.' });
 });
 

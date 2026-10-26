@@ -391,8 +391,13 @@ async function doLogin() {
 }
 
 // O que as áreas guardaram de quem estava logado (a lista, o destruir pela metade).
+// A criação em curso é largada (`flow.abandon()`): para de acompanhar, sem banner pra
+// uma sessão que acabou; a VM, se sair, aparece na lista de quem entrar depois.
 function forgetAreas() {
   Object.assign(vmsState, { vms: [], loading: true, error: '', overview: null, destroy: null });
+  flow.abandon();
+  create.gen++; // um catálogo que ainda chega é de quem saiu
+  Object.assign(create, { form: null, options: null, bridge: '', loading: false, loadError: '', ip: freshIp(), errors: [], flowError: '', validating: false });
 }
 
 async function doLogout() {
@@ -476,6 +481,8 @@ async function runRowAction(vmid, kind, call) {
   await render();
 }
 
+const BUSY_DESTROY = 'essa VM ainda está no meio de outra ação; espere terminar e confirme de novo.';
+
 const ROW_CALLS = { start: 'startVm', stop: 'stopVm', backup: 'backupVm', ha: 'haVm' };
 
 /** A gaveta de detalhes: "Carregando…", uma busca, e as seções (ou o erro em vermelho). */
@@ -495,15 +502,22 @@ async function openDetail(vmid) {
 async function openDestroy(vmid) {
   const vm = vmById(vmid);
   if (!vm) return;
-  vmsState.destroy = { vmid, name: vm.name, error: '' };
+  vmsState.destroy = { vmid, name: vm.name, error: '', typed: '' };
   await openWindow('vm:destroy', 'Destruir VM', destroyBlocks(vmsState.destroy));
 }
 
 async function confirmDestroy(vmid, values) {
   const d = vmsState.destroy;
   if (!d || d.vmid !== vmid) return; // já foi (um enter atrasado) ou é de outra VM
-  if (String(values.confirm || '').trim() !== d.name) {
+  d.typed = String(values.confirm || '');
+  if (d.typed.trim() !== d.name) {
     d.error = `Digite ${d.name} para confirmar.`;
+    await updateWindow('vm:destroy', { blocks: destroyBlocks(d) });
+    return;
+  }
+  if (busy.get(vmid)) {
+    // Outra ação (ligar, desligar…) ainda corre nesta VM: diz na janela em vez de engolir.
+    d.error = BUSY_DESTROY;
     await updateWindow('vm:destroy', { blocks: destroyBlocks(d) });
     return;
   }
@@ -748,6 +762,9 @@ on('create', async (arg, values) => {
   if (arg === 'done') {
     flow.reset();
     await closeWindow('create');
+    state.target = 'vms';
+    // Aberta pelo `nova vm…` com a janela principal fechada: abre ela na lista.
+    if (!state.mainOpen) return openMain();
     return navigate('vms');
   }
   if (arg === 'back') {

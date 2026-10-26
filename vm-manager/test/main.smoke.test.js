@@ -98,6 +98,12 @@ function fakeApi(users, { failMe = 0, extra = {}, routes = {} } = {}) {
   });
 }
 
+/** Fecha a API de mentira de vez, até as conexões keep-alive (senão o processo do teste não sai). */
+function closeApi(api) {
+  api.server.close();
+  if (api.server.closeAllConnections) api.server.closeAllConnections();
+}
+
 /** Sobe o plugin e fala com ele como a janela. */
 // `script`: código rodado depois do require do main.js (com `m` = o módulo), pra ligar telas de mentira.
 // `openReply()`: o `open` que a janela responde a cada view.update.
@@ -250,7 +256,7 @@ function seed(dataDir, url, token, user) {
   );
 }
 
-test('sem token: abrir mostra o login, sem null e só json no stdout', async () => {
+test('sem token: abrir mostra o login, sem null e só json no stdout', { timeout: 15000 }, async () => {
   const api = await fakeApi({});
   const dataDir = tmpDir();
   const p = startPlugin({ dataDir, url: api.url });
@@ -269,12 +275,12 @@ test('sem token: abrir mostra o login, sem null e só json no stdout', async () 
     assert.equal(api.seen.length, 0, 'sem token não chama a API');
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, [], 'nada fora do protocolo no stdout');
 });
 
-test('sem rfw: abrir mostra o aviso em blocos', async () => {
+test('sem rfw: abrir mostra o aviso em blocos', { timeout: 15000 }, async () => {
   const dataDir = tmpDir();
   const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9' });
   try {
@@ -290,7 +296,7 @@ test('sem rfw: abrir mostra o aviso em blocos', async () => {
   assert.deepEqual(p.bad, []);
 });
 
-test('token guardado de admin: abrir chama /auth/me e cai em vms com a nav de admin', async () => {
+test('token guardado de admin: abrir chama /auth/me e cai em vms com a nav de admin', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'arthur@marrow.com.br', name: 'Arthur Fonseca', role: 'admin' };
   const api = await fakeApi({ 'tok-admin-123': user });
   const dataDir = tmpDir();
@@ -311,14 +317,14 @@ test('token guardado de admin: abrir chama /auth/me e cai em vms com a nav de ad
     assert.deepEqual(active, ['vms']);
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
   assert.ok(!p.lines.join('\n').includes('tok-admin-123'), 'o token não aparece no stdout');
   assert.ok(!p.stderr().includes('tok-admin-123'), 'o token não aparece no stderr');
 });
 
-test('usuário pendente: abrir cai em pending', async () => {
+test('usuário pendente: abrir cai em pending', { timeout: 15000 }, async () => {
   const user = { id: 'u2', email: 'novo@marrow.com.br', name: null, role: 'pending' };
   const api = await fakeApi({ 'tok-pend': user });
   const dataDir = tmpDir();
@@ -334,12 +340,12 @@ test('usuário pendente: abrir cai em pending', async () => {
     assert.equal(data.me.role, 'Pendente');
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('token recusado (401): volta pro login com o aviso de sessão expirada', async () => {
+test('token recusado (401): volta pro login com o aviso de sessão expirada', { timeout: 15000 }, async () => {
   const api = await fakeApi({});
   const dataDir = tmpDir();
   seed(dataDir, api.url, 'tok-velho', { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' });
@@ -354,12 +360,12 @@ test('token recusado (401): volta pro login com o aviso de sessão expirada', as
     assert.equal(fs.existsSync(path.join(dataDir, 'auth.json')), false);
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('API fora do ar: tela fatal com a mensagem, sem o token', async () => {
+test('API fora do ar: tela fatal com a mensagem, sem o token', { timeout: 15000 }, async () => {
   const dataDir = tmpDir();
   const url = 'http://127.0.0.1:9';
   seed(dataDir, url, 'tok-x', { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' });
@@ -378,7 +384,7 @@ test('API fora do ar: tela fatal com a mensagem, sem o token', async () => {
   assert.deepEqual(p.bad, []);
 });
 
-test('tentar de novo: a API volta e a tela sai do fatal', async () => {
+test('tentar de novo: a API volta e a tela sai do fatal', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' };
   const api = await fakeApi({ 'tok-r': user }, { failMe: 1 });
   const dataDir = tmpDir();
@@ -395,12 +401,12 @@ test('tentar de novo: a API volta e a tela sai do fatal', async () => {
     assertNoNull(p.mainData());
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('sair apaga o auth.json e volta pro login', async () => {
+test('sair apaga o auth.json e volta pro login', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'Ana Bia', role: 'viewer' };
   const api = await fakeApi({ 'tok-v': user });
   const dataDir = tmpDir();
@@ -418,12 +424,12 @@ test('sair apaga o auth.json e volta pro login', async () => {
     assertNoNull(p.mainData());
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('viewer que navega pra tela de admin vê o forbidden', async () => {
+test('viewer que navega pra tela de admin vê o forbidden', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'Ana Bia', role: 'viewer' };
   const api = await fakeApi({ 'tok-v2': user });
   const dataDir = tmpDir();
@@ -440,12 +446,12 @@ test('viewer que navega pra tela de admin vê o forbidden', async () => {
     assertNoNull(p.mainData());
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('mudar o url nas configurações volta pro login', async () => {
+test('mudar o url nas configurações volta pro login', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'Ana Bia', role: 'admin' };
   const api = await fakeApi({ 'tok-u': user });
   const dataDir = tmpDir();
@@ -460,12 +466,12 @@ test('mudar o url nas configurações volta pro login', async () => {
     assertNoNull(p.mainData());
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('shell.rfwtxt: tamanhos em double, chaves e parênteses balanceados', () => {
+test('shell.rfwtxt: tamanhos em double, chaves e parênteses balanceados', { timeout: 15000 }, () => {
   const src = fs.readFileSync(SHELL, 'utf8');
   // tira comentários, strings e cores 0x…
   const code = src
@@ -498,7 +504,23 @@ const POLL_SCREEN = `
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test('janela fechada (open:false) para o polling e não liga outro até reabrir', async () => {
+/** Espera `get()` ficar `quietMs` sem mudar (conferindo de 20 em 20 ms); desiste em `ms`. */
+async function waitStable(get, quietMs, what, ms = 5000) {
+  const end = Date.now() + ms;
+  let last = get();
+  let since = Date.now();
+  while (Date.now() < end) {
+    await pause(20);
+    const v = get();
+    if (v !== last) {
+      last = v;
+      since = Date.now();
+    } else if (Date.now() - since >= quietMs) return v;
+  }
+  throw new Error(`não assentou: ${what}`);
+}
+
+test('janela fechada (open:false) para o polling e não liga outro até reabrir', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'admin' };
   const api = await fakeApi({ 'tok-p': user }, { extra: { '/api/vms': [] } });
   const dataDir = tmpDir();
@@ -512,9 +534,10 @@ test('janela fechada (open:false) para o polling e não liga outro até reabrir'
     await p.call('command.invoke', { command: 'abrir', context: {} });
     await p.waitFor(() => polls() >= 3, 'polling de /api/vms');
     open = false; // a pessoa fechou a janela
-    await p.waitFor(() => p.requests.some((r) => r.method === 'view.update' && r.params.data && r.params.data.vms && polls() > 3), 'um update depois de fechar');
-    await pause(150);
-    const [pollsAfter, updatesAfter] = [polls(), updates()];
+    // O tick que estava no ar ainda termina; espera a contagem parar de vez (10
+    // intervalos de 40 ms sem mudar) em vez de uma pausa fixa, que falhava com a máquina carregada.
+    const pollsAfter = await waitStable(() => polls() * 1000 + updates(), 400, 'polling parado com a janela fechada').then(() => polls());
+    const updatesAfter = updates();
     await pause(300);
     assert.equal(polls(), pollsAfter, 'sem polling com a janela fechada');
     assert.equal(updates(), updatesAfter, 'sem view.update com a janela fechada');
@@ -522,7 +545,7 @@ test('janela fechada (open:false) para o polling e não liga outro até reabrir'
     // navegar com a janela fechada não liga o poller da outra tela
     p.send('view.action', { viewId: 'vmm', action: 'nav', values: { to: 'ceph' } }, { notify: true });
     await p.waitFor(() => api.seen.filter((r) => r.url === '/api/auth/me').length >= 2, '/auth/me do nav');
-    await pause(300);
+    await waitStable(() => api.seen.length, 400, 'nav com a janela fechada assentou');
     assert.equal(polls(), pollsAfter, 'onEnter não roda com a janela fechada');
 
     // reabrir liga de novo
@@ -531,12 +554,12 @@ test('janela fechada (open:false) para o polling e não liga outro até reabrir'
     await p.waitFor(() => polls() >= pollsAfter + 2, 'polling de volta depois de reabrir');
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('nova vm… de um viewer com a janela fechada dá o recado', async () => {
+test('nova vm… de um viewer com a janela fechada dá o recado', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'viewer' };
   const api = await fakeApi({ 'tok-n': user });
   const dataDir = tmpDir();
@@ -550,12 +573,12 @@ test('nova vm… de um viewer com a janela fechada dá o recado', async () => {
     assert.equal(p.requests.some((r) => r.method === 'view.open'), false);
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('nova vm… de um pendente com a janela fechada dá o recado', async () => {
+test('nova vm… de um pendente com a janela fechada dá o recado', { timeout: 15000 }, async () => {
   const user = { id: 'u1', email: 'a@b.c', name: 'A', role: 'pending' };
   const api = await fakeApi({ 'tok-q': user });
   const dataDir = tmpDir();
@@ -568,12 +591,12 @@ test('nova vm… de um pendente com a janela fechada dá o recado', async () => 
     assert.equal(b.params.text, 'Acesso pendente de aprovação.');
   } finally {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });
 
-test('router: numa janela de blocos, values.action não sequestra a ação', async () => {
+test('router: numa janela de blocos, values.action não sequestra a ação', { timeout: 15000 }, async () => {
   const dataDir = tmpDir();
   const script = `
     m.on('pick', (arg) => m.banner('pick:' + arg));
@@ -598,24 +621,33 @@ const ADMIN = { id: 'u1', email: 'a@b.c', name: 'Ana Admin', role: 'admin' };
 const VIEWER = { id: 'u2', email: 'v@b.c', name: 'Vera Viewer', role: 'viewer' };
 
 /** Um plugin já logado (admin por padrão) com a tela de VMs aberta. */
-async function openVms({ user = ADMIN, routes = {}, extra = {}, env = {} } = {}) {
+// `open: false` só sobe e inicializa (a janela principal fica fechada).
+async function openVms({ user = ADMIN, routes = {}, extra = {}, env = {}, open = true } = {}) {
   const token = `tok-${user.role}-${Math.random().toString(36).slice(2)}`;
   const api = await fakeApi({ [token]: user }, { routes, extra: { ...CATALOG, '/api/vms/177': DETAIL, ...extra } });
   const dataDir = tmpDir();
   seed(dataDir, api.url, token, user);
   const p = startPlugin({ dataDir, url: api.url, env });
-  await p.init();
-  await p.call('command.invoke', { command: 'abrir', context: {} });
-  await p.waitFor(() => {
-    const d = p.mainData();
-    return d.screen === 'vms' && d.vms && d.vms.rows && d.vms.rows.length === 2 && d.vms.overview && d.vms.overview.loaded;
-  }, 'tela vms com as linhas e o overview');
-  const count = (method, path) => api.seen.filter((r) => r.method === method && r.path === path).length;
   const close = async () => {
     await p.stop();
-    api.server.close();
+    closeApi(api);
   };
-  return { p, api, count, close, token };
+  try {
+    await p.init();
+    if (open) {
+      await p.call('command.invoke', { command: 'abrir', context: {} });
+      await p.waitFor(() => {
+        const d = p.mainData();
+        return d.screen === 'vms' && d.vms && d.vms.rows && d.vms.rows.length === 2 && d.vms.overview && d.vms.overview.loaded;
+      }, 'tela vms com as linhas e o overview');
+    }
+  } catch (e) {
+    // Sem isso, um passo que falha aqui deixa o servidor e o main.js de pé e o node --test pendurado.
+    await close();
+    throw e;
+  }
+  const count = (method, path) => api.seen.filter((r) => r.method === method && r.path === path).length;
+  return { p, api, count, close, token, dataDir };
 }
 
 const blockTexts = (blocks) => {
@@ -639,7 +671,7 @@ const findBlock = (blocks, pred) => {
   return hit;
 };
 
-test('vms (admin): linhas, overview e ações na tela, sem null', async () => {
+test('vms (admin): linhas, overview e ações na tela, sem null', { timeout: 15000 }, async () => {
   const { p, close } = await openVms();
   try {
     const v = p.mainData().vms;
@@ -665,7 +697,7 @@ test('vms (admin): linhas, overview e ações na tela, sem null', async () => {
   assert.deepEqual(p.bad, []);
 });
 
-test('vms (viewer): sem ações, "Somente leitura", e uma ação forjada não chama a API', async () => {
+test('vms (viewer): sem ações, "Somente leitura", e uma ação forjada não chama a API', { timeout: 15000 }, async () => {
   const { p, close, api } = await openVms({ user: VIEWER, routes: { 'POST /api/vms/177/stop': () => ({ json: {} }) } });
   try {
     const v = p.mainData().vms;
@@ -686,7 +718,7 @@ test('vms (viewer): sem ações, "Somente leitura", e uma ação forjada não ch
   assert.deepEqual(p.bad, []);
 });
 
-test('ação de linha: passa pelo busy ("Aguarde…") e o clique duplo manda UM POST', async () => {
+test('ação de linha: passa pelo busy ("Aguarde…") e o clique duplo manda UM POST', { timeout: 15000 }, async () => {
   const { p, close, count } = await openVms({
     routes: { 'POST /api/vms/177/stop': () => ({ json: { ok: true }, delayMs: 300 }) },
   });
@@ -710,7 +742,7 @@ test('ação de linha: passa pelo busy ("Aguarde…") e o clique duplo manda UM 
   assert.deepEqual(p.bad, []);
 });
 
-test('ação de linha com erro: o banner vermelho na tela traz "<nome>: <mensagem>"', async () => {
+test('ação de linha com erro: o banner vermelho na tela traz "<nome>: <mensagem>"', { timeout: 15000 }, async () => {
   const { p, close } = await openVms({
     routes: { 'POST /api/vms/178/start': () => ({ status: 409, json: { statusCode: 409, message: 'Node sem memória' }, raw: true }) },
   });
@@ -723,7 +755,7 @@ test('ação de linha com erro: o banner vermelho na tela traz "<nome>: <mensage
   assert.deepEqual(p.bad, []);
 });
 
-test('destruir: nome errado não manda DELETE; o nome certo manda um', async () => {
+test('destruir: nome errado não manda DELETE; o nome certo manda um', { timeout: 15000 }, async () => {
   const { p, close, count } = await openVms({ routes: { 'DELETE /api/vms/177': () => ({ json: { ok: true } }) } });
   try {
     p.act('vmm', 'act', { action: 'vm:destroy:177' });
@@ -749,7 +781,7 @@ test('destruir: nome errado não manda DELETE; o nome certo manda um', async () 
   assert.deepEqual(p.bad, []);
 });
 
-test('detalhes: abre com "Carregando…" e mostra as seções e o link do NetBox', async () => {
+test('detalhes: abre com "Carregando…" e mostra as seções e o link do NetBox', { timeout: 15000 }, async () => {
   const { p, close, count } = await openVms({ routes: { 'GET /api/vms/177': () => ({ json: DETAIL, delayMs: 200 }) } });
   try {
     p.act('vmm', 'act', { a: 'vm:open:177' });
@@ -780,7 +812,7 @@ const FORM_VALUES = {
 };
 const RESULT = { vm: { ...VM_JIBRI, vmid: 300, name: 'nova-1', ipConfigured: '192.168.100.81/24' }, netbox: { id: 9, url: 'https://netbox.example/vm/9' }, backupSlot: '03:00', ha: true, warnings: [] };
 
-test('Nova VM: abre com o catálogo, os padrões e o IP automático', async () => {
+test('Nova VM: abre com o catálogo, os padrões e o IP automático', { timeout: 15000 }, async () => {
   const { p, close, count } = await openVms();
   try {
     const b = await openCreate(p);
@@ -811,7 +843,7 @@ test('Nova VM: abre com o catálogo, os padrões e o IP automático', async () =
   assert.deepEqual(p.bad, []);
 });
 
-test('dois create:submit seguidos mandam UM POST /vms', async () => {
+test('dois create:submit seguidos mandam UM POST /vms', { timeout: 15000 }, async () => {
   const { p, close, count, api } = await openVms({ routes: { 'POST /api/vms': () => ({ json: RESULT, delayMs: 300 }) } });
   try {
     await openCreate(p);
@@ -836,7 +868,7 @@ test('dois create:submit seguidos mandam UM POST /vms', async () => {
   assert.deepEqual(p.bad, []);
 });
 
-test('POST que estoura o timeout: acompanha, "nova vm…" no meio não reenvia, e mostra o resultado real', async () => {
+test('POST que estoura o timeout: acompanha, "nova vm…" no meio não reenvia, e mostra o resultado real', { timeout: 15000 }, async () => {
   let done = false;
   const { p, close, count } = await openVms({
     env: { VMM_CREATE_TIMEOUT_MS: '200', VMM_CREATE_POLL_MS: '60' },
@@ -874,7 +906,7 @@ test('POST que estoura o timeout: acompanha, "nova vm…" no meio não reenvia, 
   assert.deepEqual(p.bad, []);
 });
 
-test('janela da Nova VM fechada: o fim da criação vira banner', async () => {
+test('janela da Nova VM fechada: o fim da criação vira banner', { timeout: 15000 }, async () => {
   const { p, close } = await openVms({ routes: { 'POST /api/vms': () => ({ status: 400, json: { statusCode: 400, message: 'Sem espaço no storage' }, raw: true, delayMs: 200 }) } });
   try {
     await openCreate(p);
@@ -894,7 +926,7 @@ test('janela da Nova VM fechada: o fim da criação vira banner', async () => {
   assert.deepEqual(p.bad, []);
 });
 
-test('vms.rfwtxt: sem import, tamanhos em double e só construções da casca', () => {
+test('vms.rfwtxt: sem import, tamanhos em double e só construções da casca', { timeout: 15000 }, () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'ui', 'vms.rfwtxt'), 'utf8');
   assert.ok(!/^import /m.test(src), 'tela sem import');
   const code = src
@@ -911,7 +943,7 @@ test('vms.rfwtxt: sem import, tamanhos em double e só construções da casca', 
   assert.match(fs.readFileSync(SHELL, 'utf8'), /"vms": VmsScreen\(\)/);
 });
 
-test('a view de vms aguenta ctx.user null (um render logo depois do sair)', async () => {
+test('a view de vms aguenta ctx.user null (um render logo depois do sair)', { timeout: 15000 }, async () => {
   const dataDir = tmpDir();
   const script = `
     const out = m.screens.get('vms').view({ user: null, now: Date.now });
@@ -926,6 +958,86 @@ test('a view de vms aguenta ctx.user null (um render logo depois do sair)', asyn
     assert.equal(v.header.newVm, false);
   } finally {
     await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+// --- Task 8, fix 1 ---------------------------------------------------------------------
+
+test('"Ver todas as VMs" com a janela principal fechada abre ela na lista', { timeout: 15000 }, async () => {
+  const { p, close } = await openVms({ open: false, routes: { 'POST /api/vms': () => ({ json: RESULT }) } });
+  try {
+    await p.call('command.invoke', { command: 'nova', context: {} });
+    await p.waitFor(() => findBlock(p.windowBlocks('create'), (b) => b.action === 'create:submit'), 'Nova VM pelo comando');
+    assert.equal(p.requests.some((r) => r.method === 'view.open' && r.params.viewId === 'vmm'), false, 'a principal estava fechada');
+    p.act('create', 'create:submit', FORM_VALUES);
+    await p.waitFor(() => blockTexts(p.windowBlocks('create')).includes('VM criada 🎉'), 'sucesso');
+    p.act('create', 'create:done', {});
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.open' && r.params.viewId === 'vmm'), 'abre a janela principal');
+    await p.waitFor(() => p.mainData().screen === 'vms' && p.mainData().vms && p.mainData().vms.rows.length === 2, 'na lista');
+    assert.ok(p.requests.some((r) => r.method === 'view.close' && r.params.viewId === 'create'));
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('destruir confirmado com a VM ocupada: o erro aparece na janela e não sai DELETE', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openVms({
+    routes: {
+      'POST /api/vms/177/stop': () => ({ json: { ok: true }, delayMs: 800 }),
+      'DELETE /api/vms/177': () => ({ json: { ok: true } }),
+    },
+  });
+  try {
+    p.act('vmm', 'act', { action: 'vm:destroy:177' });
+    await p.waitFor(() => p.windowBlocks('vm:destroy'), 'confirmação');
+    p.act('vmm', 'act', { a: 'vm:stop:177' });
+    await p.waitFor(() => p.mainData().vms.rows[0].busyAction === 'stop', 'ocupada');
+    p.act('vm:destroy', 'vm:confirm:177', { confirm: 'jibri-1' });
+    await p.waitFor(() => blockTexts(p.windowBlocks('vm:destroy')).includes('essa VM ainda está no meio de outra ação; espere terminar e confirme de novo.'), 'erro de ocupada');
+    assert.equal(findBlock(p.windowBlocks('vm:destroy'), (b) => b.id === 'confirm').value, 'jibri-1', 'o texto digitado fica');
+    assert.equal(p.requests.some((r) => r.method === 'view.close' && r.params.viewId === 'vm:destroy'), false, 'a janela fica');
+    await p.waitFor(() => p.mainData().vms.rows[0].busyAction === '', 'livre', 3000);
+    assert.equal(count('DELETE', '/api/vms/177'), 0);
+    p.act('vm:destroy', 'vm:confirm:177', { confirm: 'jibri-1' });
+    await p.waitFor(() => count('DELETE', '/api/vms/177') === 1, 'agora sim, um DELETE');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('sair larga a criação (sem banner, sem mais consultas) e o próximo formulário vem limpo', { timeout: 15000 }, async () => {
+  const { p, close, count, api, dataDir, token } = await openVms({
+    env: { VMM_CREATE_TIMEOUT_MS: '150', VMM_CREATE_POLL_MS: '50' },
+    routes: {
+      'POST /api/vms': () => ({ json: RESULT, delayMs: 1000 }),
+      'GET /api/vms/creations/digitado': () => ({ json: { status: 'running', startedAt: '', finishedAt: null, result: null, error: null } }),
+    },
+  });
+  try {
+    await openCreate(p);
+    p.act('create', 'create:submit', { ...FORM_VALUES, name: 'digitado' });
+    await p.waitFor(() => count('GET', '/api/vms/creations/digitado') >= 2, 'acompanhando');
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    const n = await waitStable(() => count('GET', '/api/vms/creations/digitado'), 300, 'consultas pararam');
+    await pause(300);
+    assert.equal(count('GET', '/api/vms/creations/digitado'), n, 'sem consultas depois de sair');
+    assert.equal(p.requests.some((r) => r.method === 'window.showBanner'), false, 'sem banner pra quem saiu');
+    // outra pessoa entra (o auth.json de novo) e abre a Nova VM: formulário limpo
+    seed(dataDir, api.url, token, ADMIN);
+    await p.call('command.invoke', { command: 'nova', context: {} });
+    await p.waitFor(() => {
+      const o = p.requests.filter((r) => r.method === 'view.open' && r.params.viewId === 'create').pop();
+      const b = o && p.windowBlocks('create');
+      return b && findBlock(b, (x) => x.id === 'name') && findBlock(b, (x) => x.action === 'create:submit');
+    }, 'formulário novo');
+    assert.equal(findBlock(p.windowBlocks('create'), (x) => x.id === 'name').value, '', 'sem o que a outra pessoa digitou');
+    assert.equal(count('POST', '/api/vms'), 1);
+  } finally {
+    await close();
   }
   assert.deepEqual(p.bad, []);
 });
