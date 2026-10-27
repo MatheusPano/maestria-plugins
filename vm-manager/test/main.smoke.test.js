@@ -237,6 +237,7 @@ function startPlugin({ dataDir, url, script = '', openReply = () => true, window
       settings: { url },
       rfw: 2,
       modal: 1,
+      textInput: 1,
       ...extra,
     });
   }
@@ -258,8 +259,16 @@ function startPlugin({ dataDir, url, script = '', openReply = () => true, window
   return { child, lines, bad, requests, call, send, act, waitFor, mainData, windowBlocks, stop, init, stderr: () => stderr };
 }
 
+// Os dataDir de cada teste somem no fim dele (sem deixar /tmp/vmm-smoke-* pra trás).
+const made = [];
+test.afterEach(() => {
+  for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'vmm-smoke-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vmm-smoke-'));
+  made.push(dir);
+  return dir;
 }
 
 function seed(dataDir, url, token, user, { obtainedAt = Date.now(), expiresAt = obtainedAt + 24 * 3600 * 1000 } = {}) {
@@ -2681,6 +2690,56 @@ test('o token vence com a janela aberta: a próxima chamada volta pro login com 
     closeApi(api);
   }
   assert.deepEqual(p.bad, []);
+});
+
+test('scrub: NaN e Infinity viram 0 (o JSON os mandaria como null)', { timeout: 15000 }, async () => {
+  const dataDir = tmpDir();
+  const script = `
+    const out = m.scrub({ a: NaN, b: Infinity, c: [-Infinity, 1.5], d: { pct: 0 / 0 }, e: 'x', f: null });
+    process.stderr.write('OUT=' + JSON.stringify(out) + '\\n');
+  `;
+  const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9', script });
+  try {
+    await p.waitFor(() => /OUT=.*\n/.test(p.stderr()), 'a saída no stderr');
+    const out = JSON.parse(p.stderr().match(/OUT=(.*)\n/)[1]);
+    assert.deepEqual(out, { a: 0, b: 0, c: [0, 1.5], d: { pct: 0 }, e: 'x', f: '' });
+    assertNoNull(out);
+  } finally {
+    await p.stop();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('shell.rfwtxt: a raiz é um widget simples e o switch mora no Screen', { timeout: 15000 }, () => {
+  const src = fs.readFileSync(SHELL, 'utf8');
+  assert.match(src, /^widget root = Screen\(\);$/m);
+  assert.match(src, /^widget Screen = switch data\.screen \{$/m);
+});
+
+test('sem o textInput na Maestria, as buscas somem (data.textInput e o switch em toda busca)', { timeout: 15000 }, async () => {
+  const ui = path.join(__dirname, '..', 'ui');
+  let inputs = 0;
+  let guarded = 0;
+  for (const f of fs.readdirSync(ui).filter((x) => x.endsWith('.rfwtxt'))) {
+    const src = fs.readFileSync(path.join(ui, f), 'utf8').replace(/\/\/[^\n]*/g, '');
+    inputs += (src.match(/\bTextInput\(/g) || []).length;
+    guarded += (src.match(/switch data\.textInput \{\s*true: SizedBox\(\s*width: [\d.]+,\s*child: TextInput\(/g) || []).length;
+  }
+  assert.ok(inputs > 0);
+  assert.equal(guarded, inputs, 'todo TextInput atrás do switch data.textInput');
+  for (const [extra, want] of [[{ textInput: undefined }, false], [{ textInput: 1 }, true]]) {
+    const dataDir = tmpDir();
+    const p = startPlugin({ dataDir, url: 'http://127.0.0.1:9' });
+    try {
+      await p.init(extra);
+      await p.call('command.invoke', { command: 'abrir', context: {} });
+      const open = await p.waitFor(() => p.requests.find((r) => r.method === 'view.open' && r.params.viewId === 'vmm'), 'view.open');
+      assert.equal(open.params.data.textInput, want);
+    } finally {
+      await p.stop();
+    }
+    assert.deepEqual(p.bad, []);
+  }
 });
 
 /** O login pelo navegador: o endereço que o plugin pediu pra abrir. */

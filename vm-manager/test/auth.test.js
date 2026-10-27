@@ -7,8 +7,16 @@ const os = require('node:os');
 const path = require('node:path');
 const auth = require('../lib/auth');
 
+// Os diretórios de cada teste somem no fim dele.
+const made = [];
+test.afterEach(() => {
+  for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
 function tmpFile() {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'vmm-auth-')), 'auth.json');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vmm-auth-'));
+  made.push(dir);
+  return path.join(dir, 'auth.json');
 }
 
 const REC = {

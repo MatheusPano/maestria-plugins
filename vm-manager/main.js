@@ -65,7 +65,7 @@ const OUTDATED = [
 const NAV_ICON = { vms: 'device', create: 'add', ceph: 'drive', buckets: 'box', routes: 'network', users: 'user', audit: 'report' };
 
 const state = {
-  caps: { rfw: false, modal: false },
+  caps: { rfw: false, modal: false, textInput: false },
   dataDir: '',
   settings: {},
   url: DEFAULT_URL,
@@ -99,6 +99,7 @@ const isUnauthorized = (e) => e instanceof ApiError && e.status === 401;
 /** O RFW não aceita null no `data`: o que escapar vira ''. Rede de segurança; as telas já mandam sem. */
 function scrub(v) {
   if (v === null || v === undefined) return '';
+  if (typeof v === 'number' && !Number.isFinite(v)) return 0; // NaN/Infinity viram null no JSON
   if (Array.isArray(v)) return v.map(scrub);
   if (typeof v === 'object') {
     const out = {};
@@ -224,6 +225,8 @@ function buildData() {
     },
     login: { message: state.login.message, busy: state.login.busy },
     fatal: { message: state.fatal },
+    // Sem o `TextInput` (Maestria sem `textInput`), as telas escondem as buscas.
+    textInput: state.caps.textInput,
   };
   const scr = screens.get(state.screen);
   if (scr && scr.view) {
@@ -2054,7 +2057,7 @@ function forgetAdmin() {
 // --- o protocolo -----------------------------------------------------------------------
 
 mx.onRequest('initialize', (params) => {
-  state.caps = { rfw: Number(params.rfw) >= 1, modal: Number(params.modal) >= 1 };
+  state.caps = { rfw: Number(params.rfw) >= 1, modal: Number(params.modal) >= 1, textInput: Number(params.textInput) >= 1 };
   state.dataDir = params.dataDir || path.join(os.homedir(), '.maestria', 'data', 'maestria.vm-manager');
   state.settings = params.settings || {};
   state.url = urlSetting();
@@ -2146,4 +2149,4 @@ process.on('SIGTERM', () => {
 mx.start();
 
 // Pras telas das áreas e pros testes (o smoke test liga telas de mentira por aqui).
-module.exports = { state, screens, registerScreen, on, render, navigate, openWindow, updateWindow, closeWindow, banner, ctx, MAIN };
+module.exports = { state, screens, registerScreen, on, render, navigate, openWindow, updateWindow, closeWindow, banner, ctx, scrub, MAIN };

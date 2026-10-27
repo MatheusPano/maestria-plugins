@@ -137,15 +137,18 @@ widget RoutesToolbar = Wrap(
   spacing: 8.0,
   runSpacing: 8.0,
   children: [
-    SizedBox(
-      width: 360.0,
-      child: TextInput(
-        id: "routes.search",
-        placeholder: "Buscar hostname, backend ou IP",
-        allowEmpty: true,
-        onSubmit: event "act" { a: "route:search" },
+    switch data.textInput {
+      true: SizedBox(
+        width: 360.0,
+        child: TextInput(
+          id: "routes.search",
+          placeholder: "Buscar hostname, backend ou IP",
+          allowEmpty: true,
+          onSubmit: event "act" { a: "route:search" },
+        ),
       ),
-    ),
+      default: SizedBox(),
+    },
     ...for f in data.routes.filters:
       RouteFilter(f: f),
   ],

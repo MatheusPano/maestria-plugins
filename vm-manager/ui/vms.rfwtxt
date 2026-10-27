@@ -223,15 +223,19 @@ widget VmsToolbar = Wrap(
   spacing: 8.0,
   runSpacing: 8.0,
   children: [
-    SizedBox(
-      width: 320.0,
-      child: TextInput(
-        id: "vms.search",
-        placeholder: "Buscar",
-        allowEmpty: true,
-        onSubmit: event "act" { a: "vm:search" },
+    // Sem o `TextInput` na Maestria, sem a busca.
+    switch data.textInput {
+      true: SizedBox(
+        width: 320.0,
+        child: TextInput(
+          id: "vms.search",
+          placeholder: "Buscar",
+          allowEmpty: true,
+          onSubmit: event "act" { a: "vm:search" },
+        ),
       ),
-    ),
+      default: SizedBox(),
+    },
     ...for f in data.vms.filters:
       FilterChip(f: f),
   ],

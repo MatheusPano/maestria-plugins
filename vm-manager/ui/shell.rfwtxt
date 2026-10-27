@@ -5,15 +5,20 @@
 // deste (sem os `import`), e entram no `switch` do `Body`.
 //
 // Os dados chegam em `data`: `screen`, `nav` (grupos com `items`), `me`,
-// `login { message, busy }`, `fatal { message }` e uma chave por tela. As cores
-// são as do tema (`data.theme`). Os cliques voltam como `event "nav" { to }`,
-// `"login"`, `"logout"` e `"retry"`.
+// `login { message, busy }`, `fatal { message }`, `textInput` (a Maestria tem o
+// `TextInput`; sem ele as buscas somem) e uma chave por tela. As cores são as do
+// tema (`data.theme`). Os cliques voltam como `event "nav" { to }`, `"login"`,
+// `"logout"`, `"retry"` e, no login esperando o navegador, `"act"` com
+// `login:reopen` e `login:cancel`.
 
 import core.widgets;
 import maestria;
 
+// A raiz é um widget simples; o `switch` mora no `Screen`.
+widget root = Screen();
+
 // O login e o pendente ocupam a tela toda, como na web; o resto tem a lateral.
-widget root = switch data.screen {
+widget Screen = switch data.screen {
   "login": LoginScreen(),
   "pending": PendingScreen(),
   default: Row(

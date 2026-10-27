@@ -179,15 +179,18 @@ widget CephImages = switch args.i.visible {
           SizedBox(width: 8.0),
           Text(text: args.i.countText, style: { fontSize: 12.0, color: data.theme.faint }),
           Expanded(child: SizedBox()),
-          SizedBox(
-            width: 320.0,
-            child: TextInput(
-              id: args.i.searchId,
-              placeholder: "Buscar imagem ou VM",
-              allowEmpty: true,
-              onSubmit: event "act" { a: "ceph:search" },
+          switch data.textInput {
+            true: SizedBox(
+              width: 320.0,
+              child: TextInput(
+                id: args.i.searchId,
+                placeholder: "Buscar imagem ou VM",
+                allowEmpty: true,
+                onSubmit: event "act" { a: "ceph:search" },
+              ),
             ),
-          ),
+            default: SizedBox(),
+          },
         ],
       ),
       VmsError(text: args.i.error),
@@ -408,15 +411,18 @@ widget BucketsScreen = SingleChildScrollView(
       SizedBox(height: 20.0),
       Align(
         alignment: { x: -1.0, y: 0.0 },
-        child: SizedBox(
-          width: 320.0,
-          child: TextInput(
-            id: "buckets.search",
-            placeholder: "Buscar bucket ou dono",
-            allowEmpty: true,
-            onSubmit: event "act" { a: "bucket:search" },
+        child: switch data.textInput {
+          true: SizedBox(
+            width: 320.0,
+            child: TextInput(
+              id: "buckets.search",
+              placeholder: "Buscar bucket ou dono",
+              allowEmpty: true,
+              onSubmit: event "act" { a: "bucket:search" },
+            ),
           ),
-        ),
+          default: SizedBox(),
+        },
       ),
       VmsError(text: data.buckets.error),
       SizedBox(height: 14.0),
