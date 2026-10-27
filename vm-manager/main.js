@@ -410,10 +410,12 @@ async function doLogin() {
 
 // O que as áreas guardaram de quem estava logado (a lista, o destruir pela metade).
 // A criação em curso é largada (`flow.abandon()`): para de acompanhar, sem banner pra
-// uma sessão que acabou; a VM, se sair, aparece na lista de quem entrar depois.
-function forgetAreas() {
-  Object.assign(vmsState, { vms: [], loading: true, error: '', overview: null, destroy: null });
-  flow.abandon();
+// uma sessão que acabou; a VM, se sair, aparece na lista de quem entrar depois. Na
+// sessão que expirou (`keepCreate`), a criação segue: o acompanhamento volta a ler
+// assim que a pessoa entrar de novo, e o fim vira banner.
+function forgetAreas({ keepCreate = false } = {}) {
+  Object.assign(vmsState, { vms: [], loading: true, error: '', overview: null, destroy: null, gen: vmsState.gen + 1 });
+  if (!keepCreate) flow.abandon();
   create.gen++; // um catálogo que ainda chega é de quem saiu
   Object.assign(create, { form: null, options: null, bridge: '', loading: false, loadError: '', ip: freshIp(), errors: [], flowError: '', validating: false });
   forgetStorage(); // Ceph, buckets, o "Novo bucket" e as credenciais (com as secret keys)
@@ -436,11 +438,10 @@ async function doLogout() {
 
 function onExpired() {
   state.poller.stopAll();
-  jobPoller.stopAll();
   // Antes de fechar as janelas: sem a sessão não há o que acompanhar, e o "continua em segundo
-  // plano" de uma rota não vem junto com o recado de sessão expirada.
-  wizard = null;
-  removal = null;
+  // plano" de uma rota não vem junto com o recado de sessão expirada (o forgetRoutes larga o
+  // wizard, a remoção e os jobs). A criação de VM fica: volta a acompanhar depois do login.
+  forgetAreas({ keepCreate: true });
   closeWindows();
   state.login = { message: EXPIRED, busy: false };
   switchTo('login');
@@ -469,24 +470,30 @@ const currentAdmin = () => !!state.session && isAdmin(state.session.user());
 // o overview a cada 15 s, só com a janela principal aberta; o erro do overview é
 // ignorado, como na web. Cada ação de linha passa pela trava por VM (`busy`).
 
-const vmsState = { vms: [], loading: true, error: '', query: '', filter: 'all', overview: null, destroy: null };
+// `gen` troca quando quem estava logado sai: uma resposta que ainda chega é largada.
+const vmsState = { gen: 0, vms: [], loading: true, error: '', query: '', filter: 'all', overview: null, destroy: null };
 const busy = createBusy();
 
 async function loadVms() {
+  const gen = vmsState.gen;
   try {
     const list = await api().vms();
+    if (gen !== vmsState.gen) return;
     vmsState.vms = Array.isArray(list) ? list : [];
     vmsState.error = '';
   } catch (e) {
+    if (gen !== vmsState.gen) return;
     if (!isUnauthorized(e)) vmsState.error = errText(e); // o 401 já leva ao login
   } finally {
-    vmsState.loading = false;
+    if (gen === vmsState.gen) vmsState.loading = false;
   }
 }
 
 async function loadOverview() {
+  const gen = vmsState.gen;
   try {
-    vmsState.overview = await api().overview();
+    const ov = await api().overview();
+    if (gen === vmsState.gen) vmsState.overview = ov;
   } catch {
     // como na web: o overview some quieto
   }
@@ -695,6 +702,7 @@ async function fetchAutoIp({ quiet = false } = {}) {
     create.ip.auto = { cidr: create.ip.auto.cidr, loading: true };
     await renderCreate();
   }
+  const gen = create.gen;
   let cidr = '';
   try {
     const free = await api().ipamNextFree(gw);
@@ -702,6 +710,7 @@ async function fetchAutoIp({ quiet = false } = {}) {
   } catch {
     // sem IP livre / NetBox off
   }
+  if (gen !== create.gen) return null; // de quem saiu (ou de um formulário que já foi)
   create.ip.auto = { cidr, loading: false };
   return quiet ? null : renderCreate();
 }
@@ -740,7 +749,9 @@ async function suggestIp() {
 async function submitCreate() {
   // Com uma criação andando (ou a anterior ainda validando), só mostra o estado dela.
   if (flow.state().phase !== 'idle' || create.validating) return renderCreate();
-  create.validating = true;
+  const mine = {}; // esta validação (o forgetAreas zera, e outra pode começar)
+  create.validating = mine;
+  const gen = create.gen; // sair/trocar o url/um formulário novo no meio: não manda o POST
   try {
     const f = create.form;
     if (!f.ipAuto) {
@@ -755,12 +766,13 @@ async function submitCreate() {
     } else if (!create.ip.auto.cidr) {
       await fetchAutoIp({ quiet: true });
     }
+    if (gen !== create.gen || !currentAdmin()) return null;
     create.flowError = '';
     create.errors = cf.validate(f, { auto: { cidr: create.ip.auto.cidr }, manual: create.ip.check });
     if (create.errors.length) return renderCreate();
     flow.submit(cf.buildBody(f)); // a fase vira `submitting` aqui mesmo; o onChange redesenha
   } finally {
-    create.validating = false;
+    if (create.validating === mine) create.validating = false;
   }
   return null;
 }

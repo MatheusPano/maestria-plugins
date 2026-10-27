@@ -2692,6 +2692,94 @@ test('o token vence com a janela aberta: a próxima chamada volta pro login com 
   assert.deepEqual(p.bad, []);
 });
 
+test('a lista de VMs que chega depois de sair não aparece pra quem entra de novo', { timeout: 15000 }, async () => {
+  let phase = 'normal';
+  const { p, close, count, api, dataDir, token } = await openVms({
+    routes: {
+      'GET /api/vms': () => (phase === 'old' ? { json: [VM_JIBRI, VM_DB], delayMs: 400 } : phase === 'new' ? { json: [], delayMs: 900 } : { json: [VM_JIBRI, VM_DB] }),
+    },
+  });
+  try {
+    phase = 'old';
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    seed(dataDir, api.url, token, ADMIN);
+    const before = count('GET', '/api/vms');
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => count('GET', '/api/vms') > before, 'a lista (lenta) no ar');
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => !fs.existsSync(path.join(dataDir, 'auth.json')), 'saiu');
+    phase = 'new';
+    seed(dataDir, api.url, token, ADMIN);
+    const mark = p.requests.length;
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => { const d = p.mainData(); return d.screen === 'vms' && d.vms && d.vms.empty === 'Nenhuma VM encontrada.'; }, 'a lista nova (vazia)', 5000);
+    const stale = p.requests.slice(mark).filter((r) => r.params && r.params.viewId === 'vmm' && r.params.data && r.params.data.vms && r.params.data.vms.rows.length > 0);
+    assert.deepEqual(stale.map((r) => r.params.data.vms.rows.length), [], 'sem as linhas de quem saiu');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('sair com a validação do IP no ar: o POST /vms não sai', { timeout: 15000 }, async () => {
+  const { p, close, count } = await openVms({
+    routes: { 'GET /api/ipam/check': () => ({ json: { available: true }, delayMs: 400 }), 'POST /api/vms': () => ({ json: RESULT }) },
+  });
+  try {
+    await openCreate(p);
+    p.act('create', 'create:submit', { ...FORM_VALUES, ipAuto: false, ipCidr: '192.168.100.90/24' });
+    await p.waitFor(() => count('GET', '/api/ipam/check') >= 1, 'conferindo o IP');
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    await pause(700);
+    assert.equal(count('POST', '/api/vms'), 0, 'sem POST depois de sair');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('a sessão expira com a criação andando: as áreas esquecem, a criação segue e avisa depois do login', { timeout: 15000 }, async () => {
+  let done = false;
+  let gone = false;
+  const { p, close, count, api, dataDir, token } = await openVms({
+    env: { VMM_CREATE_TIMEOUT_MS: '150', VMM_CREATE_POLL_MS: '50' },
+    routes: {
+      'POST /api/vms': () => ({ json: RESULT, delayMs: 1000 }),
+      'GET /api/vms/creations/nova-1': () => ({
+        json: done
+          ? { status: 'succeeded', startedAt: '', finishedAt: '', result: RESULT, error: null }
+          : { status: 'running', startedAt: '', finishedAt: null, result: null, error: null },
+      }),
+      'GET /api/vms/177': () => (gone ? { status: 401, json: { statusCode: 401, message: 'Unauthorized' }, raw: true } : { json: DETAIL }),
+    },
+  });
+  try {
+    await openCreate(p);
+    p.act('create', 'create:submit', FORM_VALUES);
+    await p.waitFor(() => count('GET', '/api/vms/creations/nova-1') >= 2, 'acompanhando');
+    gone = true;
+    p.act('vmm', 'act', { a: 'vm:open:177' });
+    await p.waitFor(() => p.mainData().screen === 'login' && p.mainData().login.message === EXPIRED_TEXT, 'login expirado');
+    assert.equal(p.requests.some((r) => r.method === 'window.showBanner'), false);
+    // entra de novo (o auth.json de volta): a lista abre "Carregando…", sem as linhas de antes
+    seed(dataDir, api.url, token, ADMIN);
+    const mark = p.requests.length;
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    const open = await p.waitFor(() => p.requests.slice(mark).find((r) => r.method === 'view.open' && r.params.viewId === 'vmm'), 'reabre');
+    assert.equal(open.params.data.vms.rows.length, 0, 'a lista de antes foi esquecida');
+    assert.equal(open.params.data.vms.empty, 'Carregando VMs…');
+    done = true;
+    const b = await p.waitFor(() => p.requests.find((r) => r.method === 'window.showBanner'), 'banner do fim da criação', 5000);
+    assert.equal(b.params.text, 'VM nova-1 criada.');
+    assert.equal(count('POST', '/api/vms'), 1);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
 test('scrub: NaN e Infinity viram 0 (o JSON os mandaria como null)', { timeout: 15000 }, async () => {
   const dataDir = tmpDir();
   const script = `
