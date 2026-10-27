@@ -2295,6 +2295,44 @@ test('usuários: dois papéis diferentes na mesma linha durante o PATCH mandam U
   assert.deepEqual(p.bad, []);
 });
 
+test('usuários: reentrar na tela durante um PATCH lento não deixa a linha travada, e a linha fica com o papel novo', { timeout: 15000 }, async () => {
+  const { p, close, api, count } = await openUsers({
+    extra: { '/api/audit': { data: [], pagination: null } },
+    routes: { 'PATCH /api/users/2/role': (req, body) => ({ json: { ...PEOPLE[1], role: body.role }, delayMs: 600 }) },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'user:approve:2' });
+    await p.waitFor(() => p.mainData().users.rows[1].saving === true, 'salvando');
+    const lists = count('GET', '/api/users');
+    p.act('vmm', 'nav', { to: 'audit' });
+    await p.waitFor(() => p.mainData().screen === 'audit', 'auditoria');
+    p.act('vmm', 'nav', { to: 'users' });
+    await p.waitFor(() => p.mainData().screen === 'users' && count('GET', '/api/users') >= lists + 2, 'releu a lista');
+    await p.waitFor(() => patches(api).length === 1 && p.mainData().users.rows[1].saving === false, 'destravou', 3000);
+    const row = p.mainData().users.rows[1];
+    assert.equal(row.roleLabel, 'Viewer');
+    assert.equal(row.canChange, true);
+    assert.equal(p.mainData().users.pending, '');
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('usuários: ações de usuário fora da tela de usuários não chamam a API', { timeout: 15000 }, async () => {
+  const { p, close, api } = await openUsers({ routes: { 'PATCH /api/users/2/role': () => ({ json: PEOPLE[1] }) } });
+  try {
+    p.act('vmm', 'nav', { to: 'vms' });
+    await p.waitFor(() => p.mainData().screen === 'vms', 'vms');
+    p.act('vmm', 'act', { a: 'user:approve:2' });
+    await pause(250);
+    assert.equal(patches(api).length, 0);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
 test('usuários: um 403 (rebaixado noutro lugar) relê o /auth/me e cai no "só admins"', { timeout: 15000 }, async () => {
   const me = { ...ME };
   const { p, close, api } = await openUsers({
@@ -2569,6 +2607,29 @@ test('rotas: fechar a remoção com o DELETE andando avisa; fechar sem pedido an
     p.send('event', { type: 'view.closed', viewId: W }, { notify: true });
     await p.waitFor(() => banners(p).length > 0, 'banner');
     assert.deepEqual(banners(p), ['A remoção de app.cefis.cloud continua em segundo plano; confira na Auditoria e use Ler agora.']);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('rotas: a sessão que expira com o POST andando volta pro login sem o banner de "segundo plano"', { timeout: 15000 }, async () => {
+  const { p, close } = await openRoutes({
+    routes: {
+      'POST /api/routes/plan': () => ({ json: PLAN }),
+      'POST /api/routes': () => ({ status: 401, json: { statusCode: 401, message: 'Unauthorized' }, raw: true, delayMs: 300 }),
+    },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'route:new' });
+    await p.waitFor(() => p.windowBlocks('route:new'), 'abre');
+    p.act('route:new', 'route:review', NEW_VALUES);
+    await p.waitFor(() => allTexts(p.windowBlocks('route:new')).includes('2 de 2 · Revisão'), 'revisão');
+    p.act('route:new', 'route:apply', { confirm: 'novo.cefis.cloud' });
+    await p.waitFor(() => p.mainData().screen === 'login' && p.mainData().login.message === 'Sua sessão expirou. Entre de novo.', 'login expirado');
+    await p.waitFor(() => p.requests.some((r) => r.method === 'view.close' && r.params.viewId === 'route:new'), 'fechou a janela');
+    await pause(200);
+    assert.deepEqual(banners(p).filter((t) => /segundo plano/.test(t)), []);
   } finally {
     await close();
   }

@@ -50,15 +50,6 @@ test('ACTION_LABEL has 14 entries', () => {
   assert.strictEqual(admin.ACTION_LABEL['route.apply'], 'Criar rota no firewall');
 });
 
-test('auditQuery omits empty', () => {
-  assert.strictEqual(admin.auditQuery({ page: 1, action: '', outcome: '', userId: 0 }), 'page=1');
-  assert.strictEqual(
-    admin.auditQuery({ page: 2, action: 'vm.create', outcome: 'failure', userId: 5 }),
-    'page=2&action=vm.create&outcome=failure&userId=5',
-  );
-  assert.strictEqual(admin.auditQuery({}), 'page=1');
-});
-
 test('withFilter resets page and expanded', () => {
   const next = admin.withFilter({ page: 3, expanded: 'x', outcome: 'failure' }, 'action', 'vm.start');
   assert.deepStrictEqual(next, { page: 1, expanded: '', outcome: 'failure', action: 'vm.start' });

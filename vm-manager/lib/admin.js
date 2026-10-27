@@ -53,14 +53,6 @@ function usersView(users, { meId, saving, now }) {
   });
 }
 
-function auditQuery({ page, action, outcome, userId } = {}) {
-  const q = new URLSearchParams({ page: String(page || 1) });
-  if (action) q.set('action', action);
-  if (outcome) q.set('outcome', outcome);
-  if (userId) q.set('userId', String(userId));
-  return q.toString();
-}
-
 function withFilter(filters, key, value) {
   return { ...filters, [key]: value, page: 1, expanded: '' };
 }
@@ -156,5 +148,5 @@ function createLatest() {
 }
 
 module.exports = {
-  ACTION_LABEL, OUTCOME_LABEL, pendingBanner, roleMenu, auditFilters, usersView, auditQuery, withFilter, auditView, createLatest,
+  ACTION_LABEL, OUTCOME_LABEL, pendingBanner, roleMenu, auditFilters, usersView, withFilter, auditView, createLatest,
 };

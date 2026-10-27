@@ -428,6 +428,10 @@ async function doLogout() {
 function onExpired() {
   state.poller.stopAll();
   jobPoller.stopAll();
+  // Antes de fechar as janelas: sem a sessão não há o que acompanhar, e o "continua em segundo
+  // plano" de uma rota não vem junto com o recado de sessão expirada.
+  wizard = null;
+  removal = null;
   closeWindows();
   state.login = { message: EXPIRED, busy: false };
   switchTo('login');
@@ -1847,6 +1851,9 @@ async function regate() {
 
 const freshUsers = () => ({ gen: 0, users: null, error: '', saving: new Set() });
 const usersState = freshUsers();
+// A sessão das telas de admin: só o `forgetAdmin` (sair, trocar de url) muda. O `gen` da lista
+// muda a cada leitura e só serve pra largar uma lista velha; um PATCH vale enquanto a sessão for a mesma.
+let adminSession = 0;
 
 async function loadUsers() {
   const gen = ++usersState.gen;
@@ -1871,22 +1878,24 @@ async function changeRole(id, role) {
   if (!target || (me && me.id === id)) return null; // a UI nem oferece; aqui recusa
   if (!ROLE_LABEL[role] || target.role === role) return null;
   if (usersState.saving.has(id)) return null; // a linha fica travada até o PATCH voltar
-  const gen = usersState.gen;
-  usersState.saving.add(id); // antes de qualquer await
+  const session = adminSession;
+  const saving = usersState.saving;
+  saving.add(id); // antes de qualquer await
   usersState.error = '';
   render();
   try {
     const updated = await api().setRole(id, role);
-    if (gen !== usersState.gen) return null; // saiu ou trocou de url no meio
+    if (session !== adminSession) return null; // saiu ou trocou de url no meio
+    // Mesmo que a lista tenha sido relida no meio (reentrar na tela), a linha fica com o papel novo.
     if (updated && typeof updated === 'object' && updated.id !== undefined) {
       usersState.users = (usersState.users || []).map((u) => (u.id === updated.id ? updated : u));
     }
   } catch (e) {
-    if (gen !== usersState.gen || isUnauthorized(e)) return null;
+    if (session !== adminSession || isUnauthorized(e)) return null;
     if (isForbidden(e) && (await regate())) return null;
     usersState.error = errText(e);
   } finally {
-    if (gen === usersState.gen) usersState.saving.delete(id);
+    saving.delete(id); // sempre destrava (o forgetAdmin já troca o Set de qualquer jeito)
   }
   return render();
 }
@@ -1908,7 +1917,7 @@ function usersScreenView(user, now) {
 }
 
 on('user', async (arg, values, { viewId }) => {
-  if (viewId !== MAIN || !currentAdmin()) return null;
+  if (viewId !== MAIN || !currentAdmin() || state.screen !== 'users') return null;
   const [kind, rawId, role] = arg.split(':');
   const id = Number(rawId);
   if (!Number.isFinite(id)) return null;
@@ -1931,12 +1940,15 @@ const freshAudit = () => ({ latest: adm.createLatest(), users: [], res: null, er
 const auditState = freshAudit();
 
 async function loadAuditUsers() {
+  const session = adminSession;
+  let list = [];
   try {
-    const list = await api().users();
-    auditState.users = Array.isArray(list) ? list : [];
+    list = await api().users();
   } catch {
-    auditState.users = []; // como na web: sem a lista, só o filtro "Todas" e os e-mails
+    // como na web: sem a lista, só o filtro "Todas" e os e-mails
   }
+  if (session !== adminSession) return; // a lista é de quem saiu
+  auditState.users = Array.isArray(list) ? list : [];
 }
 
 async function fetchAudit() {
@@ -2021,6 +2033,7 @@ registerScreen('audit', {
 
 /** Sair/trocar de url: a lista de usuários e a auditoria de quem estava logado vão embora. */
 function forgetAdmin() {
+  adminSession++;
   Object.assign(usersState, freshUsers(), { gen: usersState.gen + 1 });
   const latest = auditState.latest;
   Object.assign(auditState, freshAudit(), { latest });
