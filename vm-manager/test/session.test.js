@@ -212,3 +212,19 @@ test('malformed refresh response keeps old token; changed user emits changed', a
   await ok.session.api.vms();
   assert.equal(n, 1);
 });
+
+test('locally expired token clears the session and emits expired once', async () => {
+  const rec = { url: URL_, token: 'tok', obtainedAt: 0, expiresAt: 1000, user: USER };
+  const { session, store, fetch } = mk({ rec, now: () => 2000, routes: [{ path: '/api/vms', status: 401, json: { statusCode: 401, message: 'Unauthorized' } }] });
+  let expired = 0;
+  let changed = 0;
+  session.on('expired', () => expired++);
+  session.on('changed', () => changed++);
+  await assert.rejects(session.api.vms(), (e) => e.status === 401);
+  await assert.rejects(session.api.vms(), (e) => e.status === 401);
+  assert.equal(store.load(), null);
+  assert.equal(expired, 1);
+  assert.equal(changed, 1);
+  assert.equal(session.user(), null);
+  assert.ok(fetch.calls.every((c) => !c.headers.Authorization));
+});

@@ -261,11 +261,10 @@ function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'vmm-smoke-'));
 }
 
-function seed(dataDir, url, token, user) {
-  const now = Date.now();
+function seed(dataDir, url, token, user, { obtainedAt = Date.now(), expiresAt = obtainedAt + 24 * 3600 * 1000 } = {}) {
   fs.writeFileSync(
     path.join(dataDir, 'auth.json'),
-    JSON.stringify({ url, token, obtainedAt: now, expiresAt: now + 24 * 3600 * 1000, user }),
+    JSON.stringify({ url, token, obtainedAt, expiresAt, user }),
     { mode: 0o600 },
   );
 }
@@ -2632,6 +2631,53 @@ test('rotas: a sessão que expira com o POST andando volta pro login sem o banne
     assert.deepEqual(banners(p).filter((t) => /segundo plano/.test(t)), []);
   } finally {
     await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+// --- revisão final da branch ------------------------------------------------------------
+
+const EXPIRED_TEXT = 'Sua sessão expirou. Entre de novo.';
+
+test('token guardado já vencido: abrir mostra o login com "Sua sessão expirou" e apaga o auth.json', { timeout: 15000 }, async () => {
+  const api = await fakeApi({ 'tok-old': ADMIN });
+  const dataDir = tmpDir();
+  seed(dataDir, api.url, 'tok-old', ADMIN, { obtainedAt: Date.now() - 7200000, expiresAt: Date.now() - 1000 });
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => p.mainData().screen === 'login' && p.mainData().login.message === EXPIRED_TEXT, 'login com o aviso');
+    assert.equal(fs.existsSync(path.join(dataDir, 'auth.json')), false);
+    assert.ok(api.seen.every((r) => !r.auth.includes('tok-old')), 'o token vencido não vai pra API');
+  } finally {
+    await p.stop();
+    closeApi(api);
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('o token vence com a janela aberta: a próxima chamada volta pro login com o aviso', { timeout: 15000 }, async () => {
+  const token = 'tok-short';
+  const api = await fakeApi({ [token]: ADMIN }, {
+    extra: { '/api/vms/177': DETAIL },
+    routes: { 'POST /api/auth/plugin/refresh': () => ({ status: 503, json: { statusCode: 503, message: 'x' }, raw: true }) },
+  });
+  const dataDir = tmpDir();
+  const now = Date.now();
+  seed(dataDir, api.url, token, ADMIN, { obtainedAt: now, expiresAt: now + 1500 });
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => p.mainData().screen === 'vms' && p.mainData().vms && p.mainData().vms.rows.length === 2, 'tela vms');
+    await pause(Math.max(0, now + 1600 - Date.now()));
+    p.act('vmm', 'act', { a: 'vm:open:177' });
+    await p.waitFor(() => p.mainData().screen === 'login' && p.mainData().login.message === EXPIRED_TEXT, 'login com o aviso');
+    assert.equal(fs.existsSync(path.join(dataDir, 'auth.json')), false);
+  } finally {
+    await p.stop();
+    closeApi(api);
   }
   assert.deepEqual(p.bad, []);
 });

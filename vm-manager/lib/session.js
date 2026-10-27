@@ -99,7 +99,13 @@ function createSession({
     let rec = current();
     if (!rec) return null;
     const t = now();
-    if (auth.isExpired(rec, t)) return null;
+    if (auth.isExpired(rec, t)) {
+      // Venceu aqui (a janela aberta passou da hora): é o mesmo 401, de volta pro login.
+      store.clear();
+      emit('changed');
+      emit('expired');
+      return null;
+    }
     if (auth.needsRefresh(rec, t)) {
       if (!refreshPromise) {
         refreshPromise = doRefresh(rec).finally(() => {

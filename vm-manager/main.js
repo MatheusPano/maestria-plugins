@@ -376,6 +376,8 @@ async function openMain() {
     return;
   }
   const s = state.session;
+  // Um token guardado que já venceu: o authHeader o apaga e avisa (o "Sua sessão expirou").
+  if (!s.isLoggedIn()) await s.authHeader();
   const dest = s.isLoggedIn() ? gate(s.user(), state.target) : 'login';
   // Abre sempre do zero: a janela pode ter fechado sem a gente saber.
   state.poller.stopAll();
