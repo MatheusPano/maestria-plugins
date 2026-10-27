@@ -1,0 +1,415 @@
+// A casca do VM Manager: a lateral do CCS Console (marca, grupos de navegação e
+// o rodapé com quem está logado) e as telas que não são de uma área — o login,
+// o acesso pendente, a API fora do ar e o "só admins". As telas de cada área
+// (vms, ceph, …) moram nos outros arquivos de ui/, que o main.js junta depois
+// deste (sem os `import`), e entram no `switch` do `Body`.
+//
+// Os dados chegam em `data`: `screen`, `nav` (grupos com `items`), `me`,
+// `login { message, busy }`, `fatal { message }`, `textInput` (a Maestria tem o
+// `TextInput`; sem ele as buscas somem) e uma chave por tela. As cores são as do
+// tema (`data.theme`). Os cliques voltam como `event "nav" { to }`, `"login"`,
+// `"logout"`, `"retry"` e, no login esperando o navegador, `"act"` com
+// `login:reopen` e `login:cancel`.
+
+import core.widgets;
+import maestria;
+
+// A raiz é um widget simples; o `switch` mora no `Screen`.
+widget root = Screen();
+
+// O login e o pendente ocupam a tela toda, como na web; o resto tem a lateral.
+widget Screen = switch data.screen {
+  "login": LoginScreen(),
+  "pending": PendingScreen(),
+  default: Row(
+    crossAxisAlignment: "stretch",
+    children: [
+      Sidebar(),
+      Container(width: 1.0, color: data.theme.border),
+      Expanded(child: Body()),
+    ],
+  ),
+};
+
+widget Body = switch data.screen {
+  "vms": VmsScreen(),
+  "ceph": CephScreen(),
+  "buckets": BucketsScreen(),
+  "routes": RoutesScreen(),
+  "users": UsersScreen(),
+  "audit": AuditScreen(),
+  "fatal": FatalScreen(),
+  "forbidden": ForbiddenScreen(),
+  default: SizedBox(),
+};
+
+// --- a lateral --------------------------------------------------------------------
+
+widget Sidebar = Container(
+  width: 232.0,
+  color: data.theme.sidebar,
+  padding: [12.0, 18.0, 12.0, 14.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Brand(),
+      SizedBox(height: 22.0),
+      Expanded(
+        child: SingleChildScrollView(
+          primary: false,
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              ...for g in data.nav:
+                NavGroup(g: g),
+            ],
+          ),
+        ),
+      ),
+      Container(height: 1.0, color: data.theme.border),
+      SizedBox(height: 12.0),
+      Footer(),
+    ],
+  ),
+);
+
+widget Brand = Padding(
+  padding: [8.0, 0.0, 8.0, 0.0],
+  child: Row(
+    children: [
+      Container(
+        width: 32.0,
+        height: 32.0,
+        decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
+        child: Center(child: Glyph(icon: "server", size: 16.0, color: data.theme.onAccent)),
+      ),
+      SizedBox(width: 10.0),
+      Expanded(
+        child: Text(
+          text: "CCS Console",
+          maxLines: 1,
+          overflow: "ellipsis",
+          style: { fontSize: 15.0, fontWeight: "w600", color: data.theme.fg },
+        ),
+      ),
+    ],
+  ),
+);
+
+widget NavGroup = Padding(
+  padding: [0.0, 0.0, 0.0, 18.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Padding(
+        padding: [10.0, 0.0, 10.0, 6.0],
+        child: Text(text: args.g.group, style: { fontSize: 11.0, fontWeight: "w500", color: data.theme.faint }),
+      ),
+      ...for item in args.g.items:
+        NavItem(item: item),
+    ],
+  ),
+);
+
+widget NavItem = Pressable(
+  radius: 6.0,
+  color: switch args.item.active { true: data.theme.active, default: 0x00000000 },
+  hoverColor: switch args.item.active { true: data.theme.active, default: data.theme.hover },
+  onTap: event "nav" { to: args.item.id },
+  child: Padding(
+    padding: [10.0, 8.0, 10.0, 8.0],
+    child: Row(
+      children: [
+        Glyph(
+          icon: args.item.icon,
+          size: 16.0,
+          color: switch args.item.active { true: data.theme.accent, default: data.theme.dim },
+        ),
+        SizedBox(width: 10.0),
+        Expanded(
+          child: Text(
+            text: args.item.label,
+            maxLines: 1,
+            overflow: "ellipsis",
+            style: {
+              fontSize: 13.0,
+              fontWeight: switch args.item.active { true: "w600", default: "w400" },
+              color: switch args.item.active { true: data.theme.fg, default: data.theme.dim },
+            },
+          ),
+        ),
+      ],
+    ),
+  ),
+);
+
+widget Footer = Padding(
+  padding: [8.0, 0.0, 4.0, 0.0],
+  child: Row(
+    children: [
+      Container(
+        width: 32.0,
+        height: 32.0,
+        decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 16.0 }] },
+        child: Center(
+          child: Text(text: data.me.initials, style: { fontSize: 11.0, fontWeight: "w600", color: data.theme.accent }),
+        ),
+      ),
+      SizedBox(width: 10.0),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: "start",
+          children: [
+            Text(text: data.me.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, fontWeight: "w500", color: data.theme.fg }),
+            Text(text: data.me.role, maxLines: 1, style: { fontSize: 11.0, color: data.theme.dim }),
+          ],
+        ),
+      ),
+      Tooltip(
+        message: "Sair",
+        child: Pressable(
+          radius: 6.0,
+          hoverColor: data.theme.hover,
+          onTap: event "logout" {},
+          child: Padding(
+            padding: [6.0, 6.0, 6.0, 6.0],
+            child: Glyph(icon: "icons/logout.svg", size: 16.0, color: data.theme.faint),
+          ),
+        ),
+      ),
+    ],
+  ),
+);
+
+// --- o login (app/login/page.tsx) ------------------------------------------------
+
+widget LoginScreen = Center(
+  child: SizedBox(
+    width: 380.0,
+    child: Card(
+      child: Column(
+        mainAxisSize: "min",
+        crossAxisAlignment: "stretch",
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 40.0,
+                height: 40.0,
+                decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
+                child: Center(child: Glyph(icon: "server", size: 20.0, color: data.theme.onAccent)),
+              ),
+              SizedBox(width: 12.0),
+              Text(text: "CCS Console", style: { fontSize: 17.0, fontWeight: "w600", color: data.theme.fg }),
+            ],
+          ),
+          SizedBox(height: 26.0),
+          LoginError(text: data.login.message),
+          LoginButton(),
+        ],
+      ),
+    ),
+  ),
+);
+
+widget LoginError = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 0.0, 0.0, 18.0],
+    child: Container(
+      padding: [12.0, 8.0, 12.0, 8.0],
+      decoration: { type: "box", borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.red, width: 1.0 }] },
+      child: Text(text: args.text, style: { fontSize: 13.0, color: data.theme.red }),
+    ),
+  ),
+};
+
+widget LoginButton = switch data.login.busy {
+  true: Column(
+    mainAxisSize: "min",
+    crossAxisAlignment: "stretch",
+    children: [
+      Opacity(
+        opacity: 0.7,
+        child: Container(
+          height: 44.0,
+          decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
+          child: Center(
+            child: Text(text: "abrindo o navegador…", style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.onAccent }),
+          ),
+        ),
+      ),
+      SizedBox(height: 12.0),
+      // A aba do navegador se perdeu: abre o mesmo endereço (o retorno segue ouvindo) ou desiste.
+      Row(
+        mainAxisAlignment: "center",
+        children: [
+          LoginLink(label: "abrir de novo", a: "login:reopen"),
+          SizedBox(width: 8.0),
+          LoginLink(label: "cancelar", a: "login:cancel"),
+        ],
+      ),
+    ],
+  ),
+  default: Pressable(
+    radius: 6.0,
+    color: data.theme.accent,
+    hoverColor: data.theme.accent,
+    onTap: event "login" {},
+    child: SizedBox(
+      height: 44.0,
+      child: Row(
+        mainAxisAlignment: "center",
+        children: [
+          Glyph(icon: "icons/key.svg", size: 18.0, color: data.theme.onAccent),
+          SizedBox(width: 10.0),
+          Text(text: "Entrar com Marrow", style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.onAccent }),
+        ],
+      ),
+    ),
+  ),
+};
+
+widget LoginLink = Pressable(
+  radius: 6.0,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.a },
+  child: Padding(
+    padding: [8.0, 4.0, 8.0, 4.0],
+    child: Text(text: args.label, style: { fontSize: 13.0, color: data.theme.dim }),
+  ),
+);
+
+// --- o acesso pendente (app/pending/page.tsx) ------------------------------------
+
+widget PendingScreen = Center(
+  child: SizedBox(
+    width: 440.0,
+    child: Card(
+      child: Column(
+        mainAxisSize: "min",
+        crossAxisAlignment: "stretch",
+        children: [
+          Align(
+            alignment: { x: -1.0, y: 0.0 },
+            child: Container(
+              width: 44.0,
+              height: 44.0,
+              decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 22.0 }] },
+              child: Center(child: Glyph(icon: "icons/hourglass.svg", size: 20.0, color: data.theme.yellow)),
+            ),
+          ),
+          SizedBox(height: 22.0),
+          Text(text: "Acesso pendente", style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+          SizedBox(height: 8.0),
+          Text(text: "Peça a um admin para liberar seu acesso.", style: { fontSize: 14.0, color: data.theme.dim }),
+          SizedBox(height: 22.0),
+          Container(
+            padding: [14.0, 12.0, 14.0, 12.0],
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 6.0 }] },
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: "start",
+                    children: [
+                      Text(text: data.me.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 14.0, fontWeight: "w500", color: data.theme.fg }),
+                      Text(text: data.me.email, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim }),
+                    ],
+                  ),
+                ),
+                SizedBox(width: 12.0),
+                Container(
+                  padding: [10.0, 4.0, 10.0, 4.0],
+                  decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.yellow, width: 1.0 }] },
+                  child: Text(text: "Pendente", style: { fontSize: 12.0, fontWeight: "w500", color: data.theme.yellow }),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: 22.0),
+          Align(
+            alignment: { x: -1.0, y: 0.0 },
+            child: Pressable(
+              radius: 6.0,
+              hoverColor: data.theme.hover,
+              onTap: event "logout" {},
+              child: Padding(
+                padding: [6.0, 4.0, 8.0, 4.0],
+                child: Row(
+                  mainAxisSize: "min",
+                  children: [
+                    Glyph(icon: "icons/logout.svg", size: 16.0, color: data.theme.dim),
+                    SizedBox(width: 8.0),
+                    Text(text: "Sair", style: { fontSize: 13.0, color: data.theme.dim }),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
+
+// --- a API fora do ar e o "só admins" --------------------------------------------
+
+widget FatalScreen = Center(
+  child: Padding(
+    padding: [24.0, 24.0, 24.0, 24.0],
+    child: SizedBox(
+      width: 460.0,
+      child: Column(
+        mainAxisSize: "min",
+        children: [
+          Glyph(icon: "error", size: 28.0, color: data.theme.red),
+          SizedBox(height: 14.0),
+          Text(text: "Não foi possível falar com a API.", textAlign: "center", style: { fontSize: 15.0, fontWeight: "w600", color: data.theme.fg }),
+          SizedBox(height: 10.0),
+          Container(
+            padding: [12.0, 8.0, 12.0, 8.0],
+            decoration: { type: "box", color: data.theme.active, borderRadius: [{ x: 6.0 }] },
+            child: Text(text: data.fatal.message, textAlign: "center", style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.dim }),
+          ),
+          SizedBox(height: 18.0),
+          Pressable(
+            radius: 6.0,
+            color: data.theme.accent,
+            hoverColor: data.theme.accent,
+            onTap: event "retry" {},
+            child: Padding(
+              padding: [16.0, 9.0, 16.0, 9.0],
+              child: Text(text: "Tentar de novo", style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.onAccent }),
+            ),
+          ),
+        ],
+      ),
+    ),
+  ),
+);
+
+widget ForbiddenScreen = Center(
+  child: Column(
+    mainAxisSize: "min",
+    children: [
+      Glyph(icon: "shield", size: 26.0, color: data.theme.faint),
+      SizedBox(height: 12.0),
+      Text(text: "Só admins podem fazer isso.", style: { fontSize: 14.0, color: data.theme.dim }),
+    ],
+  ),
+);
+
+// --- peças -----------------------------------------------------------------------
+
+// O cartão do meio da tela (login, pendente): a borda e o fundo um passo acima.
+widget Card = Container(
+  padding: [36.0, 36.0, 36.0, 36.0],
+  decoration: {
+    type: "box",
+    color: data.theme.sidebar,
+    borderRadius: [{ x: 10.0 }],
+    border: [{ color: data.theme.border, width: 1.0 }],
+  },
+  child: args.child,
+);

@@ -1,0 +1,406 @@
+// Usuários (UsersTable.tsx) e Auditoria (AuditLog.tsx), só de admin. Sem `import`: o
+// main.js junta este arquivo depois da casca, e as peças do vms.rfwtxt e do
+// storage.rfwtxt (HeadCell, VmsError, EmptyBox) valem aqui.
+//
+// Usuários: `data.users` = { pending, error, empty, rows: [{ id, name, email, roleLabel,
+// roleTone, lastSeen, canChange, lockedTitle, approve, saving, menu, approveA }] }. O papel
+// muda pelo menu (`user:role:<id>:<papel>`, no onMenu) e o "Aprovar" manda `user:approve:<id>`.
+//
+// Auditoria: `data.audit` = { count, filters: [{ label, value, menu }], error, empty, rows,
+// range, page, showPager, prevDisabled, nextDisabled }. Os filtros vão pelo menu
+// (`audit:action:…`, `audit:outcome:…`, `audit:user:…`), a linha abre com `audit:toggle:<id>`
+// e as páginas com `audit:page:prev` / `audit:page:next`.
+
+// --- Usuários --------------------------------------------------------------------
+
+widget UsersScreen = SingleChildScrollView(
+  primary: false,
+  padding: [28.0, 24.0, 28.0, 28.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Text(text: "Usuários", style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+      PendingBanner(text: data.users.pending),
+      VmsError(text: data.users.error),
+      SizedBox(height: 20.0),
+      UsersTable(),
+    ],
+  ),
+);
+
+widget PendingBanner = switch args.text {
+  "": SizedBox(),
+  default: Padding(
+    padding: [0.0, 20.0, 0.0, 0.0],
+    child: Container(
+      padding: [16.0, 12.0, 16.0, 12.0],
+      decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.yellow, width: 1.0 }] },
+      child: Row(
+        children: [
+          Glyph(icon: "user", size: 18.0, color: data.theme.yellow),
+          SizedBox(width: 12.0),
+          Expanded(child: Text(text: args.text, style: { fontSize: 13.0, fontWeight: "w500", color: data.theme.yellow })),
+        ],
+      ),
+    ),
+  ),
+};
+
+widget UsersTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        color: data.theme.active,
+        child: Row(
+          children: [
+            Expanded(flex: 40, child: HeadCell(text: "Pessoa")),
+            Expanded(flex: 22, child: HeadCell(text: "Papel")),
+            Expanded(flex: 22, child: HeadCell(text: "Último acesso")),
+            Expanded(flex: 16, child: SizedBox()),
+          ],
+        ),
+      ),
+      switch data.users.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for u in data.users.rows:
+              UserRow(u: u),
+          ],
+        ),
+        default: EmptyBox(text: data.users.empty),
+      },
+    ],
+  ),
+);
+
+widget UserRow = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Container(height: 1.0, color: data.theme.border),
+    Padding(
+      padding: [16.0, 12.0, 16.0, 12.0],
+      child: Row(
+        children: [
+          Expanded(
+            flex: 40,
+            child: Column(
+              crossAxisAlignment: "start",
+              children: [
+                Text(text: args.u.name, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, fontWeight: "w500", color: data.theme.fg }),
+                Text(text: args.u.email, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.faint }),
+              ],
+            ),
+          ),
+          Expanded(flex: 22, child: RoleCell(u: args.u)),
+          Expanded(flex: 22, child: Text(text: args.u.lastSeen, maxLines: 1, style: { fontSize: 13.0, color: data.theme.dim })),
+          Expanded(flex: 16, child: ApproveCell(u: args.u)),
+        ],
+      ),
+    ),
+  ],
+);
+
+// O papel: o selo na cor do papel e, quando dá pra mudar, o menu ao lado. A própria linha
+// tem o selo com a dica; a linha salvando fica apagada e sem menu.
+widget RoleCell = switch args.u.canChange {
+  true: Row(
+    children: [
+      RoleChip(u: args.u),
+      SizedBox(width: 4.0),
+      MenuButton(icon: "edit", tooltip: "Mudar papel", menu: args.u.menu, onMenu: event "act" {}),
+      Expanded(child: SizedBox()),
+    ],
+  ),
+  default: switch args.u.lockedTitle {
+    "": Opacity(opacity: 0.7, child: Align(alignment: { x: -1.0, y: 0.0 }, child: RoleChip(u: args.u))),
+    default: Align(
+      alignment: { x: -1.0, y: 0.0 },
+      child: Tooltip(message: args.u.lockedTitle, child: Opacity(opacity: 0.7, child: RoleChip(u: args.u))),
+    ),
+  },
+};
+
+widget RoleChip = Container(
+  padding: [8.0, 4.0, 8.0, 4.0],
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 4.0 }],
+    border: [{
+      color: switch args.u.roleTone { "accent": data.theme.accent, "yellow": data.theme.yellow, default: data.theme.border },
+      width: 1.0,
+    }],
+  },
+  child: Text(
+    text: args.u.roleLabel,
+    style: {
+      fontSize: 12.0,
+      fontWeight: "w600",
+      color: switch args.u.roleTone { "accent": data.theme.accent, "yellow": data.theme.yellow, default: data.theme.dim },
+    },
+  ),
+);
+
+widget ApproveCell = switch args.u.approve {
+  true: Align(
+    alignment: { x: 1.0, y: 0.0 },
+    child: switch args.u.saving {
+      true: Opacity(opacity: 0.5, child: ApproveBox()),
+      default: Pressable(
+        radius: 4.0,
+        color: data.theme.accent,
+        hoverColor: data.theme.accent,
+        onTap: event "act" { a: args.u.approveA },
+        child: ApproveBox(),
+      ),
+    },
+  ),
+  default: SizedBox(),
+};
+
+widget ApproveBox = Container(
+  padding: [10.0, 4.0, 10.0, 4.0],
+  decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 4.0 }] },
+  child: Text(text: "Aprovar", style: { fontSize: 12.0, fontWeight: "w600", color: data.theme.onAccent }),
+);
+
+// --- Auditoria -------------------------------------------------------------------
+
+widget AuditScreen = SingleChildScrollView(
+  primary: false,
+  padding: [28.0, 24.0, 28.0, 28.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Text(text: "Auditoria", style: { fontSize: 22.0, fontWeight: "w600", color: data.theme.fg }),
+      SizedBox(height: 4.0),
+      Text(
+        text: "Quem fez o quê no console: criação e controle de VMs, buckets, papéis, login e leitura de secret key.",
+        style: { fontSize: 13.0, color: data.theme.dim },
+      ),
+      SizedBox(height: 20.0),
+      Row(
+        children: [
+          Expanded(
+            child: Wrap(
+              spacing: 8.0,
+              runSpacing: 8.0,
+              children: [
+                ...for f in data.audit.filters:
+                  AuditFilter(f: f),
+              ],
+            ),
+          ),
+          Text(text: data.audit.count, style: { fontSize: 12.5, color: data.theme.faint }),
+        ],
+      ),
+      VmsError(text: data.audit.error),
+      SizedBox(height: 14.0),
+      AuditTable(),
+      AuditPager(),
+    ],
+  ),
+);
+
+// "Ação: Todas" e o menu ao lado (o select da web).
+widget AuditFilter = Container(
+  padding: [10.0, 0.0, 2.0, 0.0],
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Row(
+    mainAxisSize: "min",
+    children: [
+      Text(text: args.f.label, style: { fontSize: 12.5, color: data.theme.faint }),
+      Text(text: ": ", style: { fontSize: 12.5, color: data.theme.faint }),
+      Text(text: args.f.value, style: { fontSize: 12.5, fontWeight: "w500", color: data.theme.fg }),
+      MenuButton(icon: "filter", tooltip: args.f.label, menu: args.f.menu, onMenu: event "act" {}),
+    ],
+  ),
+);
+
+widget AuditTable = Container(
+  decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        color: data.theme.active,
+        child: Row(
+          children: [
+            Expanded(flex: 17, child: HeadCell(text: "Quando")),
+            Expanded(flex: 22, child: HeadCell(text: "Quem")),
+            Expanded(flex: 19, child: HeadCell(text: "Ação")),
+            Expanded(flex: 20, child: HeadCell(text: "Alvo")),
+            Expanded(flex: 11, child: HeadCell(text: "Resultado")),
+            SizedBox(width: 32.0),
+          ],
+        ),
+      ),
+      switch data.audit.empty {
+        "": Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            ...for r in data.audit.rows:
+              AuditRow(r: r),
+          ],
+        ),
+        default: EmptyBox(text: data.audit.empty),
+      },
+    ],
+  ),
+);
+
+widget AuditRow = Container(
+  color: switch args.r.expanded { true: data.theme.active, default: 0x00000000 },
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(height: 1.0, color: data.theme.border),
+      Padding(
+        padding: [16.0, 10.0, 16.0, 10.0],
+        child: Row(
+          children: [
+            Expanded(flex: 17, child: Text(text: args.r.when, maxLines: 1, style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.dim })),
+            Expanded(
+              flex: 22,
+              child: Column(
+                crossAxisAlignment: "start",
+                children: [
+                  Text(text: args.r.who, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, fontWeight: "w500", color: data.theme.fg }),
+                  switch args.r.whoSub {
+                    "": SizedBox(),
+                    default: Text(text: args.r.whoSub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.faint }),
+                  },
+                ],
+              ),
+            ),
+            Expanded(
+              flex: 19,
+              child: Column(
+                crossAxisAlignment: "start",
+                children: [
+                  Text(text: args.r.actionLabel, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.0, color: data.theme.fg }),
+                  Text(text: args.r.action, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, fontFamily: data.theme.mono, color: data.theme.faint }),
+                ],
+              ),
+            ),
+            Expanded(flex: 20, child: Text(text: args.r.target, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.dim })),
+            Expanded(flex: 11, child: OutcomeChip(r: args.r)),
+            SizedBox(
+              width: 32.0,
+              child: Tooltip(
+                message: args.r.toggleTitle,
+                child: Pressable(
+                  radius: 4.0,
+                  hoverColor: data.theme.hover,
+                  onTap: event "act" { a: args.r.toggle },
+                  child: Padding(
+                    padding: [6.0, 6.0, 6.0, 6.0],
+                    child: Glyph(icon: switch args.r.expanded { true: "remove", default: "add" }, size: 16.0, color: data.theme.dim),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      switch args.r.expanded {
+        true: AuditDetail(d: args.r.detail),
+        default: SizedBox(),
+      },
+    ],
+  ),
+);
+
+widget OutcomeChip = Align(
+  alignment: { x: -1.0, y: 0.0 },
+  child: Container(
+    padding: [8.0, 2.0, 8.0, 2.0],
+    decoration: {
+      type: "box",
+      borderRadius: [{ x: 4.0 }],
+      border: [{ color: switch args.r.outcomeTone { "green": data.theme.green, "red": data.theme.red, default: data.theme.border }, width: 1.0 }],
+    },
+    child: Text(
+      text: args.r.outcome,
+      style: {
+        fontSize: 12.0,
+        fontWeight: "w500",
+        color: switch args.r.outcomeTone { "green": data.theme.green, "red": data.theme.red, default: data.theme.dim },
+      },
+    ),
+  ),
+);
+
+// O detalhe aberto: o erro (só quando tem), o JSON e o IP.
+widget AuditDetail = Padding(
+  padding: [186.0, 0.0, 16.0, 16.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      switch args.d.error {
+        "": SizedBox(),
+        default: DetailLine(term: "Erro", value: args.d.error, red: true),
+      },
+      DetailLine(term: "Detalhe", value: args.d.json, red: false),
+      DetailLine(term: "IP", value: args.d.ip, red: false),
+    ],
+  ),
+);
+
+widget DetailLine = Padding(
+  padding: [0.0, 0.0, 0.0, 8.0],
+  child: Row(
+    crossAxisAlignment: "start",
+    children: [
+      SizedBox(width: 72.0, child: Text(text: args.term, style: { fontSize: 12.0, color: data.theme.faint })),
+      SizedBox(width: 12.0),
+      Expanded(
+        child: Text(
+          text: args.value,
+          style: {
+            fontSize: 12.0,
+            fontFamily: data.theme.mono,
+            color: switch args.red { true: data.theme.red, default: data.theme.dim },
+          },
+        ),
+      ),
+    ],
+  ),
+);
+
+widget AuditPager = switch data.audit.showPager {
+  true: Padding(
+    padding: [0.0, 14.0, 0.0, 0.0],
+    child: Row(
+      children: [
+        Expanded(child: Text(text: data.audit.range, style: { fontSize: 12.5, color: data.theme.faint })),
+        PagerButton(text: "Anterior", a: "audit:page:prev", disabled: data.audit.prevDisabled),
+        SizedBox(width: 8.0),
+        Text(text: data.audit.page, style: { fontSize: 12.5, color: data.theme.dim }),
+        SizedBox(width: 8.0),
+        PagerButton(text: "Próxima", a: "audit:page:next", disabled: data.audit.nextDisabled),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+widget PagerButton = switch args.disabled {
+  true: Opacity(opacity: 0.5, child: PagerBox(text: args.text)),
+  default: Pressable(
+    radius: 4.0,
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: args.a },
+    child: PagerBox(text: args.text),
+  ),
+};
+
+widget PagerBox = Container(
+  padding: [10.0, 6.0, 10.0, 6.0],
+  decoration: { type: "box", borderRadius: [{ x: 4.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+  child: Text(text: args.text, style: { fontSize: 12.5, color: data.theme.fg }),
+);
