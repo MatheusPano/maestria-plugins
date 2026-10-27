@@ -228,3 +228,70 @@ test('locally expired token clears the session and emits expired once', async ()
   assert.equal(session.user(), null);
   assert.ok(fetch.calls.every((c) => !c.headers.Authorization));
 });
+
+// Um loopback que só responde quando o teste manda (o navegador ainda aberto).
+function pendingLoopback() {
+  const lb = { closed: 0, settle: null };
+  lb.start = async () => ({
+    port: 7777,
+    result: new Promise((r) => {
+      lb.settle = r;
+    }),
+    close() {
+      lb.closed++;
+      lb.settle({ error: 'cancelled' });
+    },
+  });
+  return lb;
+}
+
+test('reopenLogin reopens the same login url while the login waits', async () => {
+  const lb = pendingLoopback();
+  const { session, opened } = mk({ routes: [tokenRoute], loopback: lb.start });
+  assert.equal(session.reopenLogin(), false, 'sem login em curso não abre nada');
+  const p = session.login();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(opened.length, 1);
+  assert.equal(session.reopenLogin(), true);
+  assert.deepEqual(opened, [opened[0], opened[0]]);
+  lb.settle({ code: 'c1' });
+  assert.equal((await p).ok, true);
+  assert.equal(session.reopenLogin(), false);
+});
+
+test('cancelLogin closes the loopback and the login ends cancelled', async () => {
+  const lb = pendingLoopback();
+  const { session, store } = mk({ routes: [tokenRoute], loopback: lb.start });
+  const p = session.login();
+  await new Promise((r) => setImmediate(r));
+  session.cancelLogin();
+  assert.deepEqual(await p, { ok: false, message: 'Login cancelado.' });
+  assert.equal(lb.closed >= 1, true);
+  assert.equal(store.load(), null);
+});
+
+test('logout during the token exchange does not log back in', async () => {
+  const lb = pendingLoopback();
+  const slowToken = { ...tokenRoute, delayMs: 30 };
+  const { session, store } = mk({ routes: [slowToken], loopback: lb.start });
+  const p = session.login();
+  await new Promise((r) => setImmediate(r));
+  lb.settle({ code: 'c1' }); // o navegador voltou; a troca do code está no ar
+  await new Promise((r) => setTimeout(r, 5));
+  session.logout();
+  const r = await p;
+  assert.equal(r.ok, false);
+  assert.equal(store.load(), null);
+  assert.equal(session.isLoggedIn(), false);
+});
+
+test('logout closes an in-flight login', async () => {
+  const lb = pendingLoopback();
+  const { session, store } = mk({ routes: [tokenRoute], loopback: lb.start });
+  const p = session.login();
+  await new Promise((r) => setImmediate(r));
+  session.logout();
+  assert.equal((await p).ok, false);
+  assert.equal(lb.closed >= 1, true);
+  assert.equal(store.load(), null);
+});

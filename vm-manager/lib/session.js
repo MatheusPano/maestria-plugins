@@ -28,6 +28,9 @@ function createSession({
   const listeners = { expired: [], changed: [] };
   let loginPromise = null;
   let refreshPromise = null;
+  // O login em curso: o endereço (pro "abrir de novo") e o loopback (pro "cancelar").
+  let pending = null;
+  let loginGen = 0; // o sair no meio do login: a troca do code que ainda chega não entra
 
   function emit(event) {
     for (const fn of listeners[event]) {
@@ -130,15 +133,22 @@ function createSession({
   async function runLogin() {
     const verifier = auth.makeVerifier(randomBytes);
     const state = auth.makeState(randomBytes);
+    const gen = loginGen;
+    const me = { lb: null, url: '' };
+    pending = me;
     let lb;
     try {
       lb = await startLoopback({ state });
-      openUrl(auth.buildLoginUrl(url, { port: lb.port, state, challenge: auth.challengeOf(verifier) }));
+      me.lb = lb;
+      if (gen !== loginGen) return { ok: false, message: LOGIN_MESSAGES.cancelled };
+      me.url = auth.buildLoginUrl(url, { port: lb.port, state, challenge: auth.challengeOf(verifier) });
+      openUrl(me.url);
       const res = await lb.result;
       if (!res || res.error) {
         return { ok: false, message: LOGIN_MESSAGES[res && res.error] || LOGIN_MESSAGES.sso };
       }
       const data = await api.pluginToken({ code: res.code, verifier });
+      if (gen !== loginGen) return { ok: false, message: LOGIN_MESSAGES.cancelled };
       if (!validTokenResponse(data)) return { ok: false, message: 'Não foi possível entrar: resposta inválida da API.' };
       const t = now();
       store.save({ url, token: data.token, expiresAt: Date.parse(data.expiresAt), obtainedAt: t, user: data.user });
@@ -147,8 +157,23 @@ function createSession({
     } catch (e) {
       return { ok: false, message: `Não foi possível entrar: ${e && e.message ? e.message : e}` };
     } finally {
+      if (pending === me) pending = null;
       if (lb) lb.close();
     }
+  }
+
+  /** O navegador perdeu a aba: abre de novo o mesmo endereço (o loopback segue ouvindo). */
+  function reopenLogin() {
+    if (!pending || !pending.url) return false;
+    openUrl(pending.url);
+    return true;
+  }
+
+  /** Desiste do login em curso: fecha o loopback e o `login()` volta "cancelado". */
+  function cancelLogin() {
+    loginGen++;
+    const p = pending;
+    if (p && p.lb) p.lb.close();
   }
 
   function login() {
@@ -161,6 +186,7 @@ function createSession({
   }
 
   function logout() {
+    cancelLogin(); // um login no meio não termina entrando de novo
     store.clear();
     emit('changed');
   }
@@ -175,7 +201,7 @@ function createSession({
     return me;
   }
 
-  return { api, user, isLoggedIn, login, logout, refreshMe, authHeader, on };
+  return { api, user, isLoggedIn, login, reopenLogin, cancelLogin, logout, refreshMe, authHeader, on };
 }
 
 module.exports = { createSession };

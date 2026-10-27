@@ -83,6 +83,7 @@ const state = {
   }),
   views: new Set(), // as janelas de blocos abertas (formulários, gavetas, confirmações)
   lb: null, // o servidor do loopback do login em andamento
+  loginGen: 0, // o sair (ou o url novo) no meio do login: o fim dele não mexe mais na tela
 };
 
 const screens = new Map();
@@ -393,11 +394,12 @@ async function openMain() {
 async function doLogin() {
   const s = state.session;
   if (state.login.busy) return;
+  const gen = ++state.loginGen;
   state.login = { message: '', busy: true };
   switchTo('login');
   await render();
   const r = await s.login();
-  if (s !== state.session) return; // o url mudou no meio
+  if (s !== state.session || gen !== state.loginGen) return; // o url mudou ou saiu no meio
   state.login = { message: r.ok ? '' : r.message || '', busy: false };
   if (!r.ok) return render();
   return navigate(state.target);
@@ -417,7 +419,9 @@ function forgetAreas() {
 }
 
 async function doLogout() {
-  state.session.logout();
+  state.loginGen++;
+  state.session.logout(); // fecha também o loopback de um login no meio (state.lb)
+  if (state.lb) state.lb.close();
   state.poller.stopAll();
   forgetAreas();
   await closeWindows();
@@ -443,7 +447,12 @@ function onExpired() {
 // --- as ações -------------------------------------------------------------------------
 
 on('nav', (arg, values) => navigate(values.to || arg));
-on('login', () => doLogin());
+on('login', (arg) => {
+  // Com o login esperando o navegador: "abrir de novo" (a aba se perdeu) e "cancelar".
+  if (arg === 'reopen') return state.login.busy ? state.session.reopenLogin() : null;
+  if (arg === 'cancel') return state.login.busy ? state.session.cancelLogin() : null;
+  return doLogin();
+});
 on('logout', () => doLogout());
 on('retry', () => navigate(state.target));
 

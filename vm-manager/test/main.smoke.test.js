@@ -52,7 +52,7 @@ const CATALOG = {
  * `extra` outras rotas GET (por caminho, sem a query; /api/vms e /api/overview já vêm);
  * `routes` respostas por "MÉTODO /caminho": `(req, body) => ({ status?, json?, delayMs? })`.
  */
-function fakeApi(users, { failMe = 0, extra = {}, routes = {} } = {}) {
+function fakeApi(users, { failMe = 0, extra = {}, routes = {}, publicRoutes = {} } = {}) {
   const seen = [];
   let fails = failMe;
   const gets = {
@@ -85,8 +85,9 @@ function fakeApi(users, { failMe = 0, extra = {}, routes = {} } = {}) {
       const pathname = req.url.split('?')[0];
       seen.push({ method: req.method, url: req.url, path: pathname, auth: req.headers.authorization || '', body });
       const token = (req.headers.authorization || '').replace(/^Bearer /, '');
-      const route = routes[`${req.method} ${pathname}`];
-      if (route && users[token]) {
+      const open = publicRoutes[`${req.method} ${pathname}`]; // sem token (a troca do code do login)
+      const route = routes[`${req.method} ${pathname}`] || open;
+      if (route && (users[token] || open)) {
         const r = route(req, body) || {};
         const send = () => reply(res, r.status || 200, r.json === undefined ? undefined : r.raw ? r.json : { data: r.json });
         if (r.delayMs) setTimeout(send, r.delayMs);
@@ -2675,6 +2676,74 @@ test('o token vence com a janela aberta: a próxima chamada volta pro login com 
     p.act('vmm', 'act', { a: 'vm:open:177' });
     await p.waitFor(() => p.mainData().screen === 'login' && p.mainData().login.message === EXPIRED_TEXT, 'login com o aviso');
     assert.equal(fs.existsSync(path.join(dataDir, 'auth.json')), false);
+  } finally {
+    await p.stop();
+    closeApi(api);
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+/** O login pelo navegador: o endereço que o plugin pediu pra abrir. */
+const openUrls = (p) => p.requests.filter((r) => r.method === 'window.openUrl').map((r) => r.params.url);
+const callback = (u, query) => {
+  const url = new URL(u);
+  return fetch(`http://127.0.0.1:${url.searchParams.get('port')}/callback?state=${url.searchParams.get('state')}&${query}`);
+};
+
+test('login esperando o navegador: "abrir de novo" reabre o mesmo endereço, "cancelar" libera e o retorno fecha', { timeout: 15000 }, async () => {
+  const api = await fakeApi({ 'tok-new': ADMIN }, {
+    publicRoutes: { 'POST /api/auth/plugin/token': () => ({ json: { token: 'tok-new', expiresAt: new Date(Date.now() + 3600000).toISOString(), user: ADMIN } }) },
+  });
+  const dataDir = tmpDir();
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    await pause(100); // a resposta do view.open chegar (antes disso não há o que redesenhar)
+    p.act('vmm', 'login', {});
+    await p.waitFor(() => openUrls(p).length === 1 && p.mainData().login.busy === true, 'abriu o navegador');
+    p.act('vmm', 'act', { a: 'login:reopen' });
+    await p.waitFor(() => openUrls(p).length === 2, 'abriu de novo');
+    assert.equal(openUrls(p)[1], openUrls(p)[0], 'o mesmo endereço');
+    p.act('vmm', 'act', { a: 'login:cancel' });
+    await p.waitFor(() => p.mainData().login.busy === false, 'liberou');
+    assert.equal(p.mainData().login.message, 'Login cancelado.');
+    await assert.rejects(callback(openUrls(p)[0], 'code=c1'), 'o retorno do login cancelado fechou');
+    // e o login de novo entra
+    p.act('vmm', 'login', {});
+    await p.waitFor(() => openUrls(p).length === 3, 'abriu o navegador de novo');
+    const res = await callback(openUrls(p)[2], 'code=c2');
+    assert.equal(res.status, 200);
+    await p.waitFor(() => p.mainData().screen === 'vms', 'entrou');
+  } finally {
+    await p.stop();
+    closeApi(api);
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('sair com o login esperando o navegador fecha o retorno: o login não termina entrando', { timeout: 15000 }, async () => {
+  const api = await fakeApi({ 'tok-new': ADMIN }, {
+    publicRoutes: { 'POST /api/auth/plugin/token': () => ({ json: { token: 'tok-new', expiresAt: new Date(Date.now() + 3600000).toISOString(), user: ADMIN } }) },
+  });
+  const dataDir = tmpDir();
+  const p = startPlugin({ dataDir, url: api.url });
+  try {
+    await p.init();
+    await p.call('command.invoke', { command: 'abrir', context: {} });
+    await p.waitFor(() => p.mainData().screen === 'login', 'login');
+    await pause(100);
+    p.act('vmm', 'login', {});
+    await p.waitFor(() => openUrls(p).length === 1 && p.mainData().login.busy === true, 'abriu o navegador');
+    p.act('vmm', 'logout', {});
+    await p.waitFor(() => p.mainData().login.busy === false, 'saiu');
+    await assert.rejects(callback(openUrls(p)[0], 'code=c1'), 'o retorno fechou');
+    await pause(200);
+    assert.equal(fs.existsSync(path.join(dataDir, 'auth.json')), false);
+    assert.equal(p.mainData().screen, 'login');
+    assert.equal(p.mainData().login.message, '');
+    assert.equal(api.seen.some((r) => r.path === '/api/auth/plugin/token'), false);
   } finally {
     await p.stop();
     closeApi(api);

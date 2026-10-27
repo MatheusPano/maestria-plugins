@@ -220,15 +220,31 @@ widget LoginError = switch args.text {
 };
 
 widget LoginButton = switch data.login.busy {
-  true: Opacity(
-    opacity: 0.7,
-    child: Container(
-      height: 44.0,
-      decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
-      child: Center(
-        child: Text(text: "abrindo o navegador…", style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.onAccent }),
+  true: Column(
+    mainAxisSize: "min",
+    crossAxisAlignment: "stretch",
+    children: [
+      Opacity(
+        opacity: 0.7,
+        child: Container(
+          height: 44.0,
+          decoration: { type: "box", color: data.theme.accent, borderRadius: [{ x: 6.0 }] },
+          child: Center(
+            child: Text(text: "abrindo o navegador…", style: { fontSize: 14.0, fontWeight: "w600", color: data.theme.onAccent }),
+          ),
+        ),
       ),
-    ),
+      SizedBox(height: 12.0),
+      // A aba do navegador se perdeu: abre o mesmo endereço (o retorno segue ouvindo) ou desiste.
+      Row(
+        mainAxisAlignment: "center",
+        children: [
+          LoginLink(label: "abrir de novo", a: "login:reopen"),
+          SizedBox(width: 8.0),
+          LoginLink(label: "cancelar", a: "login:cancel"),
+        ],
+      ),
+    ],
   ),
   default: Pressable(
     radius: 6.0,
@@ -248,6 +264,16 @@ widget LoginButton = switch data.login.busy {
     ),
   ),
 };
+
+widget LoginLink = Pressable(
+  radius: 6.0,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.a },
+  child: Padding(
+    padding: [8.0, 4.0, 8.0, 4.0],
+    child: Text(text: args.label, style: { fontSize: 13.0, color: data.theme.dim }),
+  ),
+);
 
 // --- o acesso pendente (app/pending/page.tsx) ------------------------------------
 
