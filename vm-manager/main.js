@@ -1648,10 +1648,18 @@ function routeWindowGone(viewId) {
   if (had && had.busy && (viewId === ROUTE_REMOVE || had.step === 'review')) {
     const host = viewId === ROUTE_REMOVE ? had.hostname : had.plan.hostname;
     const what = viewId === ROUTE_REMOVE ? 'remoção' : 'criação';
-    banner(`A ${what} de ${host} continua em segundo plano; confira na Auditoria e use Ler agora.`);
+    banner(backgroundText(what, host));
   }
   if (had) guard('rotas', () => reloadRoutes());
 }
+
+/** O job chegou com a janela já fechada (o open:false do primeiro render): o mesmo recado, uma vez. */
+function backgroundJob(what, host, job) {
+  if (job && job.status === 'running') banner(backgroundText(what, host));
+  return null; // o routeWindowGone já releu a lista
+}
+
+const backgroundText = (what, host) => `A ${what} de ${host} continua em segundo plano; confira na Auditoria e use Ler agora.`;
 
 function forgetRoutes() {
   jobPoller.stopAll();
@@ -1731,7 +1739,9 @@ async function applyRoute(values) {
     w.error = errText(e);
     return renderRouteWindow(ROUTE_NEW);
   }
-  await renderRouteWindow(ROUTE_NEW);
+  const shown = await renderRouteWindow(ROUTE_NEW);
+  // Na grade (sem modal) a janela pode ter fechado sem evento: só o open:false deste render conta.
+  if (!shown && wizard !== w) return backgroundJob('criação', w.plan.hostname, w.job);
   if (w.job.status === 'running') trackJob(ROUTE_NEW, () => wizard);
   else await reloadRoutes();
   return null;
@@ -1786,7 +1796,8 @@ async function deleteRoute(values) {
     r.error = errText(e);
     return renderRouteWindow(ROUTE_REMOVE);
   }
-  await renderRouteWindow(ROUTE_REMOVE);
+  const shown = await renderRouteWindow(ROUTE_REMOVE);
+  if (!shown && removal !== r) return backgroundJob('remoção', r.hostname, r.job);
   if (r.job.status === 'running') trackJob(ROUTE_REMOVE, () => removal);
   else await reloadRoutes();
   return null;

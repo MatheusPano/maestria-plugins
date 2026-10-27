@@ -2692,6 +2692,60 @@ test('o token vence com a janela aberta: a próxima chamada volta pro login com 
   assert.deepEqual(p.bad, []);
 });
 
+test('rotas na grade: a janela some no primeiro render depois do POST e o "segundo plano" vem uma vez', { timeout: 15000 }, async () => {
+  const RUNNING = jobOf('create', 'running', [{ step: 'certificate', status: 'running', detail: null }]);
+  let gone = false;
+  const { p, close } = await openRoutes({
+    windowReply: (id) => !(gone && id === 'route:new'),
+    routes: { 'POST /api/routes/plan': () => ({ json: PLAN }), 'POST /api/routes': () => ({ json: RUNNING, delayMs: 400 }) },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'route:new' });
+    await p.waitFor(() => p.windowBlocks('route:new'), 'abre');
+    p.act('route:new', 'route:review', NEW_VALUES);
+    await p.waitFor(() => allTexts(p.windowBlocks('route:new')).includes('2 de 2 · Revisão'), 'revisão');
+    p.act('route:new', 'route:apply', { confirm: 'novo.cefis.cloud' });
+    await p.waitFor(() => button(p.windowBlocks('route:new'), 'route:apply').disabled === true, 'aplicando');
+    gone = true; // fechada na grade: só o open:false do próximo view.update conta
+    await p.waitFor(() => banners(p).length > 0, 'banner');
+    assert.deepEqual(banners(p), ['A criação de novo.cefis.cloud continua em segundo plano; confira na Auditoria e use Ler agora.']);
+    await pause(600);
+    assert.equal(banners(p).length, 1);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
+test('remoção na grade: a janela some no primeiro render depois do DELETE e o "segundo plano" vem uma vez', { timeout: 15000 }, async () => {
+  const RUNNING = jobOf('remove', 'running', [{ step: 'remove_mapfiles', status: 'running', detail: null }]);
+  let gone = false;
+  const W = 'route:remove';
+  const { p, close } = await openRoutes({
+    windowReply: (id) => !(gone && id === W),
+    routes: {
+      'POST /api/routes/app.cefis.cloud/removal-plan': () => ({ json: REMOVAL }),
+      'DELETE /api/routes/app.cefis.cloud': () => ({ json: RUNNING, delayMs: 400 }),
+    },
+  });
+  try {
+    p.act('vmm', 'act', { a: 'route:open:app.cefis.cloud' });
+    await p.waitFor(() => p.windowBlocks('route:app.cefis.cloud'), 'gaveta');
+    p.act('route:app.cefis.cloud', 'route:remove:app.cefis.cloud', {});
+    await p.waitFor(() => { const b = button(p.windowBlocks(W), 'route:delete'); return b && b.disabled === false; }, 'plano');
+    p.act(W, 'route:delete', { confirm: 'app.cefis.cloud' });
+    await p.waitFor(() => button(p.windowBlocks(W), 'route:delete').disabled === true, 'removendo');
+    gone = true;
+    await p.waitFor(() => banners(p).length > 0, 'banner');
+    assert.deepEqual(banners(p), ['A remoção de app.cefis.cloud continua em segundo plano; confira na Auditoria e use Ler agora.']);
+    await pause(400);
+    assert.equal(banners(p).length, 1);
+  } finally {
+    await close();
+  }
+  assert.deepEqual(p.bad, []);
+});
+
 test('a lista de VMs que chega depois de sair não aparece pra quem entra de novo', { timeout: 15000 }, async () => {
   let phase = 'normal';
   const { p, close, count, api, dataDir, token } = await openVms({
