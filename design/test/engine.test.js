@@ -144,17 +144,78 @@ test('deleting a board emits null and nothing after', { skip }, async () => {
   assert.ok(!fs.existsSync(png));
 });
 
-test('a render in flight for a deleted board is dropped', { skip }, async () => {
+test('deleting a board while chrome renders it leaves no png and no later event', { skip }, async () => {
   addBoard('racy', '<div class="p-4">racy</div>');
   await waitBoard((x) => x.name === 'racy' && x.state && x.state.light);
   events.length = 0;
-  const p = eng.render(['racy']); // queued now
+  const send = eng.chrome.send.bind(eng.chrome);
+  let inShot;
+  const started = new Promise((r) => { inShot = r; });
+  eng.chrome.send = async (method, ...rest) => {
+    if (method === 'Page.captureScreenshot') { inShot(); await sleep(400); }
+    return send(method, ...rest);
+  };
+  const p = eng.render(['racy']);
+  await started; // the Chrome render is running now
   fs.rmSync(boardFile('racy'));
   await p;
-  await sleep(600);
+  await sleep(800);
+  eng.chrome.send = send;
   const mine = events.filter((x) => x.name === 'racy');
-  assert.ok(mine.every((x, i) => i === mine.length - 1 ? x.state === null : true), JSON.stringify(mine.map((x) => !!x.state)));
-  assert.strictEqual(mine[mine.length - 1].state, null);
+  assert.strictEqual(mine.length, 1, JSON.stringify(mine.map((x) => !!x.state)));
+  assert.strictEqual(mine[0].state, null);
+  const left = fs.readdirSync(path.join(dataDir, 'png')).filter((f) => f.startsWith('racy.'));
+  assert.deepStrictEqual(left, []);
+  assert.ok(!fs.existsSync(path.join(dataDir, 'render', 'racy.html')));
+});
+
+test('a re-save during a render does not land the stale image', { skip }, async () => {
+  addBoard('resave', '<div class="p-4">um</div>');
+  await waitBoard((x) => x.name === 'resave' && x.state && x.state.light);
+  events.length = 0;
+  const send = eng.chrome.send.bind(eng.chrome);
+  let inShot;
+  const started = new Promise((r) => { inShot = r; });
+  eng.chrome.send = async (method, ...rest) => {
+    if (method === 'Page.captureScreenshot') { inShot(); await sleep(300); }
+    return send(method, ...rest);
+  };
+  const p = eng.render(['resave']);
+  await started;
+  fs.writeFileSync(boardFile('resave'), '<div class="p-4">dois</div>');
+  await p;
+  await waitBoard((x) => x.name === 'resave' && x.state && !x.state.error);
+  await sleep(300);
+  eng.chrome.send = send;
+  const revs = events.filter((x) => x.name === 'resave').map((x) => x.state.rev);
+  assert.deepStrictEqual(revs, [...revs].sort((a, b) => a - b));
+  assert.strictEqual(new Set(revs).size, revs.length);
+  const left = fs.readdirSync(path.join(dataDir, 'png')).filter((f) => f.startsWith('resave.') && f.includes('tmp'));
+  assert.deepStrictEqual(left, []);
+});
+
+test('a class that produces no css does not stall the save', { skip }, async () => {
+  events.length = 0;
+  fs.writeFileSync(boardFile('conversas'), '<div class="p-4 bg-re">sem css</div>');
+  const e = await waitBoard((x) => x.name === 'conversas');
+  assert.ok(e.state.light && !e.state.error);
+  assert.ok(e.state.ms < 600, `ms ${e.state.ms}`);
+});
+
+test('chrome is relaunched once; the second death is reported and final', { skip }, async () => {
+  eng.chrome.abort('test 1');
+  let m = await eng.render(['conversas']);
+  assert.ok(!m.get('conversas').error, JSON.stringify(m.get('conversas')));
+  const second = eng.chrome;
+  assert.notStrictEqual(second.exited, true);
+  second.abort('test 2');
+  m = await eng.render(['conversas']);
+  assert.match(m.get('conversas').error, /o chrome não subiu/);
+  assert.ok(m.get('conversas').light, 'previous png path kept');
+  const dead = eng.chrome;
+  m = await eng.render(['conversas']);
+  assert.match(m.get('conversas').error, /o chrome não subiu/);
+  assert.strictEqual(eng.chrome, dead, 'no further relaunch');
 });
 
 test('close() leaves no chrome or tailwind process', { skip }, async () => {
@@ -164,4 +225,19 @@ test('close() leaves no chrome or tailwind process', { skip }, async () => {
   await sleep(100);
   for (const pid of pids) assert.throws(() => process.kill(pid, 0), `pid ${pid} still alive`);
   assert.ok(!fs.existsSync(path.join(canvasDir, 'png')), 'nothing written into the canvas folder');
+});
+
+test('open() fails readably when the project has no tailwind, leaving no process', { skip }, async () => {
+  const bad = path.join(tmp, 'bad');
+  fs.cpSync(path.join(__dirname, '..', 'bench', 'sac-sidebar'), bad, { recursive: true });
+  const empty = path.join(tmp, 'empty-repo');
+  fs.mkdirSync(empty);
+  const d = JSON.parse(fs.readFileSync(path.join(bad, 'design.json'), 'utf8'));
+  fs.writeFileSync(path.join(bad, 'design.json'), JSON.stringify({ ...d, repo: empty }));
+  await assert.rejects(engineMod.open(bad, { dataDir: path.join(tmp, 'bad-data') }), /o projeto não tem tailwind em node_modules/);
+  await sleep(200);
+  const { execFileSync } = require('node:child_process');
+  let out = '';
+  try { out = execFileSync('pgrep', ['-f', path.join(tmp, 'bad-data')], { encoding: 'utf8' }); } catch { /* none */ }
+  assert.strictEqual(out.trim(), '');
 });

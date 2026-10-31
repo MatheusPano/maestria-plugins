@@ -11,7 +11,7 @@ const page = require('./page');
 const { renderPage } = require('./render');
 
 const DEBOUNCE_MS = 40;
-const CSS_GRACE_MS = 600; // a new class that produces no css never rewrites the output
+const CSS_GRACE_MS = 200; // fallback when tailwind prints no rebuild line
 const CLASS_RE = /\bclass\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
 const read = (p) => fs.readFileSync(p, 'utf8');
@@ -54,11 +54,14 @@ class Engine extends EventEmitter {
     this.timers = new Map();
     this.watchers = [];
     this.queue = Promise.resolve();
+    this.deaths = 0; // chrome processes that died; one relaunch is allowed
+    this.chromeError = null;
   }
 
   // ---- files -------------------------------------------------------------
   boardFile(name) { return path.join(this.dir, 'boards', `${name}.html`); }
   expandedFile(name) { return path.join(this.dataDir, 'expanded', `${name}.html`); }
+  renderFile(name) { return path.join(this.dataDir, 'render', `${name}.html`); }
   pngFile(name, theme) { return path.join(this.dataDir, 'png', `${name}.${theme}.png`); }
 
   boardNames() {
@@ -144,7 +147,7 @@ class Engine extends EventEmitter {
     const brand = this.design.brand ? path.dirname(path.resolve(this.dir, this.design.brand)) : null;
     const own = [this.dir, path.join(this.dir, 'boards'), path.join(this.dir, 'components')];
     if (brand && !own.includes(brand) && fs.existsSync(brand)) {
-      this._watch(brand, () => this.debounce('brand', () => { this.loadDesign(); this.schedule(this.renderable()); }));
+      this._watch(brand, () => this.debounce('brand', () => this._onDesign()));
     }
   }
 
@@ -169,7 +172,7 @@ class Engine extends EventEmitter {
     this.uses.delete(name);
     this.tokens.delete(name);
     this.expandedText.delete(name);
-    for (const f of [this.expandedFile(name), this.pngFile(name, 'light'), this.pngFile(name, 'dark')]) rm(f);
+    for (const f of [this.expandedFile(name), this.renderFile(name), this.pngFile(name, 'light'), this.pngFile(name, 'dark')]) rm(f);
     if (had) this.emit('board', name, null);
   }
 
@@ -238,7 +241,7 @@ class Engine extends EventEmitter {
     for (const name of prepared) {
       if (this.closed) break;
       if (this.revs.get(name) !== revs.get(name)) continue; // re-saved meanwhile
-      const out = await this._render(name);
+      const out = await this._render(name, revs.get(name));
       this._finish(name, revs.get(name), t0s.get(name), out, results);
     }
     if (this.closed) return results;
@@ -277,43 +280,89 @@ class Engine extends EventEmitter {
   // Waits for the css of a changed page; gives up quietly after a grace period
   // (the change may not add any css), loudly when Tailwind is dead.
   async _waitCss(since) {
-    const built = this.tw.whenBuilt(since).then(() => null, (e) => e);
-    const timer = new Promise((r) => { const t = setTimeout(() => r('grace'), CSS_GRACE_MS); built.then(() => clearTimeout(t)); });
-    const r = await Promise.race([built, timer]);
-    if (r === 'grace') return this.tw.failed ? this.tw.failed.message : null;
+    const built = this.tw.whenBuilt(since);
+    const settled = built.then(() => null, (e) => e);
+    let timer;
+    const grace = new Promise((r) => { timer = setTimeout(() => r('grace'), CSS_GRACE_MS); });
+    const r = await Promise.race([settled, grace]);
+    clearTimeout(timer);
+    if (r === 'grace') { built.cancel(); return this.tw.failed ? this.tw.failed.message : null; }
     return r ? r.message : null;
   }
 
-  async _render(name) {
-    const b = this.canvas.boards[name];
-    const t0 = Date.now();
+  async _chrome() {
+    if (this.chromeError) throw new Error(this.chromeError);
+    if (this.chrome && !this.chrome.exited) return this.chrome;
+    if (this.deaths >= 2) throw new Error(this.chromeError = `o chrome não subiu: caiu duas vezes (${this.lastDeath})`);
     try {
-      this.chrome = await chromeMod.ensure(this.chrome, this.chromeOpts);
-      const copy = path.join(this.dataDir, 'render', `${name}.html`);
-      const src = this.expandedText.get(name);
-      const version = fs.statSync(this.outCss).mtimeMs;
-      writeAtomic(copy, src.replace(`href="file://${this.outCss}"`, `href="file://${this.outCss}?v=${version}"`));
-      fs.mkdirSync(path.join(this.dataDir, 'png'), { recursive: true });
-      const base = { htmlPath: copy, width: b.w, height: b.h };
-      const light = await renderPage(this.chrome, { ...base, dark: null, out: this.pngFile(name, 'light') });
-      const dark = await renderPage(this.chrome, { ...base, dark: this.design.darkMode, out: this.pngFile(name, 'dark') });
-      this.log(`render ${name}: ${Date.now() - t0} ms (light ${light.ms} + dark ${dark.ms})`);
-      return { light: this.pngFile(name, 'light'), dark: this.pngFile(name, 'dark'), width: light.width, height: light.height, cut: light.cut };
+      const c = await chromeMod.launch(this.chromeOpts);
+      this._track(c);
+      this.chrome = c;
+      return c;
     } catch (e) {
-      return { error: e.message };
+      this.deaths++;
+      this.lastDeath = e.message;
+      if (this.deaths >= 2) throw new Error(this.chromeError = `o chrome não subiu: ${e.message}`);
+      throw e;
     }
   }
 
+  _track(c) {
+    c.once('exit', () => { if (!this.closed) { this.deaths++; this.lastDeath = 'o processo terminou'; } });
+  }
+
+  // Renders both themes into per-rev temp files; _finish promotes them to the
+  // stable paths only if the board was not deleted or re-saved meanwhile.
+  async _render(name, rev) {
+    const b = this.canvas.boards[name];
+    const t0 = Date.now();
+    const stale = () => this.closed || this.revs.get(name) !== rev;
+    const tmp = (theme) => path.join(this.dataDir, 'png', `${name}.${theme}.${rev}.tmp.png`);
+    const temps = [tmp('light'), tmp('dark')];
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const chrome = await this._chrome();
+        if (stale()) return { stale: true, temps };
+        const src = this.expandedText.get(name);
+        const version = fs.statSync(this.outCss).mtimeMs;
+        const copy = this.renderFile(name);
+        writeAtomic(copy, src.replace(`href="file://${this.outCss}"`, `href="file://${this.outCss}?v=${version}"`));
+        fs.mkdirSync(path.join(this.dataDir, 'png'), { recursive: true });
+        const base = { htmlPath: copy, width: b.w, height: b.h };
+        const light = await renderPage(chrome, { ...base, dark: null, out: temps[0] });
+        if (stale()) return { stale: true, temps };
+        const dark = await renderPage(chrome, { ...base, dark: this.design.darkMode, out: temps[1] });
+        this.log(`render ${name}: ${Date.now() - t0} ms (light ${light.ms} + dark ${dark.ms})`);
+        return { temps, width: light.width, height: light.height, cut: light.cut };
+      } catch (e) {
+        lastErr = e;
+        for (const t of temps) rm(t);
+        if (this.chromeError || !(this.chrome && this.chrome.exited) || this.deaths >= 2) break;
+      }
+    }
+    return { error: this.chromeError || lastErr.message, temps };
+  }
+
   _finish(name, rev, t0, out, results) {
-    if (this.closed || this.revs.get(name) !== rev) return; // deleted or re-saved: drop
+    const stale = this.closed || this.revs.get(name) !== rev;
+    if (stale || out.error) for (const t of out.temps || []) rm(t);
+    if (stale || out.stale) return; // deleted or re-saved: drop
     if (out.gone) { this._deleted(name); results.set(name, null); return; }
     const prev = this.states.get(name);
     const b = this.canvas.boards[name] || {};
-    const state = out.error
-      ? { ...(prev || { width: b.w, height: b.h, cut: false }), error: out.error, ms: Date.now() - t0, rev }
-      : { light: out.light, dark: out.dark, width: out.width, height: out.height, cut: out.cut, ms: Date.now() - t0, rev };
-    if (out.error) this.log(`board ${name}: ${out.error}`);
-    else this.log(`board ${name}: ${state.ms} ms (save to image)`);
+    let state;
+    if (out.error) {
+      state = { ...(prev || { width: b.w, height: b.h, cut: false }), error: out.error, ms: Date.now() - t0, rev };
+      this.log(`board ${name}: ${out.error}`);
+    } else {
+      const light = this.pngFile(name, 'light');
+      const dark = this.pngFile(name, 'dark');
+      fs.renameSync(out.temps[0], light);
+      fs.renameSync(out.temps[1], dark);
+      state = { light, dark, width: out.width, height: out.height, cut: out.cut, ms: Date.now() - t0, rev };
+      this.log(`board ${name}: ${state.ms} ms (save to image)`);
+    }
     this.states.set(name, state);
     results.set(name, state);
     this.emit('board', name, state);
@@ -366,10 +415,11 @@ async function open(canvasDir, { dataDir, log } = {}) {
     chromeP = chromeMod.launch(eng.chromeOpts);
     twP = page.startTailwind({ canvasDir: dir, design: eng.design, dataDir: eng.dataDir, outCss: eng.outCss, log: (m) => eng.log(`tailwind: ${m}`) });
     [eng.chrome, eng.tw] = await Promise.all([chromeP, twP]);
+    eng._track(eng.chrome);
   } catch (e) {
     const [c, t] = await Promise.allSettled([chromeP, twP]);
-    if (c.status === 'fulfilled') await c.value.close();
-    if (t.status === 'fulfilled') await t.value.stop();
+    if (c.status === 'fulfilled' && c.value) await c.value.close();
+    if (t.status === 'fulfilled' && t.value) await t.value.stop();
     throw e;
   }
   eng._startWatching();

@@ -16,7 +16,7 @@ function buildPage({ outCss, brandCss = '', head = '', body, version }) {
     + `${brand}${head || ''}</head><body style="margin:0">${body}</body></html>`;
 }
 
-function startTailwind({ canvasDir, design, dataDir, outCss, log }) {
+async function startTailwind({ canvasDir, design, dataDir, outCss, log }) {
   const repoDir = path.resolve(canvasDir, design.repo);
   const detected = project.detect(repoDir);
   return tailwind.start({

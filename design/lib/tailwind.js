@@ -67,6 +67,7 @@ class Tailwind {
     this.restarts = 0;
     this.stderr = '';
     this.failed = null;
+    this.doneAt = 0;
   }
 
   get pid() { return this.child && this.child.pid; }
@@ -97,6 +98,8 @@ class Tailwind {
     });
     this.child = child;
     child.stderr.on('data', (d) => {
+      // the CLI prints "Done in Nms." after every rebuild, even when the output css is unchanged
+      if (/Done in \d+\s*ms/.test(d.toString())) this.doneAt = Date.now();
       this.stderr = (this.stderr + d.toString()).slice(-STDERR_KEEP);
     });
     child.on('error', (e) => { this.stderr += `\n${e.message}`; });
@@ -131,15 +134,20 @@ class Tailwind {
   // Resolves when outCss was written after sinceMs and is whole: non-empty and
   // unchanged (size + mtime) across two consecutive polls. Rejects at once if the
   // CLI is gone for good, or after 5 s with the CLI's last stderr lines.
+  // Also resolves on the CLI's "Done in" line printed after sinceMs (an unchanged css is not rewritten).
+  // The returned promise has cancel() to stop polling once the caller gave up.
   whenBuilt(sinceMs) {
     const { outCss } = this.opts;
     const t0 = Date.now();
     let prev = null;
-    return new Promise((resolve, reject) => {
+    let cancelled = false;
+    const p = new Promise((resolve, reject) => {
       const tick = () => {
+        if (cancelled) return resolve();
         if (this.failed) return reject(this.failed);
         let st = null;
         try { st = fs.statSync(outCss); } catch { /* not built yet */ }
+        if (st && st.size > 0 && this.doneAt > sinceMs) { this.stderr = ''; return resolve(); }
         if (st && st.mtimeMs > sinceMs && st.size > 0) {
           if (prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
             this.stderr = '';
@@ -156,6 +164,8 @@ class Tailwind {
       };
       tick();
     });
+    p.cancel = () => { cancelled = true; };
+    return p;
   }
 
   stop() {
