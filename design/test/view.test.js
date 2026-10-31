@@ -187,3 +187,8 @@ test('wire: whole numbers become doubles for rfw (json has no 16.0); text and fl
   const text = JSON.stringify(view.wire(build({ ui: { command: { kind: 'focus', board: 'a' }, rev: 1 } }))).replace(/"rev":\d+/g, '');
   assert.ok(!/[:[,]-?\d+[,}\]]/.test(text), `an int slipped through: ${text}`);
 });
+
+test('frameWidth fixes the Positioned width: box plus the 2 px border on each side', () => {
+  const d = build();
+  assert.deepStrictEqual(d.boards.map((b) => b.frameWidth), [2588, 828]);
+});

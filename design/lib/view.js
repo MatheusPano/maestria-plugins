@@ -10,8 +10,9 @@ const STRIP = 28; // name strip above the images
 const GAP = 24; // between the light and the dark image
 const MARGIN = 80; // around the whole canvas
 const DEFAULT_H = 800; // a board not rendered yet and without `h`
-const ERROR_H = 40; // the error line under the images
+const ERROR_H = 56; // the error line under the images (two lines of 16 px)
 const EMPTY = { w: 1200, h: 800 };
+const BORDER = 2; // the highlight border (always drawn, transparent when off)
 const THEMES = ['both', 'light', 'dark'];
 const THEME_LABEL = { both: 'ambos', light: '☀', dark: '☾' };
 
@@ -91,6 +92,7 @@ function build({ canvas, states, ui = {}, caps = {}, hash = '' }) {
     top: ys[i] - minY + MARGIN,
     width: it.boxW,
     height: it.boxH,
+    frameWidth: it.boxW + 2 * BORDER, // the highlight border sits around the box
     imageWidth: it.imgW,
     imageHeight: it.imgH,
     light: theme === 'dark' ? '' : image(it, 'light'),

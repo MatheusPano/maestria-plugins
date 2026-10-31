@@ -40,7 +40,7 @@ widget Bar = Container(
       IconButton(icon: "remove", tooltip: "afastar", onPressed: event "act" { a: "zoom:out" }),
       SizedBox(
         width: 48.0,
-        child: Text(text: data.zoomLabel, textAlign: "center", style: { fontSize: 13.0, color: data.theme.dim }),
+        child: Text(text: data.zoomLabel, textAlign: "center", style: { fontSize: 14.0, color: data.theme.dim }),
       ),
       IconButton(icon: "add", tooltip: "aproximar", onPressed: event "act" { a: "zoom:in" }),
       SizedBox(width: 4.0),
@@ -49,10 +49,10 @@ widget Bar = Container(
         padding: [10.0, 4.0, 10.0, 4.0],
         hoverColor: data.theme.hover,
         onTap: event "act" { a: "zoom:fit" },
-        child: Text(text: "ajustar", style: { fontSize: 13.0, color: data.theme.fg }),
+        child: Text(text: "ajustar", style: { fontSize: 16.0, color: data.theme.fg }),
       ),
       SizedBox(width: 8.0),
-      Text(text: data.themeLabel, style: { fontSize: 13.0, color: data.theme.fg }),
+      Text(text: data.themeLabel, style: { fontSize: 16.0, color: data.theme.fg }),
       MenuButton(icon: "image", tooltip: "tema: claro, escuro ou os dois lado a lado", menu: data.themeMenu, onMenu: event "act" {}),
       SizedBox(width: 4.0),
       Follow(),
@@ -75,7 +75,7 @@ widget Follow = Tooltip(
       children: [
         Glyph(icon: switch data.follow { true: "check", default: "dot" }, size: 14.0, color: switch data.follow { true: data.theme.accent, default: data.theme.faint }),
         SizedBox(width: 6.0),
-        Text(text: "seguir o claude", style: { fontSize: 13.0, color: switch data.follow { true: data.theme.fg, default: data.theme.dim } }),
+        Text(text: "seguir o claude", style: { fontSize: 16.0, color: switch data.follow { true: data.theme.fg, default: data.theme.dim } }),
       ],
     ),
   ),
@@ -87,7 +87,7 @@ widget Notice = switch data.message {
   default: Container(
     padding: [12.0, 8.0, 12.0, 8.0],
     color: data.theme.bg,
-    child: Text(text: data.message, style: { fontSize: 13.0, color: data.theme.dim }),
+    child: Text(text: data.message, style: { fontSize: 16.0, color: data.theme.dim }),
   ),
 };
 
@@ -99,7 +99,7 @@ widget Warnings = switch data.hasWarnings {
       crossAxisAlignment: "start",
       children: [
         ...for w in data.warnings:
-          Text(text: w, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.yellow }),
+          Text(text: w, maxLines: 2, overflow: "ellipsis", style: { fontSize: 14.0, color: data.theme.yellow }),
       ],
     ),
   ),
@@ -138,6 +138,7 @@ widget Area = switch data.hasBoards {
 widget Board = Positioned(
   start: args.b.left,
   top: args.b.top,
+  width: args.b.frameWidth, // fixed: a long title is cut instead of widening the box
   child: GestureDetector(
     onDoubleTap: event "act" { a: args.b.focus },
     child: Container(
@@ -165,10 +166,10 @@ widget Board = Positioned(
           switch args.b.error {
             "": SizedBox(),
             default: SizedBox(
-              height: 40.0,
+              height: 56.0,
               child: Padding(
                 padding: [0.0, 8.0, 0.0, 0.0],
-                child: Text(text: args.b.error, maxLines: 2, overflow: "ellipsis", style: { fontSize: 13.0, color: data.theme.red }),
+                child: Text(text: args.b.error, maxLines: 2, overflow: "ellipsis", style: { fontSize: 16.0, color: data.theme.red }),
               ),
             ),
           },

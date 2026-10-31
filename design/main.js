@@ -23,10 +23,13 @@ const PLUGIN_ID = 'maestria.design';
 const UI_FILE = path.join(__dirname, 'ui', 'canvas.rfwtxt');
 const HIGHLIGHT_MS = 3000;
 const CLOSE_GRACE_MS = 600; // the host SIGTERMs 0.8 s after `shutdown`
+// The host only tells about closed modals (view.closed), not closed grid tabs:
+// probe each open view with an empty view.update and close it on {open:false}.
+const PROBE_MS = Number(process.env.MAESTRIA_DESIGN_PROBE_MS) > 0 ? Number(process.env.MAESTRIA_DESIGN_PROBE_MS) : 5000;
 
 const OUTDATED = [
-  { type: 'heading', text: 'Este Maestria não desenha o canvas do Design' },
-  { type: 'text', text: 'O canvas precisa de uma versão do Maestria com widgets (rfw). Atualize o app e abra de novo.' },
+  { type: 'heading', text: 'este maestria não desenha o canvas do design' },
+  { type: 'text', text: 'o canvas precisa de uma versão do maestria com widgets (rfw). atualize o app e abra de novo.' },
 ];
 
 const state = {
@@ -37,6 +40,9 @@ const state = {
   current: null, // the canvas the user touched last (for `ajustar`)
   last: { byTab: {}, byCwd: {} }, // the last canvas opened per session / cwd
   engines: new Set(), // engines not yet closed (killed on exit, even mid-close)
+  pending: new Map(), // engine dataDir -> engineMod.open() still in flight
+  probe: null, // the timer of the closed-tab probe
+  exiting: false,
 };
 
 const errText = (e) => String((e && e.message) || e);
@@ -174,6 +180,7 @@ async function openCanvas(input, { tabId, cwd } = {}) {
     failed: false,
   };
   state.views.set(viewId, V);
+  startProbe();
   V.ready = startEngine(V); // Chrome and Tailwind start while the view opens
   await mx.request('view.open', { viewId, title: V.title, rfw: { library: library(), root: 'root' }, data: data(V) });
   V.shown = true;
@@ -184,9 +191,13 @@ async function openCanvas(input, { tabId, cwd } = {}) {
 
 async function startEngine(V) {
   let eng;
+  const dataDir = path.join(state.dataDir, V.hash);
+  const opening = engineMod.open(V.dir, { dataDir, log: (m) => mx.log(m) });
+  state.pending.set(dataDir, opening);
   try {
-    eng = await engineMod.open(V.dir, { dataDir: path.join(state.dataDir, V.hash), log: (m) => mx.log(m) });
+    eng = await opening;
   } catch (e) {
+    if (state.pending.get(dataDir) === opening) state.pending.delete(dataDir);
     mx.log(`abrir ${V.dir}:`, errText(e));
     V.ui.message = `não abriu: ${errText(e)}`;
     V.failed = true;
@@ -194,7 +205,8 @@ async function startEngine(V) {
     return;
   }
   state.engines.add(eng);
-  if (V.closed) { await closeEngine(eng); return; }
+  if (state.pending.get(dataDir) === opening) state.pending.delete(dataDir);
+  if (V.closed || state.exiting) { await closeEngine(eng); return; }
   V.engine = eng;
   V.canvas = eng.canvas;
   V.title = `design: ${eng.canvas.title}`;
@@ -209,6 +221,7 @@ async function closeView(viewId) {
   const V = state.views.get(viewId);
   if (!V) return;
   state.views.delete(viewId);
+  if (!state.views.size) stopProbe();
   V.closed = true;
   clearTimeout(V.highlightTimer);
   if (state.current === viewId) state.current = null;
@@ -221,6 +234,26 @@ async function closeEngine(eng) {
   state.engines.delete(eng);
 }
 
+function startProbe() {
+  if (state.probe) return;
+  state.probe = setInterval(probeViews, PROBE_MS);
+  state.probe.unref();
+}
+
+function stopProbe() {
+  clearInterval(state.probe);
+  state.probe = null;
+}
+
+async function probeViews() {
+  for (const V of [...state.views.values()]) {
+    if (!V.shown || V.closed) continue;
+    let res;
+    try { res = await mx.request('view.update', { viewId: V.viewId }); } catch { continue; }
+    if (res && res.open === false) await closeView(V.viewId);
+  }
+}
+
 // --- as ações da janela ---------------------------------------------------------------
 
 async function onAction(V, act, values) {
@@ -229,7 +262,8 @@ async function onAction(V, act, values) {
   const verb = i < 0 ? act : act.slice(0, i);
   const arg = i < 0 ? '' : act.slice(i + 1);
   const now = Date.now();
-  if (verb === 'zoom' && ['in', 'out', 'fit'].includes(arg)) return command(V, { kind: arg });
+  // the user's own navigation (buttons, double-click, the board list): follow backs off
+  if (verb === 'zoom' && ['in', 'out', 'fit'].includes(arg)) { V.lastUserMove = now; return command(V, { kind: arg }); }
   if (act === 'zoom') {
     // onZoom also reports the end of our own commands
     if (follow.isUserMove({ now, lastCommand: V.lastCommand })) V.lastUserMove = now;
@@ -246,7 +280,7 @@ async function onAction(V, act, values) {
   }
   if (act === 'seguir') { V.ui.follow = !V.ui.follow; return render(V); }
   if (verb === 'tema' && ['light', 'dark', 'both'].includes(arg)) { V.ui.theme = arg; return render(V); }
-  if (verb === 'focus' && arg) return focusBoard(V, arg);
+  if (verb === 'focus' && arg) { V.lastUserMove = now; return focusBoard(V, arg); }
   mx.log('ação desconhecida:', act);
   return null;
 }
@@ -332,7 +366,24 @@ mx.onNotification('event', (e) => {
 
 // --- sem órfãos: o Chrome e o Tailwind morrem com o plugin ------------------------------
 
+// Engines still inside engineMod.open() have no handle yet: find their Chrome and
+// Tailwind by the engine data dir in the command line (Linux /proc).
+function killByDirSync(dir) {
+  let pids = [];
+  try { pids = fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p)); } catch { return; }
+  for (const pid of pids) {
+    if (Number(pid) === process.pid) continue;
+    let cmd;
+    try { cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8'); } catch { continue; }
+    if (!cmd.includes(dir)) continue;
+    try { process.kill(-Number(pid), 'SIGKILL'); } catch { /* not a group leader */ }
+    try { process.kill(Number(pid), 'SIGKILL'); } catch { /* gone */ }
+  }
+}
+
 function killAllSync() {
+  state.exiting = true;
+  for (const dir of state.pending.keys()) killByDirSync(dir);
   for (const eng of state.engines) {
     const c = eng.chrome;
     if (c && !c.exited && c.proc && c.proc.pid) { try { process.kill(-c.proc.pid, 'SIGKILL'); } catch { /* gone */ } }
@@ -342,7 +393,10 @@ function killAllSync() {
 }
 
 async function closeAll() {
-  const all = [...state.views.keys()].map((id) => closeView(id));
+  state.exiting = true;
+  stopProbe();
+  // opens in flight close themselves on `exiting` once they finish
+  const all = [...state.views.keys()].map((id) => closeView(id)).concat([...state.pending.values()].map((p) => p.catch(() => {})));
   await Promise.race([Promise.all(all), new Promise((r) => { setTimeout(r, CLOSE_GRACE_MS).unref(); })]);
 }
 
