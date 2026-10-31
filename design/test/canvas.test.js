@@ -106,6 +106,36 @@ test('init reads darkMode textually', () => {
   }
 });
 
+test('init leaves no folder behind when the repo has no tailwind', () => {
+  const repo = tmp(); // no node_modules/.bin/tailwindcss
+  const dir = path.join(tmp(), 'half');
+  assert.throws(() => canvas.init(dir, { repo }), /o projeto não tem tailwind/);
+  assert.ok(!fs.existsSync(dir), 'nothing created');
+});
+
+test('init lists the stylesheets that define the css variables the config reads', () => {
+  const repo = fakeRepo("const { colors } = require('./theme/colors');\nmodule.exports = { theme: { colors: { n: { 1: 'rgb(var(--slate-1) / <alpha-value>)' }, ...colors } } };");
+  fs.mkdirSync(path.join(repo, 'theme'));
+  fs.writeFileSync(path.join(repo, 'theme', 'colors.js'), "module.exports = { colors: { a: 'rgb(var(--a-1))' } };\n");
+  const scss = path.join(repo, 'app', 'styles');
+  fs.mkdirSync(scss, { recursive: true });
+  fs.writeFileSync(path.join(scss, '_colors.scss'), ':root { --slate-1: 1 2 3; --a-1: 4 5 6; }\n.dark { --slate-1: 9 9 9; }\n');
+  fs.writeFileSync(path.join(scss, 'other.scss'), '.x { color: red; --unrelated: 1; }\n');
+  fs.mkdirSync(path.join(repo, 'app', 'node_modules', 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'app', 'node_modules', 'pkg', 'v.css'), ':root { --slate-1: 0; --a-1: 0; }\n');
+  const dir = path.join(tmp(), 'vars');
+  canvas.init(dir, { repo });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'design.json'), 'utf8')).css, ['app/styles/_colors.scss']);
+});
+
+const SAC = '/home/arthur/Desktop/Work/Ninepay/customer-service-design-bench';
+test('init on the SAC finds _next-colors.scss', { skip: !fs.existsSync(path.join(SAC, 'node_modules', '.bin', 'tailwindcss')) && 'no SAC checkout' }, () => {
+  const dir = path.join(tmp(), 'sac');
+  canvas.init(dir, { repo: SAC });
+  const { css } = JSON.parse(fs.readFileSync(path.join(dir, 'design.json'), 'utf8'));
+  assert.ok(css.includes('app/javascript/dashboard/assets/scss/_next-colors.scss'), JSON.stringify(css));
+});
+
 test('defaultDir rejects unsafe names', () => {
   for (const name of ['../x', '../../x', 'a/b', '/abs', '']) {
     assert.throws(() => canvas.defaultDir({ cwd: '/h/u/Desktop/Work/sac', name, home: '/h/u' }), /nome de canvas inválido/);

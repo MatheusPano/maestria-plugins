@@ -139,4 +139,79 @@ function colorFamilies(repoDir) {
   } catch { return []; }
 }
 
-module.exports = { detect, colorFamilies };
+const STYLE_DIRS = ['app', 'src', 'styles', 'assets', 'resources', 'css'];
+const SKIP_DIRS = new Set(['node_modules', 'vendor', 'dist', 'build', 'public', 'tmp', 'log', 'coverage']);
+const MAX_STYLE_FILES = 3000;
+const MAX_STYLE_BYTES = 512 * 1024;
+const MAX_VAR_FILES = 3;
+
+// The `--name`s the tailwind config reads with var(--name), in the config and
+// the relative files it imports (one level deep).
+function configVars(repoDir) {
+  const configName = CONFIG_NAMES.find((n) => isFile(path.join(repoDir, n)));
+  if (!configName) return new Set();
+  const text = fs.readFileSync(path.join(repoDir, configName), 'utf8');
+  const texts = [text];
+  const imp = /(?:from\s*|require\(\s*)['"](\.{1,2}\/[^'"]+)['"]/g;
+  let m;
+  while ((m = imp.exec(text))) {
+    const file = resolveRelative(repoDir, m[1]);
+    if (file) { try { texts.push(fs.readFileSync(file, 'utf8')); } catch { /* unreadable */ } }
+  }
+  const out = new Set();
+  for (const t of texts) for (const v of t.matchAll(/var\(\s*(--[\w-]+)/g)) out.add(v[1]);
+  return out;
+}
+
+function styleFiles(repoDir) {
+  const out = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (out.length >= MAX_STYLE_FILES) return;
+      if (e.name.startsWith('.')) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(p); } else if (/\.(s?css)$/.test(e.name)) out.push(p);
+    }
+  };
+  for (const d of STYLE_DIRS) walk(path.join(repoDir, d));
+  return out;
+}
+
+// Best effort: the stylesheets (relative to the repo) that define the css
+// variables the tailwind config reads, fewest files first. [] when none.
+function cssVarFiles(repoDir) {
+  try {
+    const wanted = configVars(repoDir);
+    if (!wanted.size) return [];
+    const defs = [];
+    for (const file of styleFiles(repoDir)) {
+      let text;
+      try {
+        if (fs.statSync(file).size > MAX_STYLE_BYTES) continue;
+        text = fs.readFileSync(file, 'utf8');
+      } catch { continue; }
+      const has = new Set();
+      for (const m of text.matchAll(/(--[\w-]+)\s*:/g)) if (wanted.has(m[1])) has.add(m[1]);
+      if (has.size) defs.push({ file, has });
+    }
+    const covered = new Set();
+    const picked = [];
+    while (picked.length < MAX_VAR_FILES) {
+      let best = null;
+      let gain = 0;
+      for (const d of defs) {
+        let g = 0;
+        for (const v of d.has) if (!covered.has(v)) g++;
+        if (g > gain) { best = d; gain = g; }
+      }
+      if (!best) break;
+      for (const v of best.has) covered.add(v);
+      picked.push(path.relative(repoDir, best.file));
+    }
+    return picked;
+  } catch { return []; }
+}
+
+module.exports = { detect, colorFamilies, cssVarFiles };

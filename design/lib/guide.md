@@ -4,7 +4,8 @@ You draw screens and components as HTML boards. The plugin renders each board wi
 project's own Tailwind, in light and dark, and shows it on a canvas beside this session.
 
 ## Folder layout (the canvas folder returned by design_open)
-- `design.json`: project repo, dark-mode switch, brand css. Adjust it only if renders look wrong.
+- `design.json`: project repo, dark-mode switch and the css a board needs besides Tailwind
+  (see "design.json" below). Adjust it only if renders look wrong.
 - `canvas.json`: board index (x, y, w, h, order). Create boards with `design_board`, never by hand.
 - `boards/<name>.html`: one board per file. Plain HTML, no scripts, no `<html>`/`<body>` wrapper.
 - `components/<Name>.html`: reusable pieces (PascalCase file name).
@@ -17,7 +18,8 @@ project's own Tailwind, in light and dark, and shows it on a canvas beside this 
 4. `design_focus` points the user's canvas at a board; `design_list` shows boards and components.
 
 ## Rules for boards
-- Use only the project's Tailwind classes and its color families (listed below by design_open).
+- Use only the project's Tailwind classes and its color families (design_open prints them above
+  this guide, in the line `cores do tailwind do projeto`).
   No arbitrary hex colors, no inline styles for color, no invented class names.
 - Dark mode: use the project's `dark:` variants or its theme variables; the plugin toggles the
   switch declared in design.json. Check that text stays readable in both.
@@ -25,6 +27,21 @@ project's own Tailwind, in light and dark, and shows it on a canvas beside this 
 - Copy inside boards is PT-BR. Never put notes, labels or explanations inside a board; explain in
   the chat instead.
 - Use realistic content (names, amounts, dates), not lorem ipsum.
+
+## design.json
+- `repo`: the project whose Tailwind renders the boards.
+- `darkMode`: how dark is switched on, `{ "class": "dark" }` or `{ "attr": "data-theme", "value": "dark" }`.
+- `css`: stylesheets of the repo (paths relative to it) compiled before Tailwind. Projects whose
+  colors are CSS variables (`rgb(var(--slate-3) / <alpha-value>)`) need the file that defines those
+  variables here, or every such color comes out empty and light looks like dark. design_open fills
+  it when it finds them; for the SAC it is
+  `"css": ["app/javascript/dashboard/assets/scss/_next-colors.scss"]`. Without sass, a `.scss`
+  only contributes its plain custom-property blocks (`:root { --x: … }`, `.dark { --x: … }`).
+- `brand`: a css file (relative to the canvas folder) loaded after the project css, for the
+  company's own palette on top of the project's. The SAC uses one per company, e.g.
+  `"brand": "brands/ninepay.css"` with `:root:root { --blue-9: 73 13 191; … }` and
+  `.dark.dark { … }` overrides. `null` when the project's colors are enough.
+- `head`: raw HTML added to every board's `<head>` (a font `<link>`, a `<style>`). Usually `""`.
 
 ## Components
 Create `components/Toast.html`, use it as `<x-toast text="Salvo" tone="success"></x-toast>`

@@ -124,14 +124,16 @@ function readDarkMode(repo) {
 function init(dir, { repo }) {
   const file = path.join(dir, 'canvas.json');
   const created = !fs.existsSync(file);
+  const designFile = path.join(dir, 'design.json');
+  const needDesign = !fs.existsSync(designFile);
+  // before any file: a repo without tailwind leaves no half-made canvas behind
+  if (needDesign) project.detect(repo);
   fs.mkdirSync(path.join(dir, 'boards'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'components'), { recursive: true });
   if (created) write(dir, { v: 1, title: path.basename(dir), boards: {}, order: [] });
-  const designFile = path.join(dir, 'design.json');
-  if (!fs.existsSync(designFile)) {
-    project.detect(repo); // fails loudly when the repo has no tailwind
+  if (needDesign) {
     writeAtomic(designFile, `${JSON.stringify({
-      repo, darkMode: readDarkMode(repo), css: [], brand: null, head: '',
+      repo, darkMode: readDarkMode(repo), css: project.cssVarFiles(repo), brand: null, head: '',
     }, null, 2)}\n`);
   }
   return { created };
