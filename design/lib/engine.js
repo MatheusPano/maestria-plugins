@@ -58,6 +58,7 @@ class Engine extends EventEmitter {
     this.queue = Promise.resolve();
     this.deaths = 0; // chrome deaths since the last good render; one relaunch is allowed
     this.cssSeen = new Map(); // name -> mtime of the css its last render used
+    this.lateBuilds = new Set(); // whenBuilt() promises we stopped waiting for
     this.chromeError = null;
   }
 
@@ -298,6 +299,8 @@ class Engine extends EventEmitter {
     clearTimeout(timer);
     if (r === 'grace') {
       if (this.tw.failed) { built.cancel(); return { error: this.tw.failed.message }; }
+      this.lateBuilds.add(built);
+      settled.then(() => this.lateBuilds.delete(built));
       return { error: null, late: settled };
     }
     return { error: r ? r.message : null };
@@ -429,6 +432,8 @@ class Engine extends EventEmitter {
     this.closed = true;
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    for (const b of this.lateBuilds) b.cancel(); // stop polling for builds nobody waits on
+    this.lateBuilds.clear();
     for (const w of this.watchers) { try { w.close(); } catch { /* already closed */ } }
     this.watchers = [];
     await Promise.all([
