@@ -1,0 +1,7 @@
+{
+  "repo": "/home/arthur/Desktop/Work/Ninepay/customer-service-design-bench",
+  "darkMode": { "class": "dark" },
+  "css": ["app/javascript/dashboard/assets/scss/_next-colors.scss"],
+  "brand": "brands/ninepay.css",
+  "head": ""
+}

@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "title": "sac sidebar (bench)",
+  "boards": {
+    "conversas": { "x": 0, "y": 0, "w": 1280, "title": "conversas" }
+  },
+  "order": ["conversas"]
+}
