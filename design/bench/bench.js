@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const chromeMod = require('../lib/chrome');
 const { renderPage } = require('../lib/render');
-const tailwind = require('../lib/tailwind');
+const { buildPage, startTailwind } = require('../lib/page');
 
 const RUNS = Number(process.argv[3]) || 10;
 const GATE = { adjustP90: 1000, cold: 3000 };
@@ -25,11 +25,12 @@ function stats(xs) {
 class Session {
   constructor(canvas, design, boardName) {
     this.design = design;
+    this.canvas = canvas;
     this.board = boardName;
-    this.boardSrc = path.join(canvas, 'boards', boardName);
+    this.boardSrc = path.join(canvas, 'boards', `${boardName}.html`);
     this.data = path.join(outDir, 'data');
-    this.expanded = path.join(this.data, 'expanded', boardName);
-    this.rendered = path.join(this.data, 'render', boardName);
+    this.expanded = path.join(this.data, 'expanded', `${boardName}.html`);
+    this.rendered = path.join(this.data, 'render', `${boardName}.html`);
     this.outCss = path.join(this.data, 'tailwind.css');
     this.w = Number(JSON.parse(read(path.join(canvas, 'canvas.json'))).boards[boardName].w);
     this.brand = design.brand ? read(path.join(canvas, design.brand)) : '';
@@ -40,16 +41,18 @@ class Session {
   // Board fragment -> plain HTML the Tailwind CLI scans.
   expand() {
     fs.mkdirSync(path.dirname(this.expanded), { recursive: true });
-    const html = `<!doctype html><html><head><meta charset="utf-8">${this.design.head || ''}</head>`
-      + `<body class="bg-n-background text-n-slate-12">${read(this.boardSrc)}</body></html>`;
-    fs.writeFileSync(this.expanded, html);
+    fs.writeFileSync(this.expanded, buildPage({
+      outCss: this.outCss, brandCss: this.brand, head: this.design.head, body: read(this.boardSrc),
+    }));
   }
 
-  // Copy with the built css inlined (kept out of the Tailwind content glob, never cached by Chrome).
+  // Render copy: same page, css url versioned by the built css mtime (never cached by Chrome).
   inlineCss() {
     fs.mkdirSync(path.dirname(this.rendered), { recursive: true });
-    const style = `<style>${read(this.outCss)}</style><style>${this.brand}html,body{margin:0}</style>`;
-    fs.writeFileSync(this.rendered, read(this.expanded).replace('</head>', `${style}</head>`));
+    fs.writeFileSync(this.rendered, buildPage({
+      outCss: this.outCss, brandCss: this.brand, head: this.design.head, body: read(this.boardSrc),
+      version: fs.statSync(this.outCss).mtimeMs,
+    }));
   }
 
   async renderBoth() {
@@ -63,12 +66,9 @@ class Session {
   }
 
   startTailwind() {
-    const { repo, css = [] } = this.design;
-    const detected = require('../lib/project').detect(repo);
-    return tailwind.start({
-      repoDir: repo, config: detected.tailwind.config, input: detected.tailwind.input,
-      extraCss: css, contentGlob: path.join(this.data, 'expanded', '**/*.html'),
-      outCss: this.outCss, log: (m) => console.error('[tailwind]', m),
+    return startTailwind({
+      canvasDir: this.canvas, design: this.design, dataDir: this.data, outCss: this.outCss,
+      log: (m) => console.error('[tailwind]', m),
     });
   }
 

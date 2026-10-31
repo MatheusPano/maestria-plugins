@@ -1,6 +1,8 @@
 {
+  "v": 1,
   "title": "sac sidebar (bench)",
   "boards": {
-    "conversas.html": { "title": "conversas", "x": 0, "y": 0, "w": 1280, "order": 1 }
-  }
+    "conversas": { "x": 0, "y": 0, "w": 1280, "title": "conversas" }
+  },
+  "order": ["conversas"]
 }
