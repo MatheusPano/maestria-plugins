@@ -1,0 +1,124 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const chromeMod = require('../lib/chrome');
+const { renderPage } = require('../lib/render');
+const { readPng, firstRowPixel } = require('./png');
+
+const exe = chromeMod.findExecutable();
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'design-render-'));
+let chrome = null;
+
+function page(name, html) {
+  const p = path.join(tmp, name);
+  fs.writeFileSync(p, html);
+  return p;
+}
+
+test.after(async () => {
+  if (chrome) await chrome.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('renders a fixed-size box at 2x', { skip: !exe && 'no chrome' }, async () => {
+  chrome = await chromeMod.launch({ log: () => {} });
+  const html = page('a.html', '<body style="margin:0"><div style="width:300px;height:120px;background:#123"></div></body>');
+  const out = path.join(tmp, 'a.png');
+  const r = await renderPage(chrome, { htmlPath: html, width: 300, dark: null, out });
+  assert.strictEqual(r.width, 300);
+  assert.strictEqual(r.height, 120);
+  assert.strictEqual(r.cut, false);
+  const png = readPng(fs.readFileSync(out));
+  assert.strictEqual(png.width, 600);
+  assert.strictEqual(png.height, 240);
+  assert.ok(!fs.existsSync(out + '.tmp'));
+});
+
+test('cuts tall pages at 4000', { skip: !exe && 'no chrome' }, async () => {
+  const html = page('b.html', '<body style="margin:0"><div style="height:9000px"></div></body>');
+  const r = await renderPage(chrome, { htmlPath: html, width: 300, dark: null, out: path.join(tmp, 'b.png') });
+  assert.strictEqual(r.height, 4000);
+  assert.strictEqual(r.cut, true);
+});
+
+test('a small capture keeps the longest side within maxSide; the main png stays 2x', { skip: !exe && 'no chrome' }, async () => {
+  const html = page('s.html', '<body style="margin:0"><div style="height:900px;background:#123"></div></body>');
+  const out = path.join(tmp, 's.png');
+  const small = path.join(tmp, 's.small.png');
+  await renderPage(chrome, { htmlPath: html, width: 1440, height: 900, dark: null, out, small: { out: small, maxSide: 1568 } });
+  assert.strictEqual(readPng(fs.readFileSync(out)).width, 2880);
+  const s = readPng(fs.readFileSync(small));
+  assert.ok(s.width <= 1568 && s.width >= 1500, `small width ${s.width}`);
+  assert.ok(s.height <= 1568, `small height ${s.height}`);
+  // a board already under the limit is captured as is
+  const tiny = path.join(tmp, 's.tiny.png');
+  await renderPage(chrome, { htmlPath: html, width: 300, height: 200, dark: null, out, small: { out: tiny, maxSide: 1568 } });
+  assert.strictEqual(readPng(fs.readFileSync(tiny)).width, 600);
+});
+
+test('applies dark class',{ skip: !exe && 'no chrome' }, async () => {
+  const html = page('c.html', '<style>.dark body{background:#000}body{margin:0;background:#fff}</style><body><div style="height:50px"></div></body>');
+  const out = path.join(tmp, 'c.png');
+  await renderPage(chrome, { htmlPath: html, width: 300, dark: { class: 'dark' }, out });
+  const [r, g, b] = firstRowPixel(readPng(fs.readFileSync(out)), 1);
+  assert.deepStrictEqual([r, g, b], [0, 0, 0]);
+  const out2 = path.join(tmp, 'c2.png');
+  await renderPage(chrome, { htmlPath: html, width: 300, dark: null, out: out2 });
+  assert.deepStrictEqual(firstRowPixel(readPng(fs.readFileSync(out2)), 1).slice(0, 3), [255, 255, 255]);
+});
+
+test('ensure relaunches after chrome is killed', { skip: !exe && 'no chrome' }, async () => {
+  const exited = new Promise((res) => chrome.on('exit', res));
+  chrome.proc.kill('SIGKILL');
+  await exited;
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+  const html = page('d.html', '<body style="margin:0"><div style="width:300px;height:120px;background:#123"></div></body>');
+  const r = await renderPage(chrome, { htmlPath: html, width: 300, dark: null, out: path.join(tmp, 'd.png') });
+  assert.strictEqual(r.height, 120);
+});
+
+test('stuck page times out and ensure() recovers', { skip: !exe && 'no chrome', timeout: 30000 }, async () => {
+  const bad = page('e.html', '<body><script>while(true){}</script></body>');
+  const t0 = Date.now();
+  await assert.rejects(
+    renderPage(chrome, { htmlPath: bad, width: 300, dark: null, out: path.join(tmp, 'e.png') }),
+    /timeout/,
+  );
+  assert.ok(Date.now() - t0 < 11000, 'rejected within ~11 s');
+  assert.ok(chrome.exited);
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+  const ok = page('f.html', '<body style="margin:0"><div style="height:120px"></div></body>');
+  const r = await renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'f.png') });
+  assert.strictEqual(r.height, 120);
+});
+
+test('failed navigate rejects without unhandled rejection or leaked timers', { skip: !exe && 'no chrome' }, async () => {
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const ok = page('g.html', '<body style="margin:0"><div style="height:50px"></div></body>');
+    // case 1: navigate rejects while Chrome stays alive
+    const realSend = chrome.send.bind(chrome);
+    chrome.send = (m, ...a) => (m === 'Page.navigate' ? Promise.reject(new Error('stub navigate failure')) : realSend(m, ...a));
+    await assert.rejects(renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'g.png') }), /stub navigate failure/);
+    chrome.send = realSend;
+    assert.strictEqual(chrome.listenerCount('exit') <= 1, true, 'load listeners cleaned up');
+    // case 2: chrome killed mid-navigate (abort emits exit while navigate is pending)
+    chrome.send = (m, ...a) => {
+      if (m !== 'Page.navigate') return realSend(m, ...a);
+      setImmediate(() => chrome.abort('test'));
+      return realSend(m, ...a); // pending when abort() rejects it
+    };
+    await assert.rejects(renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'g2.png') }), /exited/);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepStrictEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+});
