@@ -79,3 +79,31 @@ test('stuck page times out and ensure() recovers', { skip: !exe && 'no chrome', 
   const r = await renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'f.png') });
   assert.strictEqual(r.height, 120);
 });
+
+test('failed navigate rejects without unhandled rejection or leaked timers', { skip: !exe && 'no chrome' }, async () => {
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const ok = page('g.html', '<body style="margin:0"><div style="height:50px"></div></body>');
+    // case 1: navigate rejects while Chrome stays alive
+    const realSend = chrome.send.bind(chrome);
+    chrome.send = (m, ...a) => (m === 'Page.navigate' ? Promise.reject(new Error('stub navigate failure')) : realSend(m, ...a));
+    await assert.rejects(renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'g.png') }), /stub navigate failure/);
+    chrome.send = realSend;
+    assert.strictEqual(chrome.listenerCount('exit') <= 1, true, 'load listeners cleaned up');
+    // case 2: chrome killed mid-navigate (abort emits exit while navigate is pending)
+    chrome.send = (m, ...a) => {
+      if (m !== 'Page.navigate') return realSend(m, ...a);
+      setImmediate(() => chrome.abort('test'));
+      return realSend(m, ...a); // pending when abort() rejects it
+    };
+    await assert.rejects(renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'g2.png') }), /exited/);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepStrictEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+});

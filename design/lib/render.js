@@ -57,6 +57,7 @@ async function renderOnce(chrome, { htmlPath, width, height, dark, out }) {
   await chrome.send('Emulation.setDeviceMetricsOverride',
     { width, height: height ?? 800, deviceScaleFactor: 2, mobile: false }, sid);
 
+  let cancelLoad = () => {};
   const loaded = new Promise((resolve, reject) => {
     const onLoad = (p, s) => { if (s === sid) { cleanup(); resolve(); } };
     const onExit = () => { cleanup(); reject(new Error('chrome exited')); };
@@ -72,9 +73,16 @@ async function renderOnce(chrome, { htmlPath, width, height, dark, out }) {
     }
     chrome.on('Page.loadEventFired', onLoad);
     chrome.on('exit', onExit);
+    cancelLoad = cleanup;
   });
-  const nav = await chrome.send('Page.navigate', { url: pathToFileURL(htmlPath).href }, sid);
-  if (nav.errorText) throw new Error('navigate failed: ' + nav.errorText);
+  loaded.catch(() => {}); // never unobserved: it may reject while we still await navigate
+  try {
+    const nav = await chrome.send('Page.navigate', { url: pathToFileURL(htmlPath).href }, sid);
+    if (nav.errorText) throw new Error('navigate failed: ' + nav.errorText);
+  } catch (e) {
+    cancelLoad(); // drop timer + listeners so a dead navigate cannot abort Chrome later
+    throw e;
+  }
   await loaded;
 
   const script = darkScript(dark);
