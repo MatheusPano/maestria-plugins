@@ -86,3 +86,20 @@ test('load reads valid names, reports invalid', () => {
     assert.deepStrictEqual([...components.load(path.join(d, 'nope')).keys()], []);
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
+
+const malformed = (name, input, re) => test('malformed: ' + name, () => {
+  const c = comps({ Card: '<div><slot></slot></div>' });
+  const r = components.expand(input, c);
+  assert.ok(r.errors.some((e) => re.test(e)), r.errors.join('|'));
+  assert.ok(!/<x-|<\/x-/.test(r.html), r.html);
+});
+malformed('unclosed', '<x-card>abc', /não fechada/);
+malformed('stray close', 'a</x-card>b', /sem abertura/);
+malformed('unterminated quote', '<x-card class="oops>x', /inválida/);
+malformed('unterminated open', '<x-card', /inválida/);
+malformed('bare', 'a<x-b', /inválida/);
+malformed('bare dash gt', 'a<x->b', /inválida/);
+test('unclosed keeps children', () => {
+  const r = components.expand('<x-card>abc', comps({ Card: '<div><slot></slot></div>' }));
+  assert.strictEqual(r.html, '<div>abc</div>');
+});

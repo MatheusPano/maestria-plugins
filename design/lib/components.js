@@ -130,16 +130,32 @@ function expand(html, comps) {
     let out = '';
     let i = 0;
     while (i < src.length) {
-      const lt = src.indexOf('<x-', i);
+      const lo = src.indexOf('<x-', i);
+      const lc = src.indexOf('</x-', i);
+      const lt = lo < 0 ? lc : lc < 0 ? lo : Math.min(lo, lc);
       if (lt < 0) { out += src.slice(i); break; }
       out += src.slice(i, lt);
+      if (src.startsWith('</x-', lt)) {
+        const gt = src.indexOf('>', lt);
+        const m = /^<\/x-[A-Za-z0-9-]*/.exec(src.slice(lt))[0];
+        err(`tag de fechamento sem abertura: ${m}>`);
+        i = gt < 0 ? src.length : gt + 1;
+        continue;
+      }
       const o = readOpen(src, lt);
-      if (!o) { out += src.slice(lt, lt + 3); i = lt + 3; continue; }
+      if (!o || o.tag.length <= 2) {
+        const gt = src.indexOf('>', lt);
+        const frag = /^<x-[A-Za-z0-9-]*/.exec(src.slice(lt))[0];
+        err(`marcação inválida perto de "${frag}…"`);
+        i = !o && gt >= 0 ? gt + 1 : o ? o.end : src.length;
+        continue;
+      }
       let children = '';
       let end = o.end;
       if (!o.selfClosing) {
         const c = findClose(src, o.tag, o.end);
         if (c) { children = src.slice(o.end, c.start); end = c.end; }
+        else { err(`tag <${o.tag}> não fechada`); children = src.slice(o.end); end = src.length; }
       }
       i = end;
       const name = byTag.get(o.tag);
