@@ -18,6 +18,7 @@ const canvasMod = require('./lib/canvas');
 const engineMod = require('./lib/engine');
 const view = require('./lib/view');
 const follow = require('./lib/follow');
+const tools = require('./lib/tools');
 
 const PLUGIN_ID = 'maestria.design';
 const UI_FILE = path.join(__dirname, 'ui', 'canvas.rfwtxt');
@@ -346,6 +347,11 @@ mx.onRequest('command.invoke', ({ command: id, context }) => {
   else throw new Error(`comando desconhecido: ${id}`);
   return null;
 });
+
+// What the MCP tools use from here (so tests of lib/tools can fake it).
+const host = { request: mx.request, openCanvas, viewOf, focusBoard, lastFor };
+
+mx.onRequest('tool.call', ({ tool, args, tabId, cwd }) => tools.handle(tool, args, { tabId, cwd, host }));
 
 mx.onNotification('view.action', async ({ viewId, action, values }) => {
   const V = state.views.get(viewId);

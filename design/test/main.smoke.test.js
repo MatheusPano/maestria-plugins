@@ -59,17 +59,9 @@ function host(env = {}) {
   return api;
 }
 
-// Waits for the first rendered board. Under heavy machine load the project's
-// Tailwind can miss the engine's 5 s first-build limit ("não abriu"); the
-// plugin retries a failed canvas on the next `abrir`, so the test does that once.
-async function rendered(h, context) {
-  const ok = (m) => m.method === 'view.update' && m.params.data && m.params.data.boards.some((b) => b.light);
-  const failed = (m) => m.method === 'view.update' && m.params.data && /^não abriu/.test(m.params.data.message);
-  const first = await h.wait((m) => ok(m) || failed(m), 25000);
-  if (ok(first)) return first;
-  const n = h.msgs.length;
-  await h.request('command.invoke', { command: 'abrir', context });
-  return h.wait((m) => h.msgs.indexOf(m) >= n && ok(m), 25000);
+// Waits for the first rendered board (the first Tailwind build has a 15 s limit).
+async function rendered(h) {
+  return h.wait((m) => m.method === 'view.update' && m.params.data && m.params.data.boards.some((b) => b.light), 25000);
 }
 
 function makeCanvas(tmp) {
@@ -136,7 +128,7 @@ test('abrir opens the canvas beside the session, renders boards, and leaves no o
     const open = await h.wait((m) => m.method === 'view.open');
     assert.match(open.params.viewId, /^canvas:[0-9a-f]{12}$/);
     assert.match(open.params.rfw.library, /widget root =/);
-    const upd = await rendered(h, { cwd: '/somewhere', folder: '/somewhere', sessionId: '', title: '' });
+    const upd = await rendered(h);
     const board = upd.params.data.boards.find((b) => b.light);
     const hash = open.params.viewId.slice('canvas:'.length);
     assert.strictEqual(board.light, `${hash}/png/${board.name}.light.png`);
@@ -195,7 +187,7 @@ test('view.closed closes the engine (chrome and tailwind die); sprite fallback',
     await h.request('initialize', { apiVersion: 1, rfw: 2, sprites: 1, dataDir, pluginDir });
     await h.request('command.invoke', { command: 'abrir', context: { cwd: '/x', tabId: 't1' } });
     const open = await h.wait((m) => m.method === 'view.open');
-    const upd = await rendered(h, { cwd: '/x', tabId: 't1' });
+    const upd = await rendered(h);
     const board = upd.params.data.boards.find((b) => b.light);
     assert.strictEqual(upd.params.data.picture, false);
     assert.match(board.light, /^cache\/[0-9a-f]{12}\/[a-z0-9_-]+\.light\.\d+\.png$/);
@@ -222,7 +214,7 @@ test('a closed grid tab (no view.closed) is noticed by the probe and its engine 
   try {
     await h.request('initialize', { apiVersion: 1, rfw: 2, picture: 1, zoomFocus: 1, dataDir });
     await h.request('command.invoke', { command: 'abrir', context: { cwd: '/x', tabId: 't1' } });
-    await rendered(h, { cwd: '/x', tabId: 't1' });
+    await rendered(h);
     assert.ok(pgrep(dataDir).length > 0);
     // the user closes the tab: from now on the host knows no such view
     h.reply = (m) => (m.method === 'view.update' ? { open: false } : undefined);
@@ -244,7 +236,7 @@ test('the user clicking + holds off follow: a save 1 s later only highlights', {
     await h.request('initialize', { apiVersion: 1, rfw: 2, picture: 1, zoomFocus: 1, dataDir });
     await h.request('command.invoke', { command: 'abrir', context: { cwd: '/x', tabId: 't1' } });
     const open = await h.wait((m) => m.method === 'view.open');
-    const upd = await rendered(h, { cwd: '/x', tabId: 't1' });
+    const upd = await rendered(h);
     const board = upd.params.data.boards.find((b) => b.light);
     h.send({ method: 'view.action', params: { viewId: open.params.viewId, action: 'act', values: { a: 'zoom:in' } } });
     const zin = await h.wait((m) => m.method === 'view.update' && m.params.data && m.params.data.zoom.command === 'in');
@@ -280,5 +272,28 @@ test('stdin closing while the engine is still opening leaves no chrome/tailwind'
     assert.deepStrictEqual(await gone(dataDir, 3000), [], 'no orphan from the open in flight');
   } finally {
     cleanup(h, tmp, dataDir);
+  }
+});
+
+test('tool.call reaches the tools (design_list over stdio, no engine needed)', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'design-main-'));
+  const canvasDir = path.join(tmp, 'canvas');
+  const dataDir = path.join(tmp, 'data');
+  fs.cpSync(path.join(__dirname, '..', 'bench', 'sac-sidebar'), canvasDir, { recursive: true });
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'last.json'), JSON.stringify({ byTab: { t1: canvasDir }, byCwd: {} }));
+  const h = host();
+  try {
+    await h.request('initialize', { apiVersion: 1, rfw: 2, dataDir });
+    const r = await h.request('tool.call', { tool: 'design_list', args: {}, tabId: 't1', cwd: '/x' });
+    assert.ok(!r.result.isError, JSON.stringify(r.result));
+    assert.match(r.result.content[0].text, /- conversas: 1280 px/);
+    const bad = await h.request('tool.call', { tool: 'design_board', args: { name: 'x', w: 10 }, tabId: 'nope', cwd: '/x' });
+    assert.strictEqual(bad.result.isError, true);
+    h.proc.stdin.end();
+    assert.strictEqual(await h.exited, 0);
+  } finally {
+    h.proc.kill('SIGKILL');
+    fs.rmSync(tmp, { recursive: true, force: true });
   }
 });

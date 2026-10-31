@@ -95,3 +95,20 @@ test('rejects fast with a clear error once the restart also dies', { skip: !have
   await assert.rejects(tw.whenBuilt(Date.now()), /^Error: o tailwind do projeto não subiu: /);
   assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
 });
+
+test('the first build gets 15 s, incremental builds 5 s', async () => {
+  assert.strictEqual(tailwind.FIRST_BUILD_TIMEOUT_MS, 15000);
+  assert.strictEqual(tailwind.BUILD_TIMEOUT_MS, 5000);
+  const t = new tailwind.Tailwind({ outCss: path.join(tmp, 'never.css') }, {});
+  t._writeInputs = () => {};
+  t._spawn = () => {};
+  const seen = [];
+  t.whenBuilt = async (since, ms) => { seen.push(ms); };
+  await t.init();
+  assert.deepStrictEqual(seen, [15000]);
+});
+
+test('whenBuilt reports the limit it used', async () => {
+  const t = new tailwind.Tailwind({ outCss: path.join(tmp, 'never.css') }, {});
+  await assert.rejects(t.whenBuilt(Date.now(), 50), /sem css em 0\.05 s/);
+});

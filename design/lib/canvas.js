@@ -137,4 +137,4 @@ function init(dir, { repo }) {
   return { created };
 }
 
-module.exports = { read, write, upsertBoard, resolveDir, defaultDir, init, validName };
+module.exports = { read, write, upsertBoard, resolveDir, defaultDir, init, validName, gitRoot };

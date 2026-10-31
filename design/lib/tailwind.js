@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const project = require('./project');
 
-const BUILD_TIMEOUT_MS = 5000;
+const BUILD_TIMEOUT_MS = 5000; // incremental builds
+const FIRST_BUILD_TIMEOUT_MS = 15000; // the first one also loads the config and scans the content; loaded machines pass 5 s
 const POLL_MS = 10;
 const STDERR_KEEP = 2000;
 
@@ -123,7 +124,7 @@ class Tailwind {
     this._writeInputs();
     const since = Date.now();
     this._spawn();
-    await this.whenBuilt(since);
+    await this.whenBuilt(since, FIRST_BUILD_TIMEOUT_MS);
     return this;
   }
 
@@ -133,10 +134,10 @@ class Tailwind {
 
   // Resolves when outCss was written after sinceMs and is whole: non-empty and
   // unchanged (size + mtime) across two consecutive polls. Rejects at once if the
-  // CLI is gone for good, or after 5 s with the CLI's last stderr lines.
+  // CLI is gone for good, or after `timeoutMs` (default 5 s) with the CLI's last stderr lines.
   // Also resolves on the CLI's "Done in" line printed after sinceMs (an unchanged css is not rewritten).
   // The returned promise has cancel() to stop polling once the caller gave up.
-  whenBuilt(sinceMs) {
+  whenBuilt(sinceMs, timeoutMs = BUILD_TIMEOUT_MS) {
     const { outCss } = this.opts;
     const t0 = Date.now();
     let prev = null;
@@ -157,8 +158,8 @@ class Tailwind {
         } else {
           prev = null;
         }
-        if (Date.now() - t0 > BUILD_TIMEOUT_MS) {
-          return reject(new Error(`o tailwind do projeto não subiu: sem css em 5 s\n${this.lastErrors()}`));
+        if (Date.now() - t0 > timeoutMs) {
+          return reject(new Error(`o tailwind do projeto não subiu: sem css em ${timeoutMs / 1000} s\n${this.lastErrors()}`));
         }
         setTimeout(tick, POLL_MS);
       };
@@ -191,4 +192,4 @@ async function start(opts) {
   }
 }
 
-module.exports = { start, extractCustomProps, Tailwind };
+module.exports = { start, extractCustomProps, Tailwind, BUILD_TIMEOUT_MS, FIRST_BUILD_TIMEOUT_MS };

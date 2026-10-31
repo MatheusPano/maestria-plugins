@@ -30,6 +30,133 @@
         "id": "ajustar",
         "title": "design: ajustar"
       }
+    ],
+    "tools": [
+      {
+        "name": "design_open",
+        "description": "Open (or create) a design canvas beside this session and get the folder layout, board list and the writing guide. Call it first, once per session. Pass `canvas` for an existing/explicit folder, or `name` to create <company>/design/<name> next to the repo.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "canvas": {
+              "type": "string",
+              "description": "Canvas folder (absolute, ~/ or relative to the session cwd). Omit to use the canvas last opened in this session."
+            },
+            "name": {
+              "type": "string",
+              "description": "New canvas name when no folder is given: lowercase letters, digits, - and _."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "design_board",
+        "description": "Create or update a board entry (size and position) and get its .html path. Then write the HTML with Write/Edit (this tool never writes content) and call design_render. Same name again updates the entry.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Board name: lowercase letters, digits, - and _ (becomes boards/<name>.html)."
+            },
+            "w": {
+              "type": "number",
+              "description": "Width in CSS px (desktop 1440, mobile 390)."
+            },
+            "h": {
+              "type": "number",
+              "description": "Height in CSS px. Omit to follow the content."
+            },
+            "x": {
+              "type": "number",
+              "description": "Canvas x. Omit for a free spot."
+            },
+            "y": {
+              "type": "number",
+              "description": "Canvas y. Omit for a free spot."
+            },
+            "title": {
+              "type": "string",
+              "description": "Label shown on the canvas."
+            },
+            "canvas": {
+              "type": "string",
+              "description": "Canvas folder (absolute, ~/ or relative to the session cwd). Omit to use the canvas last opened in this session."
+            }
+          },
+          "required": [
+            "name",
+            "w"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "design_render",
+        "description": "Render boards now and return their light/dark PNGs plus errors. Call it after every round of Write/Edit and look at both themes before telling the user a board is done. Max 4 boards (8 images) per call; omit `boards` for all.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "boards": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Board names. Omit for every board."
+            },
+            "theme": {
+              "type": "string",
+              "enum": [
+                "light",
+                "dark",
+                "both"
+              ],
+              "description": "Which images to return. Default both."
+            },
+            "canvas": {
+              "type": "string",
+              "description": "Canvas folder (absolute, ~/ or relative to the session cwd). Omit to use the canvas last opened in this session."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "design_focus",
+        "description": "Scroll and zoom the user's canvas to a board.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "board": {
+              "type": "string",
+              "description": "Board name: lowercase letters, digits, - and _ (becomes boards/<name>.html)."
+            },
+            "canvas": {
+              "type": "string",
+              "description": "Canvas folder (absolute, ~/ or relative to the session cwd). Omit to use the canvas last opened in this session."
+            }
+          },
+          "required": [
+            "board"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "design_list",
+        "description": "List boards (path, size, components used) and components (path, boards that use them) of a canvas.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "canvas": {
+              "type": "string",
+              "description": "Canvas folder (absolute, ~/ or relative to the session cwd). Omit to use the canvas last opened in this session."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
     ]
   }
 }
