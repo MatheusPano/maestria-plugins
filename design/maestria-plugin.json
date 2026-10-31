@@ -1,0 +1,35 @@
+{
+  "id": "maestria.design",
+  "name": "Design",
+  "version": "0.1.0",
+  "description": "Um canvas de pranchetas ao lado da sessão: o Claude escreve HTML com o Tailwind do projeto e o plugin mostra cada prancheta renderizada, no claro e no escuro.",
+  "author": "Arthur Fonseca",
+  "maestria": 1,
+  "icon": "icons/design.svg",
+  "main": [
+    "node",
+    "main.js"
+  ],
+  "activationEvents": [
+    "onCommand:abrir",
+    "onCommand:ajustar",
+    "onTool:design_open",
+    "onTool:design_board",
+    "onTool:design_render",
+    "onTool:design_focus",
+    "onTool:design_list"
+  ],
+  "permissions": [],
+  "contributes": {
+    "commands": [
+      {
+        "id": "abrir",
+        "title": "design: abrir"
+      },
+      {
+        "id": "ajustar",
+        "title": "design: ajustar"
+      }
+    ]
+  }
+}

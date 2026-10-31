@@ -1,0 +1,192 @@
+// O canvas do Design: a barra em cima e, embaixo, as pranchetas num `ZoomView`
+// (arrastar move, a rodinha aproxima em volta do cursor). Cada prancheta é um
+// `Positioned` na posição do canvas.json (em `data.boards`, já calculada pelo
+// plugin): o nome em cima e as imagens claro e escuro lado a lado.
+//
+// Os cliques voltam como `event "act"` com a ação em `a` (ou em `action`, nos
+// menus): "zoom:in", "zoom:out", "zoom:fit", "seguir", "focus:<nome>",
+// "tema:<light|dark|both>"; o `ZoomView` conta a escala em "zoom" (extra
+// `scale`) e o arrasto do usuário em "move" (extra `scale`, `x`, `y`).
+//
+// `data.picture` diz se a Maestria tem o `Picture` (que lê da pasta de dados
+// do plugin); sem ele, as imagens vêm por `Sprite` (cópias na pasta do plugin).
+
+import core.widgets;
+import maestria;
+
+widget root = Container(
+  color: data.theme.canvas,
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Bar(),
+      Container(height: 1.0, color: data.theme.border),
+      Notice(),
+      Expanded(child: Area()),
+    ],
+  ),
+);
+
+// --- a barra ------------------------------------------------------------------------
+
+widget Bar = Container(
+  color: data.theme.bg,
+  padding: [12.0, 6.0, 8.0, 6.0],
+  child: Row(
+    children: [
+      Expanded(
+        child: Text(text: data.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.0, fontWeight: "w600", color: data.theme.fg }),
+      ),
+      IconButton(icon: "remove", tooltip: "afastar", onPressed: event "act" { a: "zoom:out" }),
+      SizedBox(
+        width: 48.0,
+        child: Text(text: data.zoomLabel, textAlign: "center", style: { fontSize: 13.0, color: data.theme.dim }),
+      ),
+      IconButton(icon: "add", tooltip: "aproximar", onPressed: event "act" { a: "zoom:in" }),
+      SizedBox(width: 4.0),
+      Pressable(
+        radius: 6.0,
+        padding: [10.0, 4.0, 10.0, 4.0],
+        hoverColor: data.theme.hover,
+        onTap: event "act" { a: "zoom:fit" },
+        child: Text(text: "ajustar", style: { fontSize: 13.0, color: data.theme.fg }),
+      ),
+      SizedBox(width: 8.0),
+      Text(text: data.themeLabel, style: { fontSize: 13.0, color: data.theme.fg }),
+      MenuButton(icon: "image", tooltip: "tema: claro, escuro ou os dois lado a lado", menu: data.themeMenu, onMenu: event "act" {}),
+      SizedBox(width: 4.0),
+      Follow(),
+      SizedBox(width: 4.0),
+      MenuButton(icon: "layers", tooltip: "as pranchetas: clique pra ir até uma", menu: data.listMenu, onMenu: event "act" {}),
+    ],
+  ),
+);
+
+widget Follow = Tooltip(
+  message: "quando o claude cria ou muda uma prancheta, o canvas vai até ela (se você não mexeu no canvas há pouco)",
+  child: Pressable(
+    radius: 6.0,
+    padding: [8.0, 4.0, 10.0, 4.0],
+    color: switch data.follow { true: data.theme.active, default: 0x00000000 },
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: "seguir" },
+    child: Row(
+      mainAxisSize: "min",
+      children: [
+        Glyph(icon: switch data.follow { true: "check", default: "dot" }, size: 14.0, color: switch data.follow { true: data.theme.accent, default: data.theme.faint }),
+        SizedBox(width: 6.0),
+        Text(text: "seguir o claude", style: { fontSize: 13.0, color: switch data.follow { true: data.theme.fg, default: data.theme.dim } }),
+      ],
+    ),
+  ),
+);
+
+// Um recado (abrindo, erro ao abrir) e os avisos do canvas.json.
+widget Notice = switch data.message {
+  "": Warnings(),
+  default: Container(
+    padding: [12.0, 8.0, 12.0, 8.0],
+    color: data.theme.bg,
+    child: Text(text: data.message, style: { fontSize: 13.0, color: data.theme.dim }),
+  ),
+};
+
+widget Warnings = switch data.hasWarnings {
+  true: Container(
+    padding: [12.0, 6.0, 12.0, 6.0],
+    color: data.theme.bg,
+    child: Column(
+      crossAxisAlignment: "start",
+      children: [
+        ...for w in data.warnings:
+          Text(text: w, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.yellow }),
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
+
+// --- a área -------------------------------------------------------------------------
+
+widget Area = switch data.hasBoards {
+  true: ZoomView(
+    maxScale: 8.0,
+    command: data.zoom.command,
+    commandRev: data.zoom.rev,
+    focus: data.zoom.focus,
+    onZoom: event "act" { a: "zoom" },
+    onMove: event "act" { a: "move" },
+    child: FittedBox(
+      fit: "contain",
+      child: SizedBox(
+        width: data.size.w,
+        height: data.size.h,
+        child: Stack(
+          children: [
+            ...for b in data.boards:
+              Board(b: b),
+          ],
+        ),
+      ),
+    ),
+  ),
+  default: Center(
+    child: Text(text: "nenhuma prancheta ainda: peça ao claude pra desenhar uma", style: { fontSize: 16.0, color: data.theme.dim }),
+  ),
+};
+
+widget Board = Positioned(
+  start: args.b.left,
+  top: args.b.top,
+  child: GestureDetector(
+    onDoubleTap: event "act" { a: args.b.focus },
+    child: Container(
+      decoration: {
+        type: "box",
+        border: [{ color: switch args.b.highlight { true: data.theme.accent, default: 0x00000000 }, width: 2.0 }],
+      },
+      child: Column(
+        mainAxisSize: "min",
+        crossAxisAlignment: "start",
+        children: [
+          SizedBox(
+            height: 28.0,
+            child: Text(text: args.b.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 16.0, color: data.theme.dim }),
+          ),
+          Row(
+            mainAxisSize: "min",
+            crossAxisAlignment: "start",
+            children: [
+              switch args.b.showLight { true: Shot(path: args.b.light, w: args.b.imageWidth, h: args.b.imageHeight), default: SizedBox() },
+              switch args.b.gap { true: SizedBox(width: 24.0), default: SizedBox() },
+              switch args.b.showDark { true: Shot(path: args.b.dark, w: args.b.imageWidth, h: args.b.imageHeight), default: SizedBox() },
+            ],
+          ),
+          switch args.b.error {
+            "": SizedBox(),
+            default: SizedBox(
+              height: 40.0,
+              child: Padding(
+                padding: [0.0, 8.0, 0.0, 0.0],
+                child: Text(text: args.b.error, maxLines: 2, overflow: "ellipsis", style: { fontSize: 13.0, color: data.theme.red }),
+              ),
+            ),
+          },
+        ],
+      ),
+    ),
+  ),
+);
+
+// Uma imagem da prancheta; antes da primeira renderização, um quadro vazio.
+widget Shot = switch args.path {
+  "": Container(
+    width: args.w,
+    height: args.h,
+    decoration: { type: "box", color: data.theme.bg, border: [{ color: data.theme.border, width: 1.0 }] },
+  ),
+  default: switch data.picture {
+    true: Picture(path: args.path, width: args.w, height: args.h, fit: "fill"),
+    default: Sprite(sheet: args.path, columns: 1, rows: 1, frames: 1, width: args.w, height: args.h),
+  },
+};
