@@ -31,6 +31,7 @@ function fakeHost() {
     calls,
     lastFor: ({ tabId }) => last[tabId] || null,
     viewOf: () => null,
+    request: async (m, p) => { calls.push(['request', m, p]); },
     openCanvas: async (dir, opts) => {
       calls.push(['openCanvas', dir, opts, fs.existsSync(path.join(dir, 'canvas.json'))]);
       last[opts.tabId] = dir;
@@ -38,7 +39,10 @@ function fakeHost() {
         failed: false,
         ui: {},
         engine: {
-          render: async (names) => {
+          known: new Set(),
+          loadCanvas() { this.known = new Set(canvasMod.read(dir).order); },
+          render: async function render(names) {
+            for (const n of names) if (!this.known.has(n)) return new Map(names.map((x) => [x, null]));
             calls.push(['render', names]);
             return new Map(names.map((n) => [n, n === 'bad'
               ? { error: 'marcação inválida', width: 10, height: 10, ms: 5 }
@@ -204,4 +208,65 @@ test('manifest tools equal tools.SCHEMAS', () => {
   assert.deepStrictEqual(m.contributes.tools, tools.SCHEMAS);
   for (const t of m.contributes.tools) assert.ok(t.name.startsWith('design_'));
   for (const t of m.contributes.tools) assert.ok(m.activationEvents.includes(`onTool:${t.name}`));
+});
+
+test('design_board validates sizes, positions and title', async () => {
+  const host = await withBoards([]);
+  const bad = [{ w: 0 }, { w: 5000 }, { w: '10' }, { w: 10, h: '800' }, { w: 10, h: 4001 }, { w: 10, x: 'a' }, { w: 10, y: 1e9 }, { w: 10, title: 'x'.repeat(121) }, { w: 10, title: 5 }];
+  for (const b of bad) {
+    const r = await tools.handle('design_board', { name: 'v', ...b }, ctxOf(host));
+    assert.strictEqual(r.isError, true, JSON.stringify(b));
+  }
+  const ok = await tools.handle('design_board', { name: 'v', w: 4000, h: 1, x: -5, y: 100000, title: 'ok' }, ctxOf(host));
+  assert.ok(!ok.isError, textOf(ok));
+});
+
+test('design_render rejects an invalid theme', async () => {
+  const host = await withBoards(['a']);
+  const r = await tools.handle('design_render', { theme: 'blue' }, ctxOf(host));
+  assert.strictEqual(r.isError, true);
+  assert.strictEqual(textOf(r), 'theme deve ser light, dark ou both');
+});
+
+test('design_render skips images over 3.5 MB and over the 10 MB total', async () => {
+  const host = await withBoards(['a', 'b', 'c']);
+  const big = path.join(tmp, 'big.png');
+  fs.writeFileSync(big, Buffer.alloc(3 * 1024 * 1024)); // 3 MB each: 3 fit in 10 MB, the 4th does not
+  const huge = path.join(tmp, 'huge.png');
+  fs.writeFileSync(huge, Buffer.alloc(4 * 1024 * 1024));
+  const open = host.openCanvas;
+  host.openCanvas = async (...a) => {
+    const V = await open(...a);
+    const r = V.engine.render;
+    V.engine.render = async function render(names) {
+      const m = await r.call(this, names);
+      for (const [n, s] of m) if (s) { s.light = n === 'a' ? huge : big; s.dark = big; }
+      return m;
+    };
+    return V;
+  };
+  const r = await tools.handle('design_render', {}, ctxOf(host));
+  assert.strictEqual(r.content.filter((c) => c.type === 'image').length, 3);
+  assert.match(textOf(r), /a \(claro\): imagem omitida/);
+  assert.match(textOf(r), /imagem omitida/);
+});
+
+test('without cwd, design_open needs an explicit canvas', async () => {
+  const host = fakeHost();
+  const r = await tools.handle('design_open', { name: 'z' }, ctxOf(host, { cwd: undefined }));
+  assert.strictEqual(r.isError, true);
+  assert.match(textOf(r), /passe `canvas`/);
+  const rel = await tools.handle('design_open', { canvas: 'rel/dir' }, ctxOf(host, { cwd: undefined }));
+  assert.match(textOf(rel), /passe `canvas`/);
+  assert.strictEqual(host.calls.length, 0);
+});
+
+test('a board registered moments ago renders and focuses right away', async () => {
+  const host = await withBoards([]);
+  await tools.handle('design_board', { name: 'fresh', w: 390 }, ctxOf(host));
+  const r = await tools.handle('design_render', { boards: ['fresh'] }, ctxOf(host));
+  assert.strictEqual(r.content.filter((c) => c.type === 'image').length, 2);
+  await tools.handle('design_board', { name: 'fresh2', w: 390 }, ctxOf(host));
+  const f = await tools.handle('design_focus', { board: 'fresh2' }, ctxOf(host));
+  assert.ok(!f.isError, textOf(f));
 });

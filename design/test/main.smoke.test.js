@@ -297,3 +297,20 @@ test('tool.call reaches the tools (design_list over stdio, no engine needed)', a
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('design_open focuses the session before opening the view', { skip: skipEngine, timeout: 45000 }, async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'design-main-'));
+  const { canvasDir, dataDir } = makeCanvas(tmp);
+  const h = host();
+  try {
+    await h.request('initialize', { apiVersion: 1, rfw: 2, dataDir });
+    const r = await h.request('tool.call', { tool: 'design_open', args: {}, tabId: 't1', cwd: '/x' });
+    assert.ok(!r.result.isError, JSON.stringify(r.result));
+    const iFocus = h.msgs.findIndex((m) => m.method === 'session.focus');
+    const iOpen = h.msgs.findIndex((m) => m.method === 'view.open');
+    assert.ok(iFocus >= 0 && iOpen > iFocus, `session.focus (${iFocus}) before view.open (${iOpen})`);
+    assert.deepStrictEqual(h.msgs[iFocus].params, { tabId: 't1' });
+  } finally {
+    cleanup(h, tmp, dataDir);
+  }
+});

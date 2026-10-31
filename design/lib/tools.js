@@ -11,6 +11,11 @@ const project = require('./project');
 
 const GUIDE = path.join(__dirname, 'guide.md');
 const MAX_BOARDS = 4; // boards with images per design_render call
+const MAX_IMAGE_BYTES = 3.5 * 1024 * 1024; // one image
+const MAX_TOTAL_BYTES = 10 * 1024 * 1024; // all images of one result
+const MAX_SIZE = 4000;
+const MAX_POS = 100000;
+const NEED_CWD = 'a sessão não informou a pasta de trabalho: passe `canvas` com o caminho completo';
 const NEED_WHERE = 'diga onde criar o canvas (ex.: ~/Desktop/Work/Ninepay/design/<nome>)';
 const NEED_NAME = 'diga o nome do canvas (name) ou a pasta (canvas)';
 const NO_CANVAS = 'nenhum canvas aberto: chame design_open antes';
@@ -78,6 +83,7 @@ const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 function resolveFrom(args, ctx) {
   const { cwd, home } = ctx;
+  if (args.canvas && !cwd && !/^(\/|~\/)/.test(String(args.canvas).trim())) throw new Error(NEED_CWD);
   if (args.canvas) return canvasMod.resolveDir(args.canvas, { cwd, home });
   const known = ctx.host.lastFor({ tabId: ctx.tabId, cwd });
   if (!known) throw new Error(NO_CANVAS);
@@ -113,6 +119,8 @@ async function open(args, ctx) {
   let dir;
   let repo = null;
   try {
+    if (args.canvas && !ctx.cwd && !/^(\/|~\/)/.test(String(args.canvas).trim())) return fail(NEED_CWD);
+    if (!args.canvas && !ctx.cwd && !ctx.host.lastFor({ tabId: ctx.tabId, cwd: ctx.cwd })) return fail(NEED_CWD);
     if (args.canvas) dir = canvasMod.resolveDir(args.canvas, { cwd: ctx.cwd, home });
     else {
       const known = !args.name && ctx.host.lastFor({ tabId: ctx.tabId, cwd: ctx.cwd });
@@ -123,7 +131,8 @@ async function open(args, ctx) {
         dir = canvasMod.defaultDir({ cwd: ctx.cwd, name: args.name, home });
       }
     }
-    repo = canvasMod.gitRoot(ctx.cwd);
+    if (!ctx.cwd && !fs.existsSync(path.join(dir, 'design.json'))) return fail(NEED_CWD);
+    repo = ctx.cwd ? canvasMod.gitRoot(ctx.cwd) : null;
     canvasMod.init(dir, { repo });
   } catch (e) { return fail(errText(e)); }
   let V;
@@ -149,7 +158,11 @@ async function open(args, ctx) {
 async function board(args, ctx) {
   const dir = resolveFrom(args, ctx);
   if (!canvasMod.validName(args.name)) return fail(`nome de board inválido: "${args.name}"`);
-  if (typeof args.w !== 'number' || !Number.isFinite(args.w) || args.w <= 0) return fail('w precisa ser um número maior que 0');
+  const num = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+  if (!num(args.w, 1, MAX_SIZE)) return fail(`w precisa ser um número entre 1 e ${MAX_SIZE}`);
+  if (args.h != null && !num(args.h, 1, MAX_SIZE)) return fail(`h precisa ser um número entre 1 e ${MAX_SIZE}`);
+  for (const k of ['x', 'y']) if (args[k] != null && !num(args[k], -MAX_POS, MAX_POS)) return fail(`${k} precisa ser um número entre -${MAX_POS} e ${MAX_POS}`);
+  if (args.title != null && (typeof args.title !== 'string' || args.title.length > 120)) return fail('title precisa ser texto de até 120 caracteres');
   const { canvas: next } = canvasMod.upsertBoard(canvasMod.read(dir), {
     name: args.name, w: args.w, h: args.h, x: args.x, y: args.y, title: args.title,
   });
@@ -163,14 +176,17 @@ async function render(args, ctx) {
   const canvas = canvasMod.read(dir);
   const names = Array.isArray(args.boards) && args.boards.length ? args.boards : canvas.order;
   for (const n of names) if (!has(canvas.boards, n)) return fail(`prancheta não existe: ${n}`);
-  const theme = args.theme || 'both';
+  const theme = args.theme == null ? 'both' : args.theme;
+  if (!['light', 'dark', 'both'].includes(theme)) return fail('theme deve ser light, dark ou both');
   const V = await viewFor(dir, ctx);
   if (!V.engine) return fail(`o canvas não abriu: ${(V.ui && V.ui.message) || 'motor parado'}`);
+  if (V.engine.loadCanvas) V.engine.loadCanvas(true); // a board registered moments ago is not in the engine yet
   const shown = names.slice(0, MAX_BOARDS);
   const rest = names.slice(MAX_BOARDS);
   const results = await V.engine.render(shown);
   const content = [];
   const lines = [];
+  let budget = MAX_TOTAL_BYTES;
   for (const n of shown) {
     const s = results.get(n);
     if (!s) { lines.push(`${n}: sem arquivo — escreva ${path.join(dir, 'boards', `${n}.html`)} e chame de novo`); continue; }
@@ -180,8 +196,15 @@ async function render(args, ctx) {
     for (const t of theme === 'both' ? ['light', 'dark'] : [theme]) {
       const file = s[t];
       if (!file) continue;
-      content.push({ type: 'text', text: `${n} (${t === 'light' ? 'claro' : 'escuro'})` });
-      content.push({ type: 'image', data: fs.readFileSync(file).toString('base64'), mimeType: 'image/png' });
+      const label = `${n} (${t === 'light' ? 'claro' : 'escuro'})`;
+      const buf = fs.readFileSync(file);
+      if (buf.length > MAX_IMAGE_BYTES || buf.length > budget) {
+        lines.push(`${label}: imagem omitida (${(buf.length / 1048576).toFixed(1)} MB, grande demais pra devolver); reduza a prancheta ou veja no canvas`);
+        continue;
+      }
+      budget -= buf.length;
+      content.push({ type: 'text', text: label });
+      content.push({ type: 'image', data: buf.toString('base64'), mimeType: 'image/png' });
     }
   }
   if (rest.length) lines.push(`não renderizadas (máx. ${MAX_BOARDS} por chamada): ${rest.join(', ')}`);
@@ -192,7 +215,8 @@ async function focus(args, ctx) {
   const dir = resolveFrom(args, ctx);
   const canvas = canvasMod.read(dir);
   if (!has(canvas.boards, args.board)) return fail(`prancheta não existe: ${args.board}`);
-  await viewFor(dir, ctx);
+  const V = await viewFor(dir, ctx);
+  if (V.engine && V.engine.loadCanvas) V.engine.loadCanvas(true); // sync 'canvas' event refreshes the view's board list
   await ctx.host.focusBoard(dir, args.board);
   return text(`focado: ${args.board}`);
 }
