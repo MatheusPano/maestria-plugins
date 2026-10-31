@@ -87,3 +87,11 @@ test('restarts once when the CLI is killed', { skip: !have && 'no node_modules' 
   await tw.whenBuilt(since);
   assert.match(fs.readFileSync(path.join(tmp, 'data', 'out.css'), 'utf8'), /\.underline/);
 });
+
+test('rejects fast with a clear error once the restart also dies', { skip: !have && 'no node_modules' }, async () => {
+  process.kill(tw.pid, 'SIGKILL'); // second kill: the single restart is spent
+  await new Promise((r) => setTimeout(r, 200));
+  const t0 = Date.now();
+  await assert.rejects(tw.whenBuilt(Date.now()), /^Error: o tailwind do projeto não subiu: /);
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
+});

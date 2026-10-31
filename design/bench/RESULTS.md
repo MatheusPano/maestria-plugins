@@ -16,3 +16,12 @@ Caveats, stated plainly:
 - Adjustment is about 30-50 ms Tailwind build + about 270-325 ms for two renders (light + dark, serialized). It does not include the plugin's file-watch latency (poll interval) or the component expansion step, which the bench does inline.
 - The brand/extra CSS is inlined into a copy of the page at render time, so Chrome never serves a stale stylesheet.
 - No sass binary in the SAC: `_next-colors.scss` is reduced to its plain custom-property blocks (`:root`, `.dark`), which is all it contains that matters here.
+
+## Re-run after the fix round (whole-css check, 10 ms poll, two stable polls)
+
+| medida | runs | p50 | p90 | min | max |
+|---|---|---|---|---|---|
+| primeira abertura | 10 | 2651 ms | 2795 ms | 2542 ms | 2974 ms |
+| ajuste | 10 | 300 ms | 314 ms | 295 ms | 317 ms |
+
+GATE: PASS

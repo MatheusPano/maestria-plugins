@@ -66,6 +66,7 @@ class Tailwind {
     this.stopping = false;
     this.restarts = 0;
     this.stderr = '';
+    this.failed = null;
   }
 
   get pid() { return this.child && this.child.pid; }
@@ -79,7 +80,7 @@ class Tailwind {
     if (this.detected.tailwind.version >= 4) {
       const base = `@import "tailwindcss" source(none);\n@source "${contentGlob}";\n`;
       fs.writeFileSync(input, `${base}${extras}\n`);
-      this.args = ['-i', input, '-o', outCss, '--watch'];
+      this.args = ['-i', input, '-o', outCss, '--watch=always'];
     } else {
       const cfg = path.join(dir, 'tailwind.config.cjs');
       const cfgSrc = `module.exports = { presets: [require(${JSON.stringify(config)})], content: [${JSON.stringify(contentGlob)}] };\n`;
@@ -90,6 +91,7 @@ class Tailwind {
   }
 
   _spawn() {
+    this.stderr = '';
     const child = spawn(this.detected.tailwind.bin, this.args, {
       cwd: this.opts.repoDir, stdio: ['ignore', 'ignore', 'pipe'],
     });
@@ -103,7 +105,14 @@ class Tailwind {
       this.child = null;
       if (this.stopping) return;
       this.log(`tailwind exited (${signal || code}); ${this.restarts ? 'giving up' : 'restarting'}`);
-      if (this.restarts < 1) { this.restarts++; this._spawn(); }
+      if (this.restarts < 1) {
+        const last = this.stderr;
+        this.restarts++;
+        this._spawn();
+        this.stderr = last; // keep why the first one died until the new one builds
+      } else {
+        this.failed = new Error(`o tailwind do projeto não subiu: ${this.lastErrors()}`);
+      }
     });
   }
 
@@ -119,17 +128,29 @@ class Tailwind {
     return this.stderr.trim().split('\n').slice(-8).join('\n');
   }
 
-  // Resolves when outCss was written after sinceMs; rejects after 5 s with the CLI's last stderr lines.
+  // Resolves when outCss was written after sinceMs and is whole: non-empty and
+  // unchanged (size + mtime) across two consecutive polls. Rejects at once if the
+  // CLI is gone for good, or after 5 s with the CLI's last stderr lines.
   whenBuilt(sinceMs) {
     const { outCss } = this.opts;
     const t0 = Date.now();
+    let prev = null;
     return new Promise((resolve, reject) => {
       const tick = () => {
-        let m = 0;
-        try { m = fs.statSync(outCss).mtimeMs; } catch { /* not built yet */ }
-        if (m > sinceMs) return resolve();
+        if (this.failed) return reject(this.failed);
+        let st = null;
+        try { st = fs.statSync(outCss); } catch { /* not built yet */ }
+        if (st && st.mtimeMs > sinceMs && st.size > 0) {
+          if (prev && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
+            this.stderr = '';
+            return resolve();
+          }
+          prev = { size: st.size, mtimeMs: st.mtimeMs };
+        } else {
+          prev = null;
+        }
         if (Date.now() - t0 > BUILD_TIMEOUT_MS) {
-          return reject(new Error(`tailwind não gerou o css em 5 s\n${this.lastErrors()}`));
+          return reject(new Error(`o tailwind do projeto não subiu: sem css em 5 s\n${this.lastErrors()}`));
         }
         setTimeout(tick, POLL_MS);
       };
