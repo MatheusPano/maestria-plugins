@@ -112,3 +112,34 @@ test('whenBuilt reports the limit it used', async () => {
   const t = new tailwind.Tailwind({ outCss: path.join(tmp, 'never.css') }, {});
   await assert.rejects(t.whenBuilt(Date.now(), 50), /sem css em 0\.05 s/);
 });
+
+test('v4 input imports the project entry css with source(none) and sources only the expanded pages', () => {
+  const dir = fs.mkdtempSync(path.join(tmp, 'v4-'));
+  const entry = path.join(dir, 'src', 'app.css');
+  const outCss = path.join(dir, 'data', 'out.css');
+  const glob = path.join(dir, 'data', 'expanded', '**/*.html');
+  const t = new tailwind.Tailwind({ repoDir: dir, extraCss: [], contentGlob: glob, outCss },
+    { tailwind: { version: 4, bin: 'x', config: null, input: entry }, sass: null });
+  t._writeInputs();
+  const css = fs.readFileSync(path.join(dir, 'data', 'input.css'), 'utf8');
+  const lines = css.split('\n');
+  assert.strictEqual(lines[0], `@import ${JSON.stringify(entry)} source(none);`);
+  assert.strictEqual(lines[1], `@source ${JSON.stringify(glob)};`);
+  assert.doesNotMatch(css, /@import "tailwindcss"/);
+  // without an entry css: plain tailwind
+  const t2 = new tailwind.Tailwind({ repoDir: dir, extraCss: [], contentGlob: glob, outCss },
+    { tailwind: { version: 4, bin: 'x', config: null, input: null }, sass: null });
+  t2._writeInputs();
+  assert.match(fs.readFileSync(path.join(dir, 'data', 'input.css'), 'utf8'), /^@import "tailwindcss" source\(none\);\n@source /);
+});
+
+test('a tailwind binary that cannot spawn fails at once with a readable error', async () => {
+  const dir = fs.mkdtempSync(path.join(tmp, 'enoent-'));
+  const t = new tailwind.Tailwind({ repoDir: dir, outCss: path.join(dir, 'out.css'), log: () => {} },
+    { tailwind: { version: 3, bin: path.join(dir, 'nope', 'tailwindcss') }, sass: null });
+  t._writeInputs = function writeInputs() { this.args = []; };
+  const t0 = Date.now();
+  await assert.rejects(t.init(), /^Error: o tailwind do projeto não subiu: .*ENOENT/);
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
+  await t.stop();
+});

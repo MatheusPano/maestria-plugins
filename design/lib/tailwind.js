@@ -80,7 +80,10 @@ class Tailwind {
     const extras = extraCss.map((f) => compileExtra(path.resolve(repoDir, f), repoDir, this.detected.sass)).join('\n');
     const input = path.join(dir, 'input.css');
     if (this.detected.tailwind.version >= 4) {
-      const base = `@import "tailwindcss" source(none);\n@source "${contentGlob}";\n`;
+      // the project's entry css brings its @theme/@custom-variant; source(none)
+      // keeps Tailwind from scanning the repo, @source points it at the boards
+      const entry = this.detected.tailwind.input || this.opts.input;
+      const base = `@import ${JSON.stringify(entry || 'tailwindcss')} source(none);\n@source ${JSON.stringify(contentGlob)};\n`;
       fs.writeFileSync(input, `${base}${extras}\n`);
       this.args = ['-i', input, '-o', outCss, '--watch=always'];
     } else {
@@ -103,7 +106,12 @@ class Tailwind {
       if (/Done in \d+\s*ms/.test(d.toString())) this.doneAt = Date.now();
       this.stderr = (this.stderr + d.toString()).slice(-STDERR_KEEP);
     });
-    child.on('error', (e) => { this.stderr += `\n${e.message}`; });
+    child.on('error', (e) => {
+      // spawn failed (ENOENT, EACCES): no 'exit' worth waiting for, fail now
+      this.stderr += `\n${e.message}`;
+      if (this.child === child) this.child = null;
+      if (!this.stopping) this.failed = new Error(`o tailwind do projeto não subiu: ${e.message}`);
+    });
     child.on('exit', (code, signal) => {
       if (this.child !== child) return;
       this.child = null;
