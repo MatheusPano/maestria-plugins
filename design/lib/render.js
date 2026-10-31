@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 
 const MAX_HEIGHT = 4000;
+const LOAD_TIMEOUT_MS = 10000;
 const sessions = new WeakMap(); // chrome -> sessionId (one reusable target per Chrome)
 
 async function getSession(chrome) {
@@ -59,7 +60,11 @@ async function renderOnce(chrome, { htmlPath, width, height, dark, out }) {
   const loaded = new Promise((resolve, reject) => {
     const onLoad = (p, s) => { if (s === sid) { cleanup(); resolve(); } };
     const onExit = () => { cleanup(); reject(new Error('chrome exited')); };
-    const timer = setTimeout(() => { cleanup(); reject(new Error('load timeout')); }, 15000);
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('load timeout'));
+      chrome.abort('load timeout'); // a page that never loads wedges the shared target
+    }, LOAD_TIMEOUT_MS);
     function cleanup() {
       clearTimeout(timer);
       chrome.off('Page.loadEventFired', onLoad);

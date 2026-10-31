@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const cdp = require('./cdp');
 
+const CALL_TIMEOUT_MS = 10000;
+
 const ARGS = [
   '--headless=new', '--remote-debugging-pipe', '--no-first-run',
   '--no-default-browser-check', '--disable-gpu', '--hide-scrollbars',
@@ -94,13 +96,31 @@ class Chrome extends EventEmitter {
     try { process.kill(-this.proc.pid, signal); } catch { /* group already gone */ }
   }
 
-  send(method, params = {}, sessionId) {
+  // Kill the whole process group and mark this Chrome as exited right away,
+  // so ensure() relaunches instead of reusing a wedged instance.
+  abort(reason) {
+    if (this.exited) return;
+    this.log('chrome aborted: ' + reason);
+    this._killGroup('SIGKILL');
+    this._onExit(null, 'SIGKILL');
+  }
+
+  send(method, params = {}, sessionId, timeoutMs = CALL_TIMEOUT_MS) {
     if (this.exited) return Promise.reject(new Error('chrome exited'));
     const id = this.nextId++;
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { method, resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method}: timeout after ${timeoutMs}ms`));
+        this.abort(`${method} timeout`);
+      }, timeoutMs);
+      this.pending.set(id, {
+        method,
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
       this.proc.stdio[3].write(cdp.encode(msg));
     });
   }

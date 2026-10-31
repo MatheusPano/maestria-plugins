@@ -64,3 +64,18 @@ test('ensure relaunches after chrome is killed', { skip: !exe && 'no chrome' }, 
   const r = await renderPage(chrome, { htmlPath: html, width: 300, dark: null, out: path.join(tmp, 'd.png') });
   assert.strictEqual(r.height, 120);
 });
+
+test('stuck page times out and ensure() recovers', { skip: !exe && 'no chrome', timeout: 30000 }, async () => {
+  const bad = page('e.html', '<body><script>while(true){}</script></body>');
+  const t0 = Date.now();
+  await assert.rejects(
+    renderPage(chrome, { htmlPath: bad, width: 300, dark: null, out: path.join(tmp, 'e.png') }),
+    /timeout/,
+  );
+  assert.ok(Date.now() - t0 < 11000, 'rejected within ~11 s');
+  assert.ok(chrome.exited);
+  chrome = await chromeMod.ensure(chrome, { log: () => {} });
+  const ok = page('f.html', '<body style="margin:0"><div style="height:120px"></div></body>');
+  const r = await renderPage(chrome, { htmlPath: ok, width: 300, dark: null, out: path.join(tmp, 'f.png') });
+  assert.strictEqual(r.height, 120);
+});

@@ -9,20 +9,24 @@ function encode(msg) {
 class Decoder extends EventEmitter {
   constructor() {
     super();
-    this.buf = Buffer.alloc(0);
+    this.chunks = []; // pending bytes of the current (unterminated) message
   }
 
+  // Only the new chunk is scanned for NUL; buffers are joined once per message.
   push(chunk) {
-    this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
+    let rest = chunk;
     let i;
-    while ((i = this.buf.indexOf(0)) !== -1) {
-      const raw = this.buf.subarray(0, i).toString('utf8');
-      this.buf = this.buf.subarray(i + 1);
+    while ((i = rest.indexOf(0)) !== -1) {
+      this.chunks.push(rest.subarray(0, i));
+      const raw = Buffer.concat(this.chunks).toString('utf8');
+      this.chunks = [];
+      rest = rest.subarray(i + 1);
       if (!raw) continue;
       let msg;
       try { msg = JSON.parse(raw); } catch (e) { this.emit('error', e); continue; }
       this.emit('message', msg);
     }
+    if (rest.length) this.chunks.push(rest);
   }
 }
 

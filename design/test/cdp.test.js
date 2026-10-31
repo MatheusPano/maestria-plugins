@@ -18,3 +18,16 @@ test('Decoder reassembles split messages in order', () => {
   d.push(Buffer.from('":2}\0'));
   assert.deepStrictEqual(got, [{ id: 1 }, { id: 2 }]);
 });
+
+test('Decoder handles a 3 MB message in 64 KB chunks', () => {
+  const d = new cdp.Decoder();
+  const got = [];
+  d.on('message', (m) => got.push(m));
+  const payload = 'x'.repeat(3 * 1024 * 1024);
+  const buf = cdp.encode({ id: 7, data: payload });
+  const t0 = Date.now();
+  for (let o = 0; o < buf.length; o += 65536) d.push(buf.subarray(o, o + 65536));
+  assert.strictEqual(got.length, 1);
+  assert.strictEqual(got[0].data.length, payload.length);
+  assert.ok(Date.now() - t0 < 1000);
+});
