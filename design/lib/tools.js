@@ -135,12 +135,15 @@ async function open(args, ctx) {
     repo = ctx.cwd ? canvasMod.gitRoot(ctx.cwd) : null;
     canvasMod.init(dir, { repo });
   } catch (e) { return fail(errText(e)); }
+  let designRepo = repo;
+  try { designRepo = JSON.parse(fs.readFileSync(path.join(dir, 'design.json'), 'utf8')).repo || repo; } catch { /* keep */ }
+  if (!designRepo || typeof designRepo !== 'string') {
+    return fail(`${path.join(dir, 'design.json')} não diz o projeto: preencha "repo" com a pasta do repositório (a que tem o tailwind)`);
+  }
   let V;
   try { V = await ctx.host.openCanvas(dir, { tabId: ctx.tabId, cwd: ctx.cwd }); } catch (e) { return fail(errText(e)); }
   let canvas;
   try { canvas = canvasMod.read(dir); } catch (e) { return fail(errText(e)); }
-  let designRepo = repo;
-  try { designRepo = JSON.parse(fs.readFileSync(path.join(dir, 'design.json'), 'utf8')).repo || repo; } catch { /* keep */ }
   const families = project.colorFamilies(path.resolve(dir, designRepo));
   const lines = [
     `canvas: ${dir}`,

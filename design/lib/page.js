@@ -17,6 +17,7 @@ function buildPage({ outCss, brandCss = '', head = '', body, version }) {
 }
 
 async function startTailwind({ canvasDir, design, dataDir, outCss, log }) {
+  if (!design.repo || typeof design.repo !== 'string') throw new Error('design.json não diz o projeto: preencha "repo"');
   const repoDir = path.resolve(canvasDir, design.repo);
   const detected = project.detect(repoDir);
   return tailwind.start({

@@ -156,6 +156,11 @@ async function openCanvas(input, { tabId, cwd } = {}) {
       open.failed = false;
       open.ui.message = 'abrindo o canvas…';
       open.ready = startEngine(open);
+    } else if (open.engine && open.engine.chromeError) { // chrome gave up for good: a fresh engine
+      const old = open.engine;
+      open.engine = null;
+      open.ui.message = 'abrindo o canvas…';
+      open.ready = closeEngine(old).then(() => startEngine(open));
     }
     await mx.request('view.open', { viewId, title: open.title, rfw: { library: library(), root: 'root' }, data: data(open) });
     await open.ready;
@@ -183,7 +188,12 @@ async function openCanvas(input, { tabId, cwd } = {}) {
   state.views.set(viewId, V);
   startProbe();
   V.ready = startEngine(V); // Chrome and Tailwind start while the view opens
-  await mx.request('view.open', { viewId, title: V.title, rfw: { library: library(), root: 'root' }, data: data(V) });
+  try {
+    await mx.request('view.open', { viewId, title: V.title, rfw: { library: library(), root: 'root' }, data: data(V) });
+  } catch (e) {
+    await closeView(viewId); // no view: its engine closes as soon as it is up
+    throw e;
+  }
   V.shown = true;
   await render(V); // whatever arrived while view.open was in flight
   await V.ready;

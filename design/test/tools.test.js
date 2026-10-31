@@ -298,3 +298,15 @@ test('a board registered moments ago renders and focuses right away', async () =
   const f = await tools.handle('design_focus', { board: 'fresh2' }, ctxOf(host));
   assert.ok(!f.isError, textOf(f));
 });
+
+test('design_open on a design.json without repo is a readable error', async () => {
+  const host = fakeHost();
+  const dir = path.join(home, 'co', 'design', 'semrepo');
+  fs.mkdirSync(dir, { recursive: true });
+  canvasMod.write(dir, { v: 1, title: 'semrepo', boards: {}, order: [] });
+  fs.writeFileSync(path.join(dir, 'design.json'), JSON.stringify({ darkMode: { class: 'dark' }, css: [] }));
+  const r = await tools.handle('design_open', { canvas: dir }, ctxOf(host, { cwd: undefined }));
+  assert.strictEqual(r.isError, true);
+  assert.match(textOf(r), /design\.json.*"repo"/);
+  assert.doesNotMatch(textOf(r), /paths\[1\]|TypeError/);
+});
