@@ -105,3 +105,36 @@ test('init reads darkMode textually', () => {
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'design.json'), 'utf8')).darkMode, want);
   }
 });
+
+test('defaultDir rejects unsafe names', () => {
+  for (const name of ['../x', '../../x', 'a/b', '/abs', '']) {
+    assert.throws(() => canvas.defaultDir({ cwd: '/h/u/Desktop/Work/sac', name, home: '/h/u' }), /nome de canvas inválido/);
+  }
+});
+
+test('read drops malformed boards and rejects bad files', () => {
+  const dir = tmp();
+  const f = path.join(dir, 'canvas.json');
+  fs.writeFileSync(f, JSON.stringify({
+    v: 1, title: 't', order: ['n', 'nan', 'ok'],
+    boards: { n: null, nan: { x: 'a', y: 0, w: 1 }, s: 5, ok: { x: 0, y: 0, w: 1, h: 2 } },
+  }));
+  const c = canvas.read(dir);
+  assert.deepStrictEqual(Object.keys(c.boards), ['ok']);
+  assert.deepStrictEqual(c.order, ['ok']);
+  assert.strictEqual(c.warnings.length, 3);
+  assert.doesNotThrow(() => canvas.upsertBoard(c, { name: 'z', w: 10 }));
+  for (const bad of ['{nope', '[]', 'null', '5']) {
+    fs.writeFileSync(f, bad);
+    assert.throws(() => canvas.read(dir), (e) => e.message.includes(f) && !(e instanceof SyntaxError));
+  }
+});
+
+test('prototype names are not boards', () => {
+  const c = { v: 1, title: 't', boards: { a: { x: 0, y: 0, w: 100 } }, order: ['a'] };
+  const r = canvas.upsertBoard(c, { name: 'constructor', w: 50 });
+  assert.deepStrictEqual([r.board.x, r.board.y], [180, 0]);
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'canvas.json'), JSON.stringify({ ...c, order: ['a', 'toString'] }));
+  assert.deepStrictEqual(canvas.read(dir).order, ['a']);
+});
