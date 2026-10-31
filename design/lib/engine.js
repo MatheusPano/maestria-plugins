@@ -8,14 +8,16 @@ const canvasMod = require('./canvas');
 const chromeMod = require('./chrome');
 const components = require('./components');
 const page = require('./page');
-const { renderPage } = require('./render');
+const renderMod = require('./render');
 
 const DEBOUNCE_MS = 40;
-const CSS_GRACE_MS = 200; // fallback when tailwind prints no rebuild line
+const CSS_GRACE_MS = 200; // render by then; a slower rebuild re-renders when it lands
+const CLAUDE_MAX_SIDE = 1568; // longest side of the images handed to Claude (design_render)
 const CLASS_RE = /\bclass\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 
 const read = (p) => fs.readFileSync(p, 'utf8');
 const rm = (p) => fs.rmSync(p, { force: true });
+const mtime = (p) => { try { return fs.statSync(p).mtimeMs; } catch { return 0; } };
 
 function classTokens(html) {
   const out = new Set();
@@ -54,7 +56,8 @@ class Engine extends EventEmitter {
     this.timers = new Map();
     this.watchers = [];
     this.queue = Promise.resolve();
-    this.deaths = 0; // chrome processes that died; one relaunch is allowed
+    this.deaths = 0; // chrome deaths since the last good render; one relaunch is allowed
+    this.cssSeen = new Map(); // name -> mtime of the css its last render used
     this.chromeError = null;
   }
 
@@ -63,6 +66,7 @@ class Engine extends EventEmitter {
   expandedFile(name) { return path.join(this.dataDir, 'expanded', `${name}.html`); }
   renderFile(name) { return path.join(this.dataDir, 'render', `${name}.html`); }
   pngFile(name, theme) { return path.join(this.dataDir, 'png', `${name}.${theme}.png`); }
+  claudeFile(name, theme) { return path.join(this.dataDir, 'png', `${name}.${theme}.claude.png`); }
 
   boardNames() {
     let files = [];
@@ -106,11 +110,11 @@ class Engine extends EventEmitter {
     if (!this.started.has(name)) this.started.set(name, Date.now());
   }
 
-  schedule(names, { force = false } = {}) {
+  schedule(names, { force = false, forClaude = false } = {}) {
     if (this.closed) return Promise.resolve(new Map());
     const list = [...new Set(names)];
     const revs = new Map(list.map((n) => { this.touch(n); return [n, this.revs.get(n)]; }));
-    const job = this.queue.then(() => this._job(revs, force));
+    const job = this.queue.then(() => this._job(revs, force, forClaude));
     this.queue = job.catch((e) => this.log(`job: ${e.message}`));
     return job;
   }
@@ -172,7 +176,9 @@ class Engine extends EventEmitter {
     this.uses.delete(name);
     this.tokens.delete(name);
     this.expandedText.delete(name);
-    for (const f of [this.expandedFile(name), this.renderFile(name), this.pngFile(name, 'light'), this.pngFile(name, 'dark')]) rm(f);
+    this.cssSeen.delete(name);
+    for (const f of [this.expandedFile(name), this.renderFile(name), this.pngFile(name, 'light'), this.pngFile(name, 'dark'),
+      this.claudeFile(name, 'light'), this.claudeFile(name, 'dark')]) rm(f);
     if (had) this.emit('board', name, null);
   }
 
@@ -207,7 +213,7 @@ class Engine extends EventEmitter {
   }
 
   // ---- the render job ----------------------------------------------------
-  async _job(revs, force) {
+  async _job(revs, force, forClaude) {
     const results = new Map();
     const t0s = new Map();
     const live = [];
@@ -228,22 +234,25 @@ class Engine extends EventEmitter {
       if (p.build) needBuild = true;
       prepared.push(name);
     }
-    if (prepared.length && this.tw) {
-      if (needBuild) {
-        const err = await this._waitCss(since);
-        if (err) {
-          for (const name of prepared) this._finish(name, revs.get(name), t0s.get(name), { error: err }, results);
-          return results;
-        }
+    let late = null;
+    if (prepared.length && this.tw && needBuild) {
+      const css = await this._waitCss(since);
+      if (css.error) {
+        for (const name of prepared) this._finish(name, revs.get(name), t0s.get(name), { error: css.error }, results);
+        return results;
       }
+      late = css.late;
     }
     // 2. render, serialized (one shared Chrome target)
     for (const name of prepared) {
       if (this.closed) break;
       if (this.revs.get(name) !== revs.get(name)) continue; // re-saved meanwhile
-      const out = await this._render(name, revs.get(name));
+      const cssAt = mtime(this.outCss);
+      const out = await this._render(name, revs.get(name), forClaude);
+      if (!out.error && !out.stale) this.cssSeen.set(name, cssAt);
       this._finish(name, revs.get(name), t0s.get(name), out, results);
     }
+    if (late) this._afterLateBuild(late, prepared, revs);
     if (this.closed) return results;
     for (const name of revs.keys()) if (!results.has(name)) results.set(name, this.states.get(name) ?? null);
     return results;
@@ -277,8 +286,9 @@ class Engine extends EventEmitter {
     return { build };
   }
 
-  // Waits for the css of a changed page; gives up quietly after a grace period
-  // (the change may not add any css), loudly when Tailwind is dead.
+  // Waits for the css of a changed page. Past a grace period it stops waiting
+  // (the change may add no css, or the machine is slow) and hands back `late`,
+  // the build still in flight; loud only when Tailwind is dead.
   async _waitCss(since) {
     const built = this.tw.whenBuilt(since);
     const settled = built.then(() => null, (e) => e);
@@ -286,8 +296,22 @@ class Engine extends EventEmitter {
     const grace = new Promise((r) => { timer = setTimeout(() => r('grace'), CSS_GRACE_MS); });
     const r = await Promise.race([settled, grace]);
     clearTimeout(timer);
-    if (r === 'grace') { built.cancel(); return this.tw.failed ? this.tw.failed.message : null; }
-    return r ? r.message : null;
+    if (r === 'grace') {
+      if (this.tw.failed) { built.cancel(); return { error: this.tw.failed.message }; }
+      return { error: null, late: settled };
+    }
+    return { error: r ? r.message : null };
+  }
+
+  // The build we stopped waiting for landed: boards rendered with the older css
+  // (and not re-saved since) render once more.
+  _afterLateBuild(late, names, revs) {
+    late.then((err) => {
+      if (err || this.closed) return;
+      const now = mtime(this.outCss);
+      const again = names.filter((n) => this.revs.get(n) === revs.get(n) && this.cssSeen.has(n) && this.cssSeen.get(n) !== now);
+      if (again.length) this.schedule(again);
+    });
   }
 
   async _chrome() {
@@ -313,12 +337,13 @@ class Engine extends EventEmitter {
 
   // Renders both themes into per-rev temp files; _finish promotes them to the
   // stable paths only if the board was not deleted or re-saved meanwhile.
-  async _render(name, rev) {
+  async _render(name, rev, forClaude = false) {
     const b = this.canvas.boards[name];
     const t0 = Date.now();
     const stale = () => this.closed || this.revs.get(name) !== rev;
     const tmp = (theme) => path.join(this.dataDir, 'png', `${name}.${theme}.${rev}.tmp.png`);
     const temps = [tmp('light'), tmp('dark')];
+    if (forClaude) temps.push(tmp('light.claude'), tmp('dark.claude'));
     let lastErr = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -330,9 +355,11 @@ class Engine extends EventEmitter {
         writeAtomic(copy, src.replace(`href="file://${this.outCss}"`, `href="file://${this.outCss}?v=${version}"`));
         fs.mkdirSync(path.join(this.dataDir, 'png'), { recursive: true });
         const base = { htmlPath: copy, width: b.w, height: b.h };
-        const light = await renderPage(chrome, { ...base, dark: null, out: temps[0] });
+        const small = (i) => (forClaude ? { small: { out: temps[i], maxSide: CLAUDE_MAX_SIDE } } : {});
+        const light = await renderMod.renderPage(chrome, { ...base, dark: null, out: temps[0], ...small(2) });
         if (stale()) return { stale: true, temps };
-        const dark = await renderPage(chrome, { ...base, dark: this.design.darkMode, out: temps[1] });
+        const dark = await renderMod.renderPage(chrome, { ...base, dark: this.design.darkMode, out: temps[1], ...small(3) });
+        this.deaths = 0; // a good render: only consecutive deaths are final
         this.log(`render ${name}: ${Date.now() - t0} ms (light ${light.ms} + dark ${dark.ms})`);
         return { temps, width: light.width, height: light.height, cut: light.cut };
       } catch (e) {
@@ -361,6 +388,12 @@ class Engine extends EventEmitter {
       fs.renameSync(out.temps[0], light);
       fs.renameSync(out.temps[1], dark);
       state = { light, dark, width: out.width, height: out.height, cut: out.cut, ms: Date.now() - t0, rev };
+      if (out.temps.length === 4) {
+        const claude = { light: this.claudeFile(name, 'light'), dark: this.claudeFile(name, 'dark') };
+        fs.renameSync(out.temps[2], claude.light);
+        fs.renameSync(out.temps[3], claude.dark);
+        state.claude = claude;
+      }
       this.log(`board ${name}: ${state.ms} ms (save to image)`);
     }
     this.states.set(name, state);
@@ -369,9 +402,24 @@ class Engine extends EventEmitter {
   }
 
   // ---- public ------------------------------------------------------------
-  async render(names) {
+  // `forClaude`: also capture each theme with the longest side ≤ 1568 px
+  // (state.claude.light/dark) for the images design_render returns.
+  // A board saved again while this render runs (the file watcher) supersedes
+  // it: wait for that job and render the board once more, so the caller gets
+  // the board as it is now.
+  async render(names, { forClaude = false } = {}) {
     const list = names && names.length ? names : this.renderable();
-    return this.schedule(list, { force: true });
+    const opts = { force: true, forClaude };
+    const results = await this.schedule(list, opts);
+    const done = (n, s) => s && s.rev === this.revs.get(n) && (s.error || !forClaude || s.claude);
+    for (let i = 0; i < 2 && !this.closed; i++) {
+      const redo = list.filter((n) => !done(n, results.get(n)) && fs.existsSync(this.boardFile(n))
+        && this.canvas && Object.prototype.hasOwnProperty.call(this.canvas.boards, n));
+      if (!redo.length) break;
+      await this.idle();
+      for (const [n, s] of await this.schedule(redo, opts)) results.set(n, s);
+    }
+    return results;
   }
 
   idle() { return this.queue; }
@@ -399,7 +447,8 @@ async function open(canvasDir, { dataDir, log } = {}) {
   const eng = new Engine(dir, { dataDir: path.resolve(dataDir), log });
   fs.mkdirSync(path.join(dir, 'boards'), { recursive: true });
   fs.mkdirSync(path.join(dir, 'components'), { recursive: true });
-  fs.mkdirSync(eng.dataDir, { recursive: true });
+  // Tailwind v3 only watches content dirs that exist when it starts
+  fs.mkdirSync(path.join(eng.dataDir, 'expanded'), { recursive: true });
   eng.loadDesign();
   eng.loadCanvas(false);
   // pages first, so Tailwind's first build already knows every class

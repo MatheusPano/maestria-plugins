@@ -202,7 +202,7 @@ test('a class that produces no css does not stall the save', { skip }, async () 
   assert.ok(e.state.ms < 600, `ms ${e.state.ms}`);
 });
 
-test('chrome is relaunched once; the second death is reported and final', { skip }, async () => {
+test('chrome is relaunched after a death that follows a good render (consecutive deaths: engine.unit)', { skip }, async () => {
   eng.chrome.abort('test 1');
   let m = await eng.render(['conversas']);
   assert.ok(!m.get('conversas').error, JSON.stringify(m.get('conversas')));
@@ -210,12 +210,9 @@ test('chrome is relaunched once; the second death is reported and final', { skip
   assert.notStrictEqual(second.exited, true);
   second.abort('test 2');
   m = await eng.render(['conversas']);
-  assert.match(m.get('conversas').error, /o chrome não subiu/);
-  assert.ok(m.get('conversas').light, 'previous png path kept');
-  const dead = eng.chrome;
-  m = await eng.render(['conversas']);
-  assert.match(m.get('conversas').error, /o chrome não subiu/);
-  assert.strictEqual(eng.chrome, dead, 'no further relaunch');
+  assert.ok(!m.get('conversas').error, JSON.stringify(m.get('conversas')));
+  assert.notStrictEqual(eng.chrome, second, 'relaunched again');
+  assert.strictEqual(eng.chromeError, null);
 });
 
 test('close() leaves no chrome or tailwind process', { skip }, async () => {

@@ -183,7 +183,8 @@ async function render(args, ctx) {
   if (V.engine.loadCanvas) V.engine.loadCanvas(true); // a board registered moments ago is not in the engine yet
   const shown = names.slice(0, MAX_BOARDS);
   const rest = names.slice(MAX_BOARDS);
-  const results = await V.engine.render(shown);
+  // the canvas keeps 2x pngs; Claude gets captures with the longest side ≤ 1568 px
+  const results = await V.engine.render(shown, { forClaude: true });
   const content = [];
   const lines = [];
   let budget = MAX_TOTAL_BYTES;
@@ -194,9 +195,10 @@ async function render(args, ctx) {
     lines.push(`${n}: ${size}${s.ms} ms${s.cut ? ', cortada (a página passa do limite de altura da imagem)' : ''}${s.error ? `, ERRO: ${s.error}` : ''}`);
     if (s.error) continue;
     for (const t of theme === 'both' ? ['light', 'dark'] : [theme]) {
-      const file = s[t];
-      if (!file) continue;
+      if (!s[t]) continue;
       const label = `${n} (${t === 'light' ? 'claro' : 'escuro'})`;
+      const file = s.claude && s.claude[t];
+      if (!file) { lines.push(`${label}: imagem omitida (a prancheta mudou durante o render); chame design_render de novo`); continue; }
       const buf = fs.readFileSync(file);
       if (buf.length > MAX_IMAGE_BYTES || buf.length > budget) {
         lines.push(`${label}: imagem omitida (${(buf.length / 1048576).toFixed(1)} MB, grande demais pra devolver); reduza a prancheta ou veja no canvas`);

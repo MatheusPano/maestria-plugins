@@ -23,6 +23,9 @@ fs.writeFileSync(path.join(repo, 'colors.js'), "const c = {\n  woot: { 500: '#00
 const PNG = Buffer.from('iVBORw0KGgo=', 'base64');
 const png = path.join(tmp, 'x.png');
 fs.writeFileSync(png, PNG);
+const BIG = Buffer.from('iVBORw0KGgoAAAA=', 'base64'); // stands for the 2x canvas png
+const big2x = path.join(tmp, 'x2.png');
+fs.writeFileSync(big2x, BIG);
 
 function fakeHost() {
   const calls = [];
@@ -41,12 +44,12 @@ function fakeHost() {
         engine: {
           known: new Set(),
           loadCanvas() { this.known = new Set(canvasMod.read(dir).order); },
-          render: async function render(names) {
+          render: async function render(names, opts) {
             for (const n of names) if (!this.known.has(n)) return new Map(names.map((x) => [x, null]));
-            calls.push(['render', names]);
+            calls.push(['render', names, opts]);
             return new Map(names.map((n) => [n, n === 'bad'
               ? { error: 'marcação inválida', width: 10, height: 10, ms: 5 }
-              : { light: png, dark: png, width: 1440, height: 900, ms: 30, cut: false }]));
+              : { light: big2x, dark: big2x, claude: { light: png, dark: png }, width: 1440, height: 900, ms: 30, cut: false }]));
           },
         },
       };
@@ -148,6 +151,31 @@ test('design_render returns png image items, light then dark', async () => {
   assert.ok(labels.indexOf('a (claro)') < labels.indexOf('a (escuro)'));
 });
 
+test('design_render asks for the small captures and never returns the 2x canvas png', async () => {
+  const host = await withBoards(['a']);
+  const r = await tools.handle('design_render', { boards: ['a'] }, ctxOf(host));
+  assert.deepStrictEqual(host.calls.filter((c) => c[0] === 'render').pop()[2], { forClaude: true });
+  for (const img of r.content.filter((c) => c.type === 'image')) assert.notStrictEqual(img.data, BIG.toString('base64'));
+  // a state without the small capture (a newer save took over) is not sent at 2x
+  const open = host.openCanvas;
+  host.openCanvas = async (...a) => {
+    const V = await open(...a);
+    const real = V.engine.render;
+    V.engine.render = async function render(names, opts) {
+      const m = await real.call(this, names, opts);
+      for (const s of m.values()) if (s) delete s.claude;
+      return m;
+    };
+    return V;
+  };
+  const host2 = host;
+  await tools.handle('design_open', { name: `z${Math.random().toString(36).slice(2, 6)}` }, ctxOf(host2));
+  await tools.handle('design_board', { name: 'a', w: 1440 }, ctxOf(host2));
+  const r2 = await tools.handle('design_render', { boards: ['a'] }, ctxOf(host2));
+  assert.strictEqual(r2.content.filter((c) => c.type === 'image').length, 0);
+  assert.match(textOf(r2), /a \(claro\): imagem omitida.*design_render de novo/);
+});
+
 test('design_render honors theme and reports errors without images', async () => {
   const host = await withBoards(['a', 'bad']);
   const r = await tools.handle('design_render', { theme: 'dark' }, ctxOf(host));
@@ -238,9 +266,9 @@ test('design_render skips images over 3.5 MB and over the 10 MB total', async ()
   host.openCanvas = async (...a) => {
     const V = await open(...a);
     const r = V.engine.render;
-    V.engine.render = async function render(names) {
-      const m = await r.call(this, names);
-      for (const [n, s] of m) if (s) { s.light = n === 'a' ? huge : big; s.dark = big; }
+    V.engine.render = async function render(names, opts) {
+      const m = await r.call(this, names, opts);
+      for (const [n, s] of m) if (s) s.claude = { light: n === 'a' ? huge : big, dark: big };
       return m;
     };
     return V;

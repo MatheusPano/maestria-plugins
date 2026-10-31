@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 
 const MAX_HEIGHT = 4000;
+const DPR = 2;
 const LOAD_TIMEOUT_MS = 10000;
 const sessions = new WeakMap(); // chrome -> sessionId (one reusable target per Chrome)
 
@@ -51,11 +52,11 @@ async function contentHeight(chrome, sid) {
   return Math.ceil(metrics.cssContentSize.height);
 }
 
-async function renderOnce(chrome, { htmlPath, width, height, dark, out }) {
+async function renderOnce(chrome, { htmlPath, width, height, dark, out, small }) {
   const t0 = Date.now();
   const sid = await getSession(chrome);
   await chrome.send('Emulation.setDeviceMetricsOverride',
-    { width, height: height ?? 800, deviceScaleFactor: 2, mobile: false }, sid);
+    { width, height: height ?? 800, deviceScaleFactor: DPR, mobile: false }, sid);
 
   let cancelLoad = () => {};
   const loaded = new Promise((resolve, reject) => {
@@ -95,9 +96,20 @@ async function renderOnce(chrome, { htmlPath, width, height, dark, out }) {
   const shot = await chrome.send('Page.captureScreenshot', {
     format: 'png', clip: { x: 0, y: 0, width, height: h, scale: 1 }, captureBeyondViewport: true,
   }, sid);
-  const tmp = out + '.tmp';
-  fs.writeFileSync(tmp, Buffer.from(shot.data, 'base64'));
-  fs.renameSync(tmp, out);
+  const save = (file, data) => {
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, Buffer.from(data, 'base64'));
+    fs.renameSync(tmp, file);
+  };
+  save(out, shot.data);
+  if (small) {
+    // a second capture whose longest side (in device px) fits small.maxSide
+    const scale = Math.min(1, (small.maxSide - 1) / (DPR * Math.max(width, h)));
+    const mini = scale === 1 ? shot : await chrome.send('Page.captureScreenshot', {
+      format: 'png', clip: { x: 0, y: 0, width, height: h, scale }, captureBeyondViewport: true,
+    }, sid);
+    save(small.out, mini.data);
+  }
   return { width, height: h, cut, ms: Date.now() - t0 };
 }
 

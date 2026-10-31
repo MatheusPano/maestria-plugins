@@ -44,7 +44,22 @@ test('cuts tall pages at 4000', { skip: !exe && 'no chrome' }, async () => {
   assert.strictEqual(r.cut, true);
 });
 
-test('applies dark class', { skip: !exe && 'no chrome' }, async () => {
+test('a small capture keeps the longest side within maxSide; the main png stays 2x', { skip: !exe && 'no chrome' }, async () => {
+  const html = page('s.html', '<body style="margin:0"><div style="height:900px;background:#123"></div></body>');
+  const out = path.join(tmp, 's.png');
+  const small = path.join(tmp, 's.small.png');
+  await renderPage(chrome, { htmlPath: html, width: 1440, height: 900, dark: null, out, small: { out: small, maxSide: 1568 } });
+  assert.strictEqual(readPng(fs.readFileSync(out)).width, 2880);
+  const s = readPng(fs.readFileSync(small));
+  assert.ok(s.width <= 1568 && s.width >= 1500, `small width ${s.width}`);
+  assert.ok(s.height <= 1568, `small height ${s.height}`);
+  // a board already under the limit is captured as is
+  const tiny = path.join(tmp, 's.tiny.png');
+  await renderPage(chrome, { htmlPath: html, width: 300, height: 200, dark: null, out, small: { out: tiny, maxSide: 1568 } });
+  assert.strictEqual(readPng(fs.readFileSync(tiny)).width, 600);
+});
+
+test('applies dark class',{ skip: !exe && 'no chrome' }, async () => {
   const html = page('c.html', '<style>.dark body{background:#000}body{margin:0;background:#fff}</style><body><div style="height:50px"></div></body>');
   const out = path.join(tmp, 'c.png');
   await renderPage(chrome, { htmlPath: html, width: 300, dark: { class: 'dark' }, out });
