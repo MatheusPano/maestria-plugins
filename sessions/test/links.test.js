@@ -66,7 +66,12 @@ test('a lateral põe quem precisa de você primeiro, com o pedido do cartão, e 
   assert.equal(badge, '1');
   sessions[2] = { ...sessions[2], status: 'waitingAnswer', needsYou: true };
   assert.equal(sidebar(l, sessions, {}, now).blocks[1].items.find((i) => i.title === 'trabalha').subtitle, 'Pergunta na aba.');
-  sessions[2] = { ...sessions[2], status: 'tool', needsYou: false };
+  l.nodes[work].card = { state: 'working', since: 0, answered: { text: 'x', at: 60000 } };
+  sessions[2] = { ...sessions[2], status: 'idle', needsYou: false, reply: { text: '\nTudo pronto.\nmais', at: 9 * 60000 } };
+  const replied = sidebar(l, sessions, {}, now).blocks[1].items.find((i) => i.title === 'trabalha');
+  assert.deepEqual([replied.subtitle, replied.meta, replied.avatar.color], ['Respondeu: Tudo pronto.', '1 min', 'red']);
+  l.nodes[work].card = { state: 'working', since: 0 };
+  sessions[2] = { ...sessions[2], status: 'tool', reply: undefined };
   items = sidebar(l, sessions, { unfolded: { [root]: true } }, now).blocks[1].items;
   assert.deepEqual(items.map((i) => i.title), ['gerente', 'TASK#2 pergunta', 'trabalha', 'pronto', 'esconder as prontas']);
 });

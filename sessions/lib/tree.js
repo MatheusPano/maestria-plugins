@@ -2,7 +2,7 @@
 // A aba da lateral: cada gerente com as sessões dele embaixo, quem precisa de você primeiro, e as prontas dobradas.
 
 const { colorOf, bare } = require('./links');
-const { stateOf, liveOf, waitOf } = require('./cards');
+const { stateOf, liveOf, waitOf, repliedOf, plain } = require('./cards');
 
 const STATUS_TONE = {
   working: 'accent',
@@ -37,6 +37,8 @@ function managersMenu(links, except) {
 /** O que a linha diz embaixo do nome: o pedido do cartão, o que está fazendo, ou o status. */
 function subtitleOf(st, card, session) {
   const act = (session && session.activity) || {};
+  const replied = repliedOf(card, session);
+  if (replied) return `Respondeu: ${plain(replied.text).split('\n').find((l) => l.trim()) || ''}`;
   if (st === 'needs_you' && card && card.state === 'needs_you') return card.headline || (card.action && card.action.text) || waitOf(session);
   if (st === 'needs_you') return waitOf(session);
   if (st === 'working') return act.lastTool || (card && card.headline) || act.lastPrompt || (session && session.statusLabel) || '';
@@ -85,7 +87,8 @@ function sessionItem(links, key, live, depth, now) {
   const card = node.card || null;
   const st = stateOf(card, session);
   const name = bare(session ? session.title : node.name) || node.name;
-  const since = card && (st === 'done' ? card.doneAt : card.since);
+  const replied = repliedOf(card, session);
+  const since = replied ? replied.at : card && (st === 'done' ? card.doneAt : card.since);
   if (!session) {
     return { title: name, subtitle: 'fechada', dim: true, indent: depth, icon: 'dot', tone: 'faint', menu: [{ action: `forget:${key}`, label: 'esquecer', icon: 'trash' }] };
   }

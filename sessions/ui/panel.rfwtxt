@@ -140,6 +140,7 @@ widget Card = Box(
       "question": Question(c: args.c),
       "approve": Approve(c: args.c),
       "wait": Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
+      "reply": Reply(c: args.c),
       default: SizedBox(),
     },
     Proofs(c: args.c),
@@ -319,6 +320,26 @@ widget Clip = Pressable(
       Glyph(icon: switch args.o.picked { true: "check", default: "dot" }, size: 14.0, color: switch args.o.picked { true: data.theme.accent, default: data.theme.faint }),
     ],
   ),
+);
+
+widget Reply = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Gap(
+      child: Container(
+        constraints: { maxHeight: 220.0 },
+        padding: [10.0, 8.0, 10.0, 8.0],
+        decoration: {
+          type: "box",
+          color: data.theme.hover,
+          border: [{ color: data.theme.accent, width: 3.0 }, { style: "none" }, { style: "none" }, { style: "none" }],
+        },
+        child: SingleChildScrollView(primary: false, child: Text(text: args.c.reply, style: { fontSize: 12.5, color: data.theme.fg, height: 1.4 })),
+      ),
+    ),
+    Answer(c: args.c, hint: "responda (vai direto para a aba)"),
+    Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
+  ],
 );
 
 widget Answer = Gap(

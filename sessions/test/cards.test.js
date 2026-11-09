@@ -179,3 +179,22 @@ test('a aba pedindo você passa por cima de um cartão velho: vai pra Precisa de
   assert.deepEqual([by.q.kind, by.q.headline], ['wait', 'Permissão na aba.']);
   assert.deepEqual([by.m.kind, by.m.headline, by.m.prompt], ['approve', 'Aprova?', true]);
 });
+
+test('a sessão que respondeu à sua resposta volta pra Precisa de você, com a resposta inteira', () => {
+  const { l, g, kid } = setup();
+  kid('r', { state: 'working', headline: 'Você respondeu: A', answered: { text: 'A: sim', at: 100 } });
+  kid('w', { state: 'working', headline: 'Você respondeu: B', answered: { text: 'B', at: 100 } });
+  kid('o', { state: 'working', headline: 'Você respondeu: C', answered: { text: 'C', at: 100 } });
+  const sessions = [
+    { id: 'g' },
+    { id: 'r', title: 'r', status: 'idle', reply: { text: '## Feito.\n**Detalhes** em `a.ts`', at: 200 } },
+    { id: 'w', title: 'w', status: 'tool', reply: { text: 'parcial', at: 200 } },
+    { id: 'o', title: 'o', status: 'ready', reply: { text: 'antiga', at: 50 } },
+  ];
+  const c = cols(board(l, g, sessions, {}, NOW));
+  assert.deepEqual(c.needs_you.map((x) => x.title), ['r']);
+  const [r] = c.needs_you;
+  assert.deepEqual([r.kind, r.headline, r.reply, r.context], ['reply', 'Respondeu, esperando você.', 'Feito.\nDetalhes em a.ts', 'Você respondeu: A: sim']);
+  assert.equal(r.acts.focus, 'focus:r');
+  assert.deepEqual(c.working.map((x) => x.title).sort(), ['o', 'w']);
+});

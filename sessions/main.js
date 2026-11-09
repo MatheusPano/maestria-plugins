@@ -8,8 +8,9 @@ const mx = require('./maestria');
 const tools = require('./lib/tools');
 const { Links, tinted, bare } = require('./lib/links');
 const { sidebar } = require('./lib/tree');
-const { panel, detail } = require('./lib/cards');
+const { panel, detail, RESTING } = require('./lib/cards');
 const { deliver } = require('./lib/answers');
+const { replies } = require('./lib/replies');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
@@ -46,7 +47,15 @@ function liveLine(payload) {
 
 const withLive = (sessions) =>
   sessions.map((s) => (state.live[s.id] ? { ...s, activity: { ...(s.activity || {}), lastTool: state.live[s.id] } } : s));
-const listSessions = async () => withLive((await mx.request('sessions.list')) || []);
+const readReply = replies(os.homedir());
+
+/** Junta a última resposta do Claude às sessões que você respondeu pelo cartão e que já fecharam o turno. */
+function withReplies(sessions) {
+  const answered = new Set(Object.values(state.links.nodes).filter((n) => n.card && n.card.answered).map((n) => n.tabId));
+  return sessions.map((s) => (answered.has(s.id) && s.sessionId && !s.needsYou && RESTING.has(s.status) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
+}
+
+const listSessions = async () => withReplies(withLive((await mx.request('sessions.list')) || []));
 
 const isDir = (p) => {
   try {
