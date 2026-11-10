@@ -399,6 +399,7 @@ async function onCard(verb, key, rest, values) {
     await mx.request('clipboard.write', { text: action.text });
     return mx.request('window.showBanner', { text: 'comando copiado' }).catch(() => {});
   }
+  if (verb === 'link' && action.kind === 'command') return mx.request('window.openUrl', { url: action.text.trim() });
   const option = (i) => action.options[i] && `${action.options[i].key}: ${action.options[i].label}`;
   if (verb === 'option') return option(Number(rest[0])) ? answer(key, option(Number(rest[0]))) : null;
   if (verb === 'use') return state.ui.picked[key] != null && option(state.ui.picked[key]) ? answer(key, option(state.ui.picked[key])) : null;
@@ -432,7 +433,7 @@ async function retitle(keys) {
   }
 }
 
-const CARD_VERBS = ['detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'option', 'use', 'approve', 'answer'];
+const CARD_VERBS = ['detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'link', 'option', 'use', 'approve', 'answer'];
 
 async function onAction(act, values) {
   const [verb, a, b, ...more] = act.split(':');

@@ -255,14 +255,26 @@ widget Command = Column(
   crossAxisAlignment: "stretch",
   children: [
     Gap(
-      child: Container(
-        padding: [12.0, 9.0, 12.0, 9.0],
-        decoration: { type: "box", color: data.theme.hover, borderRadius: [{ x: 6.0 }] },
-        child: Text(
-          text: [switch args.c.shell { true: "$ ", default: "" }, args.c.command],
-          style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.fg },
+      child: switch args.c.link {
+        true: Pressable(
+          radius: 6.0,
+          color: data.theme.hover,
+          hoverColor: data.theme.border,
+          onTap: event "act" { a: args.c.acts.link },
+          child: Container(
+            padding: [12.0, 9.0, 12.0, 9.0],
+            child: Text(text: args.c.command, style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.accent }),
+          ),
         ),
-      ),
+        default: Container(
+          padding: [12.0, 9.0, 12.0, 9.0],
+          decoration: { type: "box", color: data.theme.hover, borderRadius: [{ x: 6.0 }] },
+          child: Text(
+            text: [switch args.c.shell { true: "$ ", default: "" }, args.c.command],
+            style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.fg },
+          ),
+        ),
+      },
     ),
     SizedBox(height: 6.0),
     Text(text: args.c.howTo, style: { fontSize: 11.0, color: data.theme.dim }),
@@ -273,11 +285,18 @@ widget Command = Column(
     Gap(
       child: Row(
         children: [
-          switch args.c.canSend {
-            true: Btn(label: args.c.sendLabel, icon: "send", act: args.c.acts.send, kind: "pri"),
-            default: Btn(label: "copiar", icon: "copy", act: args.c.acts.copy, kind: "pri"),
+          switch args.c.link {
+            true: Btn(label: "abrir", icon: "open", act: args.c.acts.link, kind: "pri"),
+            default: switch args.c.canSend {
+              true: Btn(label: args.c.sendLabel, icon: "send", act: args.c.acts.send, kind: "pri"),
+              default: Btn(label: "copiar", icon: "copy", act: args.c.acts.copy, kind: "pri"),
+            },
           },
           SizedBox(width: 6.0),
+          switch args.c.link {
+            true: IconBtn(icon: "copy", tip: "copiar", act: args.c.acts.copy),
+            default: SizedBox(),
+          },
           switch args.c.canSend {
             true: IconBtn(icon: "copy", tip: "copiar", act: args.c.acts.copy),
             default: SizedBox(),

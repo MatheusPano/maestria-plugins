@@ -326,3 +326,13 @@ test('cartão "feito" de uma sessão que voltou a rodar aparece em Trabalhando',
   assert.deepEqual(c.working.map((x) => [x.title, x.hasLive]), [['w', true]]);
   assert.equal(c.done.length, 0);
 });
+
+test('comando que é só um link vira link: sem "$", sem enviar para a aba, com o verbo link', () => {
+  const links = new Links();
+  const g = links.add({ tabId: 'g', name: 'g', manager: true });
+  const w = links.add({ tabId: 'w', name: 'w', parent: g });
+  links.nodes[w].card = { state: 'needs_you', headline: 'abra o PR', action: { kind: 'command', text: 'https://github.com/a/b/pull/1', tabId: 'w' }, at: 1 };
+  const sessions = [{ id: 'g', kind: 'claude', title: 'g', status: 'idle' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle' }];
+  const c = board(links, g, sessions, { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {} }).cols[0].cards[0];
+  assert.deepEqual([c.link, c.shell, c.canSend, c.acts.link], [true, false, false, `link:${w}`]);
+});

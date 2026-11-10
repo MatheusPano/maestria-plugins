@@ -127,6 +127,19 @@ test('mensagem pela caixa de um cartão de comando chega na aba sem apagar o com
   assert.deepEqual([card.state, card.headline, card.action.text, card.answered.text, card.answered.message], ['needs_you', 'rode isso', 'make deploy', 'olha os logs antes', true]);
 });
 
+test('cartão de comando com um link: o cartão abre o link no navegador em vez de mandar para a aba', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const url = 'https://github.com/cefis/x/compare/main...feature/TASK%2389380?expand=1';
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'abra o PR', action: { kind: 'command', text: url, tabId: 'w' } } });
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `link:${key}` } });
+  await tick();
+  assert.deepEqual(calls.slice(before).filter(([m]) => m === 'window.openUrl' || m === 'terminal.sendText').map(([m, p]) => [m, p.url]), [['window.openUrl', url]]);
+});
+
 test('um painel só: trocar de gerente atualiza o mesmo painel, e o cartão de outro gerente não o tira de quem você olha', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
   handlers.req.initialize({ dataDir });

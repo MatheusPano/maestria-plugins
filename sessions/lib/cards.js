@@ -97,7 +97,10 @@ const claudeCommand = (text) => /^\s*!/.test(text);
 /** Junta "/" e "-" ao que vem em volta, pra quebra de linha cair nos espaços e não no meio de um caminho. */
 const shown = (text) => String(text).replace(/[/-]/g, (m) => `\u2060${m}\u2060`);
 
+const isLink = (text) => /^https?:\/\/\S+$/.test(String(text || '').trim());
+
 function howTo(text, canSend) {
+  if (isLink(text)) return 'Clique para abrir no navegador';
   if (canSend) return 'Clique em Enviar → na aba, aperte Enter';
   return claudeCommand(text) ? 'Copie e cole no prompt do Claude, depois Enter' : 'Copie e cole no terminal';
 }
@@ -148,8 +151,9 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     hasHeadline: Boolean(headline),
     kind,
     command: kind === 'command' ? shown(action.text) : '',
-    shell: kind === 'command' && !claudeCommand(action.text),
-    canSend: kind === 'command' && Boolean(target),
+    shell: kind === 'command' && !claudeCommand(action.text) && !isLink(action.text),
+    link: kind === 'command' && isLink(action.text),
+    canSend: kind === 'command' && Boolean(target) && !isLink(action.text),
     sendLabel: 'Enviar para a aba',
     howTo: kind === 'command' ? howTo(action.text, Boolean(target)) : '',
     hasTarget: Boolean(target || (session && kind !== 'command')),
@@ -192,6 +196,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       target: target ? `focus:${target.id}` : '',
       send: `send:${key}`,
       copy: `copy:${key}`,
+      link: `link:${key}`,
       answer: `answer:${key}`,
       write: `write:${key}`,
       message: `message:${key}`,
