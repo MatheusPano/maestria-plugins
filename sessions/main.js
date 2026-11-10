@@ -16,7 +16,7 @@ const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
   '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
