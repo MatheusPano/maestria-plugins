@@ -407,6 +407,13 @@ async function onCard(verb, key, rest, values) {
   return null;
 }
 
+/** Um PR achado no transcript da sessão [tabId]. */
+async function openFound(tabId, i) {
+  const s = (await listSessions()).find((x) => x.id === tabId);
+  const link = s && s.reply && s.reply.links && s.reply.links[i];
+  return link ? mx.request('window.openUrl', { url: link.url }) : null;
+}
+
 async function onProof(verb, key, i) {
   const card = state.links.nodes[key] && state.links.nodes[key].card;
   const proof = card && card.proof;
@@ -439,6 +446,7 @@ async function onAction(act, values) {
   const [verb, a, b, ...more] = act.split(':');
   if (CARD_VERBS.includes(verb)) return onCard(verb, a, [b, ...more], values);
   if (verb === 'pr' || verb === 'image') return onProof(verb, a, Number(b));
+  if (verb === 'url') return openFound(a, Number(b));
   const links = state.links;
   const titleOf = async (tabId) => ((await mx.request('sessions.list')) || []).find((s) => s.id === tabId)?.title || tabId;
   if (verb === 'novo') return createManager();

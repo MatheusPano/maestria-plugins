@@ -503,7 +503,27 @@ widget Proofs = Column(
       default: SizedBox(),
     },
     switch args.c.hasPrs {
-      true: Gap(child: Wrap(spacing: 5.0, runSpacing: 5.0, children: [...for p in args.c.prs: Pr(p: p)])),
+      true: Gap(
+        child: Wrap(
+          spacing: 5.0,
+          runSpacing: 5.0,
+          crossAxisAlignment: "center",
+          children: [
+            switch args.c.branch {
+              "": SizedBox(),
+              default: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "branch", size: 12.0, color: data.theme.faint),
+                  SizedBox(width: 4.0),
+                  Text(text: args.c.branch, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, fontFamily: data.theme.mono, color: data.theme.dim }),
+                ],
+              ),
+            },
+            ...for p in args.c.prs: Pr(p: p),
+          ],
+        ),
+      ),
       default: SizedBox(),
     },
     switch args.c.hasSounds {

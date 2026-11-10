@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { replies, slug } = require('../lib/replies');
+const { replies, linksIn, slug } = require('../lib/replies');
 
 const line = (o) => JSON.stringify(o);
 const said = (id, at, text, extra = {}) => line({ type: 'assistant', timestamp: at, message: { id, content: [{ type: 'text', text }] }, ...extra });
@@ -29,7 +29,7 @@ test('a resposta é a última mensagem do assistente, inteira, fora de subagente
     line({ type: 'system', timestamp: '2026-11-09T10:00:12Z' }),
   ]);
   const r = replies(h)('s1', '/var/www/a.b');
-  assert.deepEqual(r, { text: 'Primeira parte.\nSegunda parte, longa.', at: Date.parse('2026-11-09T10:00:10Z') });
+  assert.deepEqual(r, { text: 'Primeira parte.\nSegunda parte, longa.', at: Date.parse('2026-11-09T10:00:10Z'), links: [] });
 });
 
 test('acha o transcript fora da pasta da aba e devolve null sem sessão ou sem texto', () => {
@@ -58,4 +58,13 @@ test('mensagem sem id ainda junta as partes, e um transcript que aparece depois 
   } finally {
     Date.now = now;
   }
+});
+
+test('os PRs da sessão: pr-link do Claude Code e links do GitHub na última resposta, sem repetir, mais novos primeiro', () => {
+  const entries = [{ type: 'pr-link', prUrl: 'https://github.com/cefis/front/pull/1193', prRepository: 'cefis/front', prNumber: 1193 }];
+  const text = 'Abra: https://github.com/cefis/atrium-ai/compare/main...feature/TASK%2389476?expand=1, e https://github.com/cefis/front/pull/1193.';
+  assert.deepEqual(linksIn(entries, text), [
+    { url: 'https://github.com/cefis/front/pull/1193', label: 'PR #1193 · front' },
+    { url: 'https://github.com/cefis/atrium-ai/compare/main...feature/TASK%2389476?expand=1', label: 'abrir PR · atrium-ai' },
+  ]);
 });

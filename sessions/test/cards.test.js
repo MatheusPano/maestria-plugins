@@ -336,3 +336,15 @@ test('comando que é só um link vira link: sem "$", sem enviar para a aba, com 
   const c = board(links, g, sessions, { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {} }).cols[0].cards[0];
   assert.deepEqual([c.link, c.shell, c.canSend, c.acts.link], [true, false, false, `link:${w}`]);
 });
+
+test('o cartão mostra a branch da sessão e os PRs achados no transcript, sem repetir o que o gerente postou', () => {
+  const links = new Links();
+  const g = links.add({ tabId: 'g', name: 'g', manager: true });
+  const w = links.add({ tabId: 'w', name: 'w', parent: g });
+  links.nodes[w].card = { state: 'working', headline: 'x', at: 1, proof: { images: [], audio: [], log: '', prs: [{ url: 'https://github.com/a/b/pull/1', label: 'b#1', ci: 'ok' }] } };
+  const reply = { text: 'pronto', at: 5, links: [{ url: 'https://github.com/a/b/pull/1', label: 'PR #1 · b' }, { url: 'https://github.com/a/c/pull/2', label: 'PR #2 · c' }] };
+  const sessions = [{ id: 'g', kind: 'claude', title: 'g', status: 'idle' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle', branch: 'feature/TASK#1', reply }];
+  const c = board(links, g, sessions, { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {} }).cols[0].cards[0];
+  assert.equal(c.branch, 'feature/TASK#1');
+  assert.deepEqual(c.prs.map((p) => [p.label, p.act]), [['b#1', `pr:${w}:0`], ['PR #2 · c', 'url:w:1']]);
+});

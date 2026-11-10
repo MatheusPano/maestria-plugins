@@ -76,15 +76,25 @@ function split(title, task) {
 
 const short = (task) => (task ? `#${task.split('#')[1]}` : '');
 
-function proofData(proof, key, limit) {
+const TRUNK = new Set(['main', 'master', 'develop', 'dev', 'HEAD']);
+
+function proofData(proof, key, limit, session = null) {
   const p = proof || { images: [], prs: [], audio: [], log: '' };
+  const posted = new Set(p.prs.map((pr) => pr.url));
+  const found = ((session && session.reply && session.reply.links) || []).map((l, i) => ({ ...l, i })).filter((l) => !posted.has(l.url));
+  const prs = [
+    ...p.prs.map((pr, i) => ({ label: pr.label || pr.url, ci: pr.ci, act: `pr:${key}:${i}` })),
+    ...found.map((l) => ({ label: l.label, ci: 'none', act: `url:${session.id}:${l.i}` })),
+  ];
+  const branch = session && session.branch && !TRUNK.has(session.branch) ? session.branch : '';
   const images = p.images.slice(0, limit).map((im, i) => ({ path: im.rel, act: `image:${key}:${i}` }));
   return {
     images,
     hasImages: images.length > 0,
     more: p.images.length > limit ? `+${p.images.length - limit}` : '',
-    prs: p.prs.map((pr, i) => ({ label: pr.label, ci: pr.ci, act: `pr:${key}:${i}` })),
-    hasPrs: p.prs.length > 0,
+    prs,
+    branch,
+    hasPrs: prs.length > 0 || Boolean(branch),
     sounds: p.audio.map((a, i) => ({ label: a.label, act: `play:${key}:proof:${i}` })),
     hasSounds: p.audio.length > 0,
     hasLog: Boolean(p.log),
@@ -204,7 +214,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       reject: `reject:${key}`,
       use: `use:${key}`,
     },
-    ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2)),
+    ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2), session),
   };
 }
 
