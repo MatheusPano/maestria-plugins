@@ -98,6 +98,7 @@ widget Tell = switch data.canTell {
       id: data.tell.input,
       placeholder: "mensagem para o gerente (vai direto para a aba dele)",
       clear: data.tell.clear,
+      autofocus: data.tell.focus,
       fontSize: 12.5,
       multiline: true,
       maxLines: 5,

@@ -84,14 +84,15 @@ test('a caixa do topo manda direto pro gerente e a do cartão feito abre e fecha
   assert.deepEqual(sent, [['g', 'como está o ceph?', true]]);
 });
 
-test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~', async () => {
+test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~, e abre o painel dele com a caixa de mensagem em foco', async () => {
   const home = os.homedir();
   const sub = fs.mkdtempSync(path.join(home, '.sessions-test-'));
   try {
     queue['folders.list'] = [[{ root: '/var/www/x', name: 'x' }]];
     queue['window.pick'] = [':outra-pasta'];
-    queue['window.input'] = ['/nao/existe/mesmo', `~/${path.basename(sub)}`, 'meu gerente', ''];
+    queue['window.input'] = ['/nao/existe/mesmo', `~/${path.basename(sub)}`, 'meu gerente'];
     queue['session.openClaude'] = [{ tabId: 'novo' }];
+    sessions.push({ id: 'novo', kind: 'claude', title: 'meu gerente', status: 'thinking' });
     const before = calls.length;
     handlers.note['view.action']({ viewId: 'sidebar', action: 'novo' });
     await tick();
@@ -102,7 +103,12 @@ test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~',
     const open = mine.find(([m]) => m === 'session.openClaude')[1];
     assert.equal(open.cwd, sub);
     assert.match(open.label, /^(\S)\1 meu gerente$/u);
+    assert.equal(mine.filter(([m]) => m === 'window.input').length, 3);
+    const shown = mine.filter(([m]) => m === 'view.open' || m === 'view.update').pop()[1].data;
+    assert.equal(shown.name, 'meu gerente');
+    assert.equal(shown.tell.focus, true);
   } finally {
+    sessions.splice(sessions.findIndex((s) => s.id === 'novo'), 1);
     fs.rmSync(sub, { recursive: true, force: true });
   }
 });

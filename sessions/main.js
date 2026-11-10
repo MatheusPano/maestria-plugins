@@ -16,7 +16,7 @@ const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
   '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte.',
+  'coordene, junte os resultados e reporte. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -30,7 +30,7 @@ const state = {
   probed: false,
   modal: null,
   live: {},
-  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, unfolded: {}, showOld: false, playing: null },
+  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, unfolded: {}, showOld: false, playing: null, focus: null },
   title: undefined,
   retitled: new Map(),
 };
@@ -223,18 +223,20 @@ async function createManager(context = {}) {
   if (!cwd) return;
   const name = await mx.request('window.input', { title: 'novo gerente: nome', placeholder: 'ex.: tarefas do Wiboor' });
   if (!name) return;
-  const ask = await mx.request('window.input', { title: 'novo gerente: primeiro pedido', placeholder: 'o que ele deve coordenar (vazio: só abre)' }).catch(() => null);
   const key = state.links.add({ tabId: null, name, manager: true });
   const node = state.links.nodes[key];
-  const params = { cwd, label: tinted(name, node.color, true), prompt: ask ? `${MANAGER_BRIEF}\n\nPedido: ${ask}` : MANAGER_BRIEF };
+  const params = { cwd, label: tinted(name, node.color, true), prompt: MANAGER_BRIEF };
   try {
     const { tabId } = await mx.request('session.openClaude', params);
     node.tabId = tabId;
+    state.ui.focus = key;
     save();
   } catch (e) {
     delete state.links.nodes[key];
     await mx.request('window.showBanner', { text: `sessions: não abriu o gerente: ${e.message}` }).catch(() => {});
+    return;
   }
+  await showPanel(key, 'raise').catch((e) => mx.log('painel:', e.message));
 }
 
 const ctx = ({ tabId, cwd }) => ({
@@ -333,6 +335,7 @@ async function tell(key, text) {
   if (!m) throw new Error('a aba do gerente está fechada');
   if (m.hibernated || PROMPT.has(m.status)) throw new Error('o gerente está num prompt: responda na aba dele');
   await mx.request('terminal.sendText', { tabId: m.id, text: body, submit: true });
+  if (state.ui.focus === key) delete state.ui.focus;
   const clear = `tell-${key}`;
   state.ui.clears[clear] = (state.ui.clears[clear] || 0) + 1;
   schedule();

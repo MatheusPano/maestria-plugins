@@ -265,7 +265,7 @@ function board(links, key, sessions, ui = {}, now = Date.now()) {
     total: `${all.length} ${all.length === 1 ? 'sessão' : 'sessões'}`,
     color: whole ? FREE : hex(colorOf(manager.color).hex),
     managerTab: me ? `focus:${me.id}` : '',
-    tell: { input: `tell-${key}`, act: `tell:${key}`, clear: u.clears[`tell-${key}`] || 0 },
+    tell: { input: `tell-${key}`, act: `tell:${key}`, clear: u.clears[`tell-${key}`] || 0, focus: u.focus === key },
     canTell: Boolean(me),
     cols: COLUMNS.map((col) => {
       const list = cards.filter((c) => c.state === col.state);
