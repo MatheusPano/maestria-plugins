@@ -207,7 +207,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       target: target ? `focus:${target.id}` : '',
       send: `send:${key}`,
       copy: `copy:${key}`,
-      link: `link:${key}`,
+      link: `browse:${key}`,
       dismiss: `dismiss:${key}`,
       answer: `answer:${key}`,
       write: `write:${key}`,

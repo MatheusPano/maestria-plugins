@@ -135,7 +135,7 @@ test('cartão de comando com um link: o cartão abre o link no navegador em vez 
   const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
   const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
   const before = calls.length;
-  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `link:${key}` } });
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `browse:${key}` } });
   await tick();
   assert.deepEqual(calls.slice(before).filter(([m]) => m === 'window.openUrl' || m === 'terminal.sendText').map(([m, p]) => [m, p.url]), [['window.openUrl', url]]);
 });
@@ -207,4 +207,21 @@ test('dispensar um cartão leva ele para Feito, sem ação, até o gerente posta
   await tick();
   const card = read()[key].card;
   assert.deepEqual([card.state, card.action, card.headline], ['done', null, 'Dispensado por você.']);
+});
+
+test('as ações do menu da lateral chegam ao que fazem: "ligar ao gerente" pendura a sessão solta no gerente', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const side = (a) => handlers.note['view.action']({ viewId: 'sidebar', action: a });
+  const lastSidebar = () => calls.filter(([m]) => m === 'sidebar.update').map(([, p]) => p).pop();
+  side('manager:g');
+  await new Promise((r) => setTimeout(r, 400));
+  const g = Object.keys(read()).find((k) => read()[k].tabId === 'g');
+  const loose = lastSidebar().blocks.flatMap((b) => b.items || []).find((i) => i.action === 'focus:w');
+  const link = loose.menu.find((m) => m.label === 'ligar ao gerente').children[0].action;
+  side(link);
+  await tick();
+  const w = Object.values(read()).find((n) => n.tabId === 'w');
+  assert.equal(w && w.parent, g);
 });
