@@ -264,3 +264,27 @@ test('retomar uma sessão fechada reabre a conversa com --resume, na pasta e com
   assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['fresca']);
   assert.match(after.find(([m]) => m === 'window.showBanner')[1].text, /não retoma/);
 });
+
+test('o diagnóstico abre pela lateral e "arrumar tudo" só faz o automático', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  fs.mkdirSync(path.join(dataDir, 'proof'));
+  fs.writeFileSync(path.join(dataDir, 'proof', 'solta.png'), 'x');
+  fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: {
+    n1: { tabId: 'g', name: 'g', manager: true, color: 'red', parent: null },
+    n2: { tabId: 'fechou', name: 'vazia', color: 'red', parent: 'n1' },
+    n3: { tabId: 'outra', name: 'parada', color: 'red', parent: 'n1', card: { state: 'needs_you', headline: 'x', at: 1 } },
+  }, seq: 3 }));
+  handlers.req.initialize({ dataDir });
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'sidebar', action: 'doctor' });
+  await tick();
+  const opened = calls.slice(before).find(([m, p]) => m === 'view.open' && p.viewId === 'diagnostico')[1];
+  assert.equal(opened.rfw.root, 'doctor');
+  assert.equal(opened.data.canFixAll, true);
+  handlers.note['view.action']({ viewId: 'diagnostico', action: 'act', values: { a: 'doctor-all' } });
+  await tick();
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  assert.deepEqual(Object.keys(nodes), ['n1', 'n3']);
+  assert.equal(nodes.n3.card.state, 'needs_you');
+  assert.deepEqual(fs.readdirSync(path.join(dataDir, 'proof')), []);
+});

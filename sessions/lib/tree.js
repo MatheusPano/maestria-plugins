@@ -172,7 +172,7 @@ function sidebar(links, sessions, ui = {}, now = Date.now()) {
   const loose = sessions.filter((s) => s.kind === 'claude' && !s.exited && !s.embedded && !linked.has(s.id));
   const waiting = sessions.filter((s) => !s.exited && s.needsYou && linked.has(s.id)).length;
   const blocks = [
-    { type: 'header', title: 'Gerentes', actions: [{ action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
+    { type: 'header', title: 'Gerentes', actions: [{ action: 'doctor', icon: 'clean', tooltip: 'diagnóstico' }, { action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
     {
       type: 'list',
       flat: true,

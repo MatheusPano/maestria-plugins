@@ -11,6 +11,7 @@ const { sidebar } = require('./lib/tree');
 const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
 const { deliver } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
+const doctor = require('./lib/doctor');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
@@ -33,12 +34,14 @@ const state = {
   live: {},
   ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, unfolded: {}, showOld: false, playing: null, focus: null },
   title: undefined,
+  doctor: false,
   retitled: new Map(),
 };
 const PANEL = 'painel';
 const LEGACY_PANEL = 'painel:';
 const CARD = 'cartao:';
 const IMAGE = 'imagem:';
+const DOCTOR = 'diagnostico';
 const LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'panel.rfwtxt'), 'utf8');
 
 /** O que a sessão está fazendo agora, a partir do último PreToolUse. */
@@ -136,6 +139,10 @@ async function refresh() {
       state.open = false;
       state.title = undefined;
     }
+  }
+  if (state.doctor) {
+    const r = await mx.request('view.update', { viewId: DOCTOR, data: doctorData(sessions) }).catch(() => ({ open: false }));
+    if (!r || r.open === false) state.doctor = false;
   }
   if (state.modal) {
     const d = detail(state.links, state.modal, sessions, state.ui);
@@ -291,6 +298,21 @@ mx.onNotification('event', ({ type, tabId, name, payload }) => {
   }
   if (type === 'sidebar.shown' || type === 'hook' || String(type).startsWith('session.')) schedule();
 });
+
+const findings = (sessions) => doctor.diagnose(state.links, sessions, { dataDir: state.dataDir });
+const doctorData = (sessions) => doctor.report(findings(sessions), state.links, sessions);
+
+async function openDoctor() {
+  const sessions = await listSessions();
+  state.doctor = true;
+  return mx.request('view.open', { viewId: DOCTOR, title: 'diagnóstico das sessões', modal: true, width: 760, height: 560, rfw: { library: LIBRARY, root: 'doctor' }, data: doctorData(sessions) });
+}
+
+/** "Arrumar tudo": só o que o diagnóstico marca como seguro (esquecer fechadas sem cartão, apagar arquivos soltos). */
+async function fixAll() {
+  for (const f of findings(await listSessions()).filter((x) => x.auto)) await onAction(f.fix);
+  return schedule();
+}
 
 async function openCard(key) {
   const d = detail(state.links, key, await listSessions(), state.ui);
@@ -503,6 +525,12 @@ async function onAction(act, values) {
   if (verb === 'novo') return createManager();
   if (verb === 'focus') return mx.request('session.focus', { tabId: a });
   if (verb === 'resume') return resume(a);
+  if (verb === 'doctor') return openDoctor();
+  if (verb === 'doctor-all') return fixAll();
+  if (verb === 'sweep') {
+    doctor.sweep(a, links, state.dataDir);
+    return schedule();
+  }
   if (verb === 'panel') return showPanel(a, 'raise');
   if (verb === 'switch') return showPanel(a, 'switch');
   if (verb === 'older') {
@@ -544,7 +572,7 @@ async function onAction(act, values) {
 
 mx.onNotification('view.action', ({ viewId, action, values }) => {
   const id = String(viewId);
-  if (id !== 'sidebar' && id !== PANEL && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
+  if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
   const act = String(action === 'act' ? values && values.a : action || (values && values.action) || '');
   onAction(act, values).catch((e) => {
     mx.log('ação', act, e.message);

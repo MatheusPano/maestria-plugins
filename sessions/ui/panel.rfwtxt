@@ -829,3 +829,69 @@ widget Label = Padding(
   padding: [0.0, 0.0, 0.0, 8.0],
   child: Text(text: args.text, style: { fontSize: 10.5, fontWeight: "w600", color: data.theme.faint, letterSpacing: 0.6 }),
 );
+
+widget doctor = SingleChildScrollView(
+  primary: false,
+  padding: [22.0, 18.0, 22.0, 22.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: "start",
+              children: [
+                Text(text: data.summary, style: { fontSize: 17.0, fontWeight: "w600", color: data.theme.fg }),
+                SizedBox(height: 2.0),
+                Text(text: data.counts, style: { fontSize: 12.0, color: data.theme.dim }),
+              ],
+            ),
+          ),
+          switch data.canFixAll {
+            true: Btn(label: data.fixAllLabel, icon: "check", act: "doctor-all", kind: "pri"),
+            default: SizedBox(),
+          },
+        ],
+      ),
+      SizedBox(height: 14.0),
+      switch data.isEmpty {
+        true: Text(text: "Nenhum gerente fechado com sessões abertas, nenhum cartão parado, nenhum arquivo solto.", style: { fontSize: 12.5, color: data.theme.dim }),
+        default: SizedBox(),
+      },
+      ...for f in data.findings: Finding(f: f),
+    ],
+  ),
+);
+
+widget Finding = Padding(
+  padding: [0.0, 0.0, 0.0, 8.0],
+  child: Container(
+    padding: [12.0, 10.0, 12.0, 10.0],
+    decoration: { type: "box", color: data.theme.bg, borderRadius: [{ x: 8.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Row(
+      crossAxisAlignment: "start",
+      children: [
+        Padding(
+          padding: [0.0, 5.0, 0.0, 0.0],
+          child: Dot(color: switch args.f.tone { "red": data.theme.red, "yellow": data.theme.yellow, default: data.theme.faint }, size: 8.0),
+        ),
+        SizedBox(width: 10.0),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              Text(text: args.f.title, style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg, height: 1.35 }),
+              SizedBox(height: 3.0),
+              Text(text: args.f.detail, style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 }),
+            ],
+          ),
+        ),
+        switch args.f.hasFix {
+          true: Padding(padding: [10.0, 0.0, 0.0, 0.0], child: Btn(label: args.f.fixLabel, icon: "check", act: args.f.act, kind: "sec")),
+          default: SizedBox(),
+        },
+      ],
+    ),
+  ),
+);
