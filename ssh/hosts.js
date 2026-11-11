@@ -1,5 +1,8 @@
-// Os hosts: os que você salvou (um json na pasta de dados do plugin), os que o
-// ~/.ssh/config já conhece, e a linha de comando que conecta a cada um.
+// Os hosts: cada um é um `Host` do ~/.ssh/config (ou de um Include dele), e o
+// que o config não tem lugar pra guardar -- o nome de exibição, o grupo, o
+// ícone, quando você conectou -- mora no meta.json da pasta de dados do
+// plugin, pelo alias. A linha que conecta é `ssh <alias>`: o config diz o resto,
+// e o mesmo host funciona fora da Maestria.
 //
 // Nada aqui fala com a janela, pra dar pra testar sem a Maestria.
 
@@ -8,26 +11,15 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const sshconfig = require('./sshconfig');
 
 const HOME = os.homedir();
 
-/** O arquivo onde os hosts salvos moram. */
-function storeFile(dataDir) {
-  return path.join(dataDir, 'hosts.json');
-}
-
-/** O dos grupos: só os nomes, pra um grupo existir antes de ter host. */
-function groupsFile(dataDir) {
-  return path.join(dataDir, 'groups.json');
-}
-
-/** Os hosts salvos. Um arquivo que não existe ou estragou é uma lista vazia. */
-function load(dataDir) {
+function readJson(file, fallback) {
   try {
-    const list = JSON.parse(fs.readFileSync(storeFile(dataDir), 'utf8'));
-    return Array.isArray(list) ? list.filter((h) => h && h.id && h.host) : [];
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
-    return [];
+    return fallback;
   }
 }
 
@@ -39,82 +31,90 @@ function writeJson(file, data) {
   fs.renameSync(tmp, file);
 }
 
-function save(dataDir, hosts) {
-  writeJson(storeFile(dataDir), hosts);
+// --- o meta de cada host ---------------------------------------------------------
+
+/** alias → { label?, group?, icon?, os?, lastUsed?, cli? }. */
+function loadMeta(dataDir) {
+  const data = readJson(path.join(dataDir, 'meta.json'), {});
+  return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
 }
 
-/**
- * Os grupos: os do groups.json mais os que algum host já usa (os de antes do
- * arquivo existir, quando o grupo era só um campo do host), sem repetir e em
- * ordem alfabética.
- */
-function loadGroups(dataDir, hosts = []) {
-  let stored = [];
-  try {
-    const list = JSON.parse(fs.readFileSync(groupsFile(dataDir), 'utf8'));
-    if (Array.isArray(list)) stored = list;
-  } catch {
-    // sem arquivo: só os dos hosts
+function saveMeta(dataDir, meta) {
+  // Um meta vazio não precisa ficar no arquivo.
+  const clean = {};
+  for (const [alias, m] of Object.entries(meta)) {
+    const kept = Object.fromEntries(Object.entries(m || {}).filter(([, v]) => v != null && v !== ''));
+    if (Object.keys(kept).length) clean[alias] = kept;
   }
-  return sortGroups([...stored, ...hosts.map((h) => h.group)]);
+  writeJson(path.join(dataDir, 'meta.json'), clean);
 }
 
-function saveGroups(dataDir, groups) {
-  writeJson(groupsFile(dataDir), sortGroups(groups));
-}
-
-/** As seções fechadas da lista (as chaves que o main.js dá a cada uma). */
-function loadCollapsed(dataDir) {
-  try {
-    const list = JSON.parse(fs.readFileSync(path.join(dataDir, 'collapsed.json'), 'utf8'));
-    return new Set(Array.isArray(list) ? list.filter((k) => typeof k === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveCollapsed(dataDir, keys) {
-  writeJson(path.join(dataDir, 'collapsed.json'), [...keys].sort());
-}
+// --- grupos e seções -------------------------------------------------------------
 
 function sortGroups(names) {
   const clean = names.filter((g) => typeof g === 'string').map((g) => g.trim()).filter(Boolean);
   return [...new Set(clean)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
 }
 
-function newId() {
-  return `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+/** Os grupos: os do groups.json mais os que algum host usa, sem repetir, em ordem alfabética. */
+function loadGroups(dataDir, meta = {}) {
+  const stored = readJson(path.join(dataDir, 'groups.json'), []);
+  return sortGroups([...(Array.isArray(stored) ? stored : []), ...Object.values(meta).map((m) => m && m.group)]);
+}
+
+function saveGroups(dataDir, groups) {
+  writeJson(path.join(dataDir, 'groups.json'), sortGroups(groups));
+}
+
+/** As seções fechadas da lista (as chaves que o main.js dá a cada uma). */
+function loadCollapsed(dataDir) {
+  const list = readJson(path.join(dataDir, 'collapsed.json'), []);
+  return new Set(Array.isArray(list) ? list.filter((k) => typeof k === 'string') : []);
+}
+
+function saveCollapsed(dataDir, keys) {
+  writeJson(path.join(dataDir, 'collapsed.json'), [...keys].sort());
+}
+
+// --- os hosts --------------------------------------------------------------------
+
+/** Os hosts do config com o meta de cada um, pelo nome de exibição. */
+function list(dataDir, meta = loadMeta(dataDir), configFile = sshconfig.MAIN) {
+  return sshconfig
+    .list(configFile)
+    .map((h) => ({ ...h, ...(meta[h.alias] || {}), name: (meta[h.alias] && meta[h.alias].label) || h.alias }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 }
 
 /**
- * Confere e arruma o que veio do formulário. Devolve `{ host }` ou `{ error }`
- * com a frase que a janela mostra.
+ * Confere e arruma o que veio do formulário. Devolve `{ host, meta }` (o bloco
+ * do config e o meta) ou `{ error }` com a frase que a janela mostra.
  */
 function normalize(input) {
-  const host = String(input.host || '').trim();
-  if (!host) return { error: 'falta o host (o endereço ou o IP)' };
-  if (/\s/.test(host)) return { error: 'o host não pode ter espaço' };
+  const label = String(input.label || '').trim();
+  const alias = String(input.alias || '').trim() || sshconfig.slug(label);
+  if (!alias) return { error: 'falta o alias (o nome do host no ~/.ssh/config)' };
+  if (!sshconfig.concrete(alias) || /\s/.test(alias)) return { error: 'o alias não pode ter espaço, *, ? nem !' };
+  const hostname = String(input.hostname || '').trim();
+  if (/\s/.test(hostname)) return { error: 'o endereço não pode ter espaço' };
   const portText = String(input.port || '').trim();
-  let port = null;
+  let port = '';
   if (portText) {
-    port = Number(portText);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      return { error: 'a porta é um número de 1 a 65535' };
-    }
+    const n = Number(portText);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) return { error: 'a porta é um número de 1 a 65535' };
+    port = String(n);
   }
   const user = String(input.user || '').trim();
   if (/\s/.test(user)) return { error: 'o usuário não pode ter espaço' };
+  const { extra, error } = sshconfig.parseExtra(input.extra);
+  if (error) return { error };
   return {
-    host: {
-      id: input.id || newId(),
-      name: String(input.name || '').trim() || (user ? `${user}@${host}` : host),
-      host,
-      user,
-      port: port && port !== 22 ? port : null,
-      key: String(input.key || '').trim(),
-      options: String(input.options || '').trim(),
+    host: { alias, hostname, user, port, identityFile: String(input.identityFile || '').trim(), extra },
+    meta: {
+      label: label && label !== alias ? label : '',
       group: String(input.group || '').trim(),
-      lastUsed: input.lastUsed || null,
+      icon: String(input.icon || '').trim(),
+      cli: String(input.cli || '').trim(),
     },
   };
 }
@@ -124,119 +124,109 @@ function quote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-/** `~/x` vira o caminho de verdade: entre aspas o shell não expandiria. */
-function expandHome(p) {
-  if (p === '~') return HOME;
-  if (p.startsWith('~/')) return path.join(HOME, p.slice(2));
-  return p;
-}
-
 /**
- * A linha que conecta. O programa e as opções entram como você escreveu (são
- * seus, e é assim que `-o Chave=valor "com aspas"` funciona); o endereço, o
- * usuário e a chave vão entre aspas.
+ * A linha que conecta: `ssh <alias>`, com as opções pra todos os hosts e o
+ * limite de espera das configurações. O programa e as opções entram como você
+ * escreveu (são seus, e é assim que `-o Chave=valor "com aspas"` funciona).
  */
 function commandFor(host, settings = {}) {
   const parts = [String(settings.binary || 'ssh').trim() || 'ssh'];
   const extra = String(settings.extra || '').trim();
   if (extra) parts.push(extra);
+  const cli = String(host.cli || '').trim();
   // Um host fora do alcance deixaria o terminal mudo por mais de um minuto:
   // com o limite, o ssh desiste e diz por quê. Quem já pôs o seu não é contrariado.
   const timeout = settings.timeout == null ? 10 : Number(settings.timeout);
-  const own = /ConnectTimeout/i.test(`${extra} ${host.options || ''}`);
+  const own = /ConnectTimeout/i.test(`${extra} ${cli} ${(host.extra || []).join(' ')}`);
   if (timeout > 0 && !own) parts.push('-o', `ConnectTimeout=${Math.round(timeout)}`);
-  if (host.alias) {
-    // Um host do ~/.ssh/config: o config já diz tudo.
-    parts.push(quote(host.alias));
-    return parts.join(' ');
-  }
-  if (host.options) parts.push(host.options);
-  if (host.port) parts.push('-p', String(host.port));
-  if (host.key) parts.push('-i', quote(expandHome(host.key)));
-  parts.push(quote(host.user ? `${host.user}@${host.host}` : host.host));
+  if (cli) parts.push(cli);
+  parts.push(quote(host.alias));
   return parts.join(' ');
+}
+
+/**
+ * O ssh que lê o histórico, com as mesmas opções da conexão do terminal. O
+ * mosh não roda um comando avulso: aí vai o ssh mesmo.
+ */
+function probe(host, settings = {}) {
+  const binary = String(settings.binary || 'ssh').trim() || 'ssh';
+  return {
+    binary: /(^|\/)mosh(\s|$)/.test(binary) ? 'ssh' : binary,
+    options: [String(settings.extra || '').trim(), String(host.cli || '').trim()].filter(Boolean).join(' '),
+    quoted: quote(host.alias),
+  };
 }
 
 /** `usuário@host:porta`, a linha de baixo de cada host. */
 function address(host) {
   const who = host.user ? `${host.user}@` : '';
-  const where = host.hostname || host.host || host.alias;
+  const where = host.hostname || host.alias;
   const port = host.port && Number(host.port) !== 22 ? `:${host.port}` : '';
   return `${who}${where}${port}`;
 }
 
-// --- ~/.ssh/config -----------------------------------------------------------
-
-const SSH_DIR = path.join(HOME, '.ssh');
-
-/** Os arquivos de um `Include`: relativo ao ~/.ssh, com `*` e `?` no nome. */
-function expandInclude(pattern) {
-  let p = expandHome(pattern);
-  if (!path.isAbsolute(p)) p = path.join(SSH_DIR, p);
-  const dir = path.dirname(p);
-  const base = path.basename(p);
-  if (!/[*?]/.test(base)) return [p];
-  const re = new RegExp(
-    '^' + base.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$',
-  );
-  try {
-    return fs
-      .readdirSync(dir)
-      .filter((f) => re.test(f))
-      .sort()
-      .map((f) => path.join(dir, f));
-  } catch {
-    return [];
-  }
-}
+// --- os hosts salvos antes do config ----------------------------------------------
 
 /**
- * Os `Host` com nome de verdade (sem `*`, `?` nem `!`) do config e dos
- * `Include` dele, na ordem em que aparecem, com o HostName, User e Port que
- * cada um declara — só pra mostrar; quem conecta é o `ssh <alias>`.
+ * Os hosts que versões anteriores guardavam no hosts.json viram blocos do
+ * ~/.ssh/config, uma vez: o alias é o nome sem espaço nem acento; um host que o
+ * config já tem igual (mesmo endereço, usuário e porta) só junta o meta; um
+ * alias já usado por outro endereço ganha -2, -3. O hosts.json fica como
+ * hosts.json.migrado. Devolve o mapa id antigo → alias, que resolve os terminais
+ * abertos com a chave de antes.
  */
-function configHosts(file = path.join(SSH_DIR, 'config'), seen = new Set()) {
-  if (seen.has(file)) return [];
-  seen.add(file);
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return [];
-  }
-  const out = [];
-  let current = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const m = line.match(/^(\S+?)\s*(?:=\s*|\s+)(.*)$/);
-    if (!m) continue;
-    const key = m[1].toLowerCase();
-    const value = m[2].trim().replace(/^"(.*)"$/, '$1');
-    if (key === 'host') {
-      current = value
-        .split(/\s+/)
-        .filter((a) => a && !/[*?!]/.test(a))
-        .map((alias) => ({ alias, source: file }));
-      out.push(...current);
-    } else if (key === 'match') {
-      current = [];
-    } else if (key === 'include') {
-      for (const pattern of value.split(/\s+/)) {
-        for (const f of expandInclude(pattern)) out.push(...configHosts(f, seen));
-      }
-    } else if (key === 'hostname') {
-      for (const h of current) h.hostname = value;
-    } else if (key === 'user') {
-      for (const h of current) h.user = value;
-    } else if (key === 'port') {
-      for (const h of current) h.port = value;
+function migrate(dataDir, configFile = sshconfig.MAIN) {
+  const file = path.join(dataDir, 'hosts.json');
+  const mapFile = path.join(dataDir, 'migrado.json');
+  const old = readJson(file, null);
+  if (!Array.isArray(old)) return readJson(mapFile, {});
+  const meta = loadMeta(dataDir);
+  const existing = new Map(sshconfig.list(configFile).map((h) => [h.alias, h]));
+  const map = {};
+  for (const h of old) {
+    if (!h || !h.id || !h.host) continue;
+    const want = { hostname: h.host, user: h.user || '', port: h.port && Number(h.port) !== 22 ? String(h.port) : '' };
+    const portOf = (x) => String(x || '22');
+    const same = (c) => (c.hostname || c.alias) === want.hostname && (c.user || '') === want.user && portOf(c.port) === portOf(want.port);
+    const base = sshconfig.slug(h.name) || sshconfig.slug(h.host) || 'host';
+    // O mesmo host já no config, com qualquer alias, só ganha o meta.
+    const twin = [...existing.values()].find(same);
+    let alias = twin ? twin.alias : base;
+    for (let n = 2; existing.has(alias) && !same(existing.get(alias)); n++) alias = `${base}-${n}`;
+    if (!existing.has(alias)) {
+      const block = { alias, ...want, identityFile: h.key || '', extra: [] };
+      sshconfig.upsert(null, block, configFile);
+      existing.set(alias, block);
     }
+    const prev = meta[alias] || {};
+    meta[alias] = {
+      ...prev,
+      label: h.name && h.name !== alias ? h.name : prev.label,
+      group: h.group || prev.group,
+      lastUsed: h.lastUsed || prev.lastUsed,
+      cli: h.options || prev.cli,
+    };
+    map[h.id] = alias;
   }
-  // O mesmo alias em dois blocos: vale o primeiro, como no ssh.
-  const byAlias = new Map();
-  for (const h of out) if (!byAlias.has(h.alias)) byAlias.set(h.alias, h);
-  return [...byAlias.values()];
+  saveMeta(dataDir, meta);
+  writeJson(mapFile, map);
+  fs.renameSync(file, `${file}.migrado`);
+  return map;
 }
 
-module.exports = { load, save, loadGroups, saveGroups, loadCollapsed, saveCollapsed, normalize, commandFor, address, configHosts, quote, HOME };
+module.exports = {
+  list,
+  loadMeta,
+  saveMeta,
+  loadGroups,
+  saveGroups,
+  loadCollapsed,
+  saveCollapsed,
+  normalize,
+  commandFor,
+  probe,
+  address,
+  migrate,
+  quote,
+  HOME,
+};
