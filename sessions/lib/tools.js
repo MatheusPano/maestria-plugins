@@ -187,6 +187,12 @@ async function card({ tabId, state, headline, bullets, action, proof }, ctx) {
   const list = (Array.isArray(bullets) ? bullets : []).map((b) => String(b).trim()).filter(Boolean);
   if (list.length > MAX_BULLETS) throw new ToolError(`No máximo ${MAX_BULLETS} bullets por cartão.`);
   const act = actionOf(action);
+  if (tabId === ctx.tabId) throw new ToolError('O cartão é de uma sessão que você abriu, não de você: passe o tabId dela.');
+  const mine = ctx.links.byTab(ctx.tabId);
+  const theirs = ctx.links.byTab(tabId);
+  if (theirs && !(mine && ctx.links.subtree(mine).includes(theirs))) {
+    throw new ToolError(`A aba ${tabId} está na árvore de outro gerente; só escreve cartão de quem você abriu ou ligou.`);
+  }
   const s = await liveTab(ctx, tabId);
   if (act && act.tabId) await liveTab(ctx, act.tabId);
   let staged;
@@ -200,7 +206,7 @@ async function card({ tabId, state, headline, bullets, action, proof }, ctx) {
   if (!parent) throw new ToolError('Só um gerente escreve cartões: chame de uma sessão da Maestria.');
   const { links } = ctx;
   let key = links.byTab(tabId);
-  if (!key || !links.subtree(parent).includes(key)) {
+  if (!key) {
     key = links.link(tabId, parent, s.title);
     await ctx.request('session.rename', { tabId, title: tinted(s.title, links.nodes[key].color, links.nodes[key].manager) }).catch(() => {});
   }

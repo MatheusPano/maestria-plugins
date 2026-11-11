@@ -309,3 +309,14 @@ test('sessions_close fecha só uma sessão da sua árvore que terminou o turno',
   }
   assert.deepEqual(closed(), ['pronta', 'dorme']);
 });
+
+test('sessions_card recusa a própria aba e uma aba da árvore de outro gerente, sem mexer na árvore', async () => {
+  const sessions = [{ id: 'me', kind: 'claude', title: 'g' }, { id: 'o', kind: 'claude', title: 'outro' }, { id: 'x', kind: 'claude', title: 'x' }];
+  const ctx = makeCtx({ sessions });
+  const other = ctx.links.add({ tabId: 'o', name: 'outro', manager: true });
+  const x = ctx.links.add({ tabId: 'x', parent: other, name: 'x' });
+  const before = JSON.stringify(ctx.links.nodes);
+  for (const tabId of ['me', 'o', 'x']) assert.equal((await tools.handle('sessions_card', { tabId, state: 'working' }, ctx)).isError, true, tabId);
+  assert.equal(JSON.stringify(ctx.links.nodes), before);
+  assert.equal(ctx.links.nodes[x].card, undefined);
+});
