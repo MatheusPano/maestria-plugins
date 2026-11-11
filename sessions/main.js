@@ -24,6 +24,7 @@ const state = {
   file: null,
   dataDir: null,
   timer: null,
+  refreshing: Promise.resolve(),
   current: ALL,
   open: false,
   showing: Promise.resolve(),
@@ -206,11 +207,12 @@ async function showPanelNow(key, how) {
   return null;
 }
 
+/** Um refresh por vez: um mais velho que terminasse por último mostraria a lista de antes. */
 function schedule() {
   if (state.timer) return;
   state.timer = setTimeout(() => {
     state.timer = null;
-    refresh().catch((e) => mx.log('lateral:', e.message));
+    state.refreshing = state.refreshing.then(refresh).catch((e) => mx.log('lateral:', e.message));
   }, 300);
 }
 
