@@ -1,14 +1,15 @@
-// SSH: os hosts salvos numa janela, como no Termius. Clicou num host, abre um
-// terminal da Maestria já rodando o ssh pra ele. Os do ~/.ssh/config aparecem
-// embaixo, só pra conectar — quem os edita é o próprio arquivo.
+// SSH: os hosts numa tela, como no Termius. Clicou num host, abre um terminal
+// da Maestria já rodando o ssh pra ele, e ao lado o painel de comandos daquele
+// host: o histórico do servidor, os que você mandou e os que fixou -- um clique
+// e o comando vai pro terminal.
 //
-// A aba do plugin na lateral é a mesma lista, enxuta: clicou, conectou. Ela
-// marca os hosts com terminal aberto, e o número deles vira o selo do ícone.
+// Os hosts são os `Host` do ~/.ssh/config: criar, editar e apagar um host mexe
+// no bloco dele no config, e o que o config não guarda (nome de exibição,
+// grupo, ícone) mora no meta.json do plugin.
 //
-// Numa Maestria que desenha widgets (`rfw`), a janela é o cofre do Termius: os
-// grupos e os hosts em cartões, numa grade (`ui/hosts.rfwtxt`). O formulário de
-// um host e a pergunta do nome de um grupo moram numa janela à parte, ao lado
-// -- a gaveta de edição do Termius --, porque os widgets não têm campo de texto.
+// A aba do plugin na lateral é a mesma lista, enxuta: clicou, conectou. Numa
+// Maestria que desenha widgets (`rfw`), a janela é o cofre do Termius: os
+// grupos e os hosts em cartões, com o ícone do sistema de cada um.
 
 'use strict';
 
@@ -16,83 +17,95 @@ const fs = require('fs');
 const path = require('path');
 const mx = require('./maestria');
 const hosts = require('./hosts');
+const sshconfig = require('./sshconfig');
+const history = require('./history');
+const distro = require('./distro');
 
 const VIEW = 'hosts';
 const EDITOR = 'editor';
+const COMMANDS = 'comandos';
+const SIDEBAR = 'sidebar';
 const RFW_LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'hosts.rfwtxt'), 'utf8');
-const HINT = 'a senha, quando o servidor pede, você digita no terminal — o plugin não guarda senha. Pra não digitar, use uma chave.';
-// As cores dos quadrados dos cartões. Sem o verde e o vermelho, que são de
-// conectado e de caído.
+const HINT = 'os hosts são os do ~/.ssh/config: o que você cria ou edita aqui vai pra lá, e `ssh <alias>` funciona fora da Maestria também. A senha, quando o servidor pede, você digita no terminal.';
+// As cores dos quadrados dos grupos e dos hosts sem ícone. Sem o verde e o
+// vermelho, que são de conectado e de caído.
 const TONES = ['blue', 'cyan', 'purple', 'magenta', 'yellow', 'accent'];
 const PLUGIN_ID = process.env.MAESTRIA_PLUGIN_ID || 'maestria.ssh';
-const SIDEBAR = 'sidebar';
 // Com mais hosts que isso a aba ganha um campo pra filtrar.
 const FILTER_FROM = 8;
 // O valor do "novo grupo…" no seletor do formulário.
 const NEW_GROUP = '::novo';
+// Quantos comandos o painel mostra de uma vez.
+const SHOW = 150;
+// De quanto em quanto tempo o painel de comandos olha qual terminal está em foco.
+const FOLLOW_MS = 1500;
 
 const state = {
   dataDir: process.env.MAESTRIA_PLUGIN_DATA || '',
   settings: {},
-  saved: [],
-  groups: [], // os nomes dos grupos, com ou sem host, em ordem alfabética
-  // As seções fechadas: `grupo:<nome>`, `salvos` (os sem grupo) e `config`.
-  // Valem pra aba e pra janela, e ficam no disco.
+  list: [], // os hosts do config, com o meta
+  meta: {},
+  groups: [],
+  migrated: {}, // id de antes do config → alias
+  // As seções fechadas da aba: `grupo:<nome>` e `salvos` (os sem grupo).
   collapsed: new Set(),
   viewOpen: false,
-  // Se a janela é a grade em widgets (o `rfw` do initialize).
   rfw: false,
-  // Se a Maestria tem o campo de texto rápido (`window.input`): com ele, o nome
-  // de um grupo se pergunta ali, sem abrir janela nem campo na aba.
   input: false,
-  // Se a Maestria tem o formulário em modal (`window.form`): com ele, o host
-  // novo e o editar abrem num modal do tamanho dos campos, e não numa janela.
   modal: false,
-  // O grupo aberto na grade ('' é a raiz: os grupos e os hosts sem grupo).
-  group: '',
-  // A janela do formulário e da pergunta (`EDITOR`): se está aberta, e se a
-  // próxima pintura deve trazê-la pra frente (um formulário ou uma pergunta
-  // acabou de ser pedido) em vez de só atualizar.
+  group: '', // o grupo aberto na grade ('' é a raiz)
+  // O formulário sem modal, numa janela ao lado (Maestria sem `window.form`):
+  // { alias?, values, gen, error? }.
+  form: null,
   editorOpen: false,
   editorRaise: false,
-  editing: false, // o lápis ligado: clicar num host abre o formulário em vez de conectar
-  // O formulário aberto: { id?, gen, error? }. `gen` entra no id dos campos —
-  // a janela guarda o que foi digitado por id, então um formulário novo
-  // precisa de ids novos pra nascer vazio.
-  form: null,
   gen: 0,
-  // A pergunta aberta, um campo de texto só: { kind: 'novo-grupo' | 'renomear',
-  // group?, hostId?, where: 'window' | 'sidebar', gen, error? }. Mora onde foi
-  // feita -- a aba ou a janela.
-  ask: null,
-  // Os terminais do plugin: tabId → a chave do host (`s:<id>` pra um salvo,
-  // `c:<alias>` pra um do config). A chave vai como `tag` no openShell, então
-  // o mapa se refaz pelo sessions.list mesmo depois de um "reiniciar".
+  // Os terminais do plugin: tabId → `c:<alias>` (o `tag` do openShell).
   opened: new Map(),
-  // O que o sessions.list disse por último: tabId → sessão, só as de pé.
   live: new Map(),
-  // Os terminais cujo ssh saiu (caiu, recusou, você deu exit): tabId → sessão.
-  // Ficam na aba em vermelho até você reconectar ou fechar -- o motivo está
-  // escrito lá dentro.
   dead: new Map(),
   filter: '',
+  // O painel de comandos: de qual host, em que ordem, o filtro, e o que está
+  // na tela (as ações levam o alias e o índice: um clique depois de o painel
+  // trocar de host não roda a linha de outro).
+  cmd: { open: false, alias: '', order: 'recentes', filter: '', timer: null, ticks: 0 },
+  // As conexões em painel (Maestria com `split`): `con:<tabId>` → { tabId,
+  // alias, order, filter, side }. O id da janela é a própria chave.
+  cons: new Map(),
+  shown: new Map(), // de quem → as linhas na tela
+  split: false,
+  onSessions: false,
+  // Os terminais de um host renomeado: o tag deles ainda é o nome velho (tabId → `c:<alias>`).
+  retag: new Map(),
+  fetching: new Set(),
 };
 
 const setting = (id, fallback) => (id in state.settings ? state.settings[id] : fallback);
 
-function persist() {
-  hosts.save(state.dataDir, state.saved);
-  // Um grupo digitado no formulário de um host passa a existir também sozinho.
-  hosts.saveGroups(state.dataDir, [...state.groups, ...state.saved.map((h) => h.group)]);
-  state.groups = hosts.loadGroups(state.dataDir, state.saved);
-}
+// As leituras que voltam juntas (a varredura) gravam o meta e redesenham uma vez só.
+let metaDirty = false;
+let flushTimer = null;
 
-/** Relê os hosts e os grupos do disco. */
+/** Relê os hosts, o meta e os grupos do disco (antes, grava o sistema que uma leitura achou). */
 function reload() {
-  state.saved = hosts.load(state.dataDir);
-  state.groups = hosts.loadGroups(state.dataDir, state.saved);
+  if (metaDirty) {
+    metaDirty = false;
+    hosts.saveMeta(state.dataDir, state.meta);
+  }
+  state.meta = hosts.loadMeta(state.dataDir);
+  state.list = hosts.list(state.dataDir, state.meta);
+  state.groups = hosts.loadGroups(state.dataDir, state.meta);
   state.collapsed = hosts.loadCollapsed(state.dataDir);
 }
+
+function persistMeta() {
+  hosts.saveMeta(state.dataDir, state.meta);
+  hosts.saveGroups(state.dataDir, [...state.groups, ...Object.values(state.meta).map((m) => m.group)]);
+  reload();
+}
+
+const metaOf = (alias) => (state.meta[alias] = state.meta[alias] || {});
+const byAlias = (alias) => state.list.find((h) => h.alias === alias);
 
 /** A chave de uma seção em `collapsed`: '' é a dos hosts sem grupo. */
 const sectionKey = (group) => (group ? `grupo:${group}` : 'salvos');
@@ -103,31 +116,22 @@ function setCollapsed(key, on) {
   hosts.saveCollapsed(state.dataDir, state.collapsed);
 }
 
-/** Redesenha a janela de hosts (se aberta) e a aba. */
+/** Redesenha a janela de hosts (se aberta), os painéis de comandos e a aba. */
 async function repaint() {
   if (state.viewOpen) await refresh();
+  if (state.cmd.open) await paintScope(PANEL);
+  for (const scope of [...state.cons.keys()]) await paintScope(scope);
   await pushSidebar();
 }
 
-/** Redesenha tudo: o formulário (abre, atualiza ou fecha), a janela e a aba. */
 async function redraw() {
   await syncEditor();
   await repaint();
 }
 
-function configHosts() {
-  if (!setting('sshConfig', true)) return [];
-  const saved = new Set(state.saved.map((h) => h.host));
-  return hosts.configHosts().filter((h) => !saved.has(h.alias));
-}
+const keyOf = (host) => `c:${host.alias}`;
 
-/** A chave de um host no mapa dos terminais abertos. */
-const keyOf = (host) => (host.id ? `s:${host.id}` : `c:${host.alias}`);
-
-/** O nome que o terminal leva na lateral. */
-const labelOf = (host) => host.name || host.alias;
-
-/** "agora", "há 5 min", "há 3 h", "há 2 dias": quando você conectou por último. */
+/** "agora", "há 5 min", "há 3 h", "há 2 d": quando você conectou por último. */
 function ago(iso) {
   if (!iso) return undefined;
   const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -139,238 +143,565 @@ function ago(iso) {
 }
 
 async function connect(host) {
+  if (state.split) return connectInPane(host);
   const command = hosts.commandFor(host, state.settings);
-  const label = labelOf(host);
   try {
     // Na home e não na pasta do painel em foco: uma sessão remota não é de
-    // repositório nenhum. E `owned`: o terminal é do plugin -- mora nesta aba,
-    // na linha do host, e não entre os avulsos.
+    // repositório nenhum. E `owned`: o terminal é do plugin e mora nesta tela.
     const { tabId } =
-      (await mx.request('session.openShell', {
-        cwd: hosts.HOME,
-        command,
-        label,
-        owned: true,
-        tag: keyOf(host),
-      })) || {};
+      (await mx.request('session.openShell', { cwd: hosts.HOME, command, label: host.name || host.alias, owned: true, tag: keyOf(host) })) || {};
     if (tabId) {
       state.opened.set(tabId, keyOf(host));
-      state.live.set(tabId, { id: tabId, kind: 'shell', title: label });
+      state.live.set(tabId, { id: tabId, kind: 'shell', title: host.name });
     }
   } catch (e) {
     await mx.request('window.showBanner', { text: `não abri o ssh: ${e.message}`, sticky: true });
     return;
   }
-  if (host.id) {
-    const saved = state.saved.find((h) => h.id === host.id);
-    if (saved) {
-      saved.lastUsed = new Date().toISOString();
-      persist();
-    }
-  }
-  await repaint();
-}
-
-// --- janela ------------------------------------------------------------------
-
-function field(id, label, value, placeholder) {
-  return {
-    type: 'input',
-    id: `f${state.gen}.${id}`,
-    label,
-    placeholder,
-    value: value == null ? '' : String(value),
-    submit: 'salvar',
-  };
-}
-
-function formBlocks() {
-  const f = state.form;
-  const h = (f.id && state.saved.find((x) => x.id === f.id)) || {};
-  return [
-    { type: 'heading', text: f.id ? `Editar ${h.name}` : 'Novo host' },
-    field('name', 'nome', h.name, 'produção, raspberry, vps…'),
-    field('host', 'host', h.host, 'exemplo.com ou 10.0.0.12'),
-    {
-      type: 'row',
-      children: [field('user', 'usuário', h.user, 'root'), field('port', 'porta', h.port, '22')],
-    },
-    field('key', 'chave privada', h.key, '~/.ssh/id_ed25519 (vazio: a do ssh-agent)'),
-    field('options', 'opções do ssh', h.options, '-A, -L 5432:localhost:5432, -o …'),
-    {
-      type: 'select',
-      id: `f${state.gen}.group`,
-      label: 'grupo',
-      value: f.group,
-      options: [
-        { value: '', label: 'sem grupo' },
-        ...state.groups.map((g) => ({ value: g, label: g })),
-        { value: NEW_GROUP, label: 'novo grupo…' },
-      ],
-      action: 'form-grupo',
-    },
-    f.group === NEW_GROUP ? field('newGroup', 'nome do novo grupo', '', 'trabalho, pessoal, clientes…') : null,
-    f.error ? { type: 'text', style: 'error', text: f.error } : null,
-    {
-      type: 'row',
-      children: [
-        { type: 'button', action: 'salvar', label: 'salvar', style: 'primary', icon: 'check' },
-        f.id ? { type: 'button', action: 'salvar-conectar', label: 'salvar e conectar', icon: 'terminal' } : null,
-        { type: 'button', action: 'cancelar', label: 'cancelar' },
-        f.id ? { type: 'button', action: `duplicar-host:${f.id}`, label: 'duplicar', icon: 'copy' } : null,
-        f.id ? { type: 'button', action: `apagar:${f.id}`, label: 'apagar', style: 'danger' } : null,
-      ].filter(Boolean),
-    },
-    { type: 'divider' },
-  ].filter(Boolean);
-}
-
-function savedBlocks() {
-  if (!state.saved.length) {
-    return [{ type: 'list', items: [], empty: 'nenhum host salvo ainda — comece por “novo host”' }];
-  }
-  const byGroup = groupHosts(state.saved, true);
-  const out = [];
-  for (const [g, list] of byGroup) {
-    const closed = state.collapsed.has(sectionKey(g));
-    if (g) {
-      out.push({ type: 'section', text: g, count: list.length, collapsed: closed, action: `recolher:${sectionKey(g)}` });
-      if (closed) continue;
-    }
-    out.push({
-      type: 'list',
-      empty: 'vazio — mova um host pra cá pelo ícone de pasta dele',
-      items: list.map((h) => ({
-        title: h.name,
-        subtitle: hosts.address(h),
-        icon: state.editing ? 'settings' : 'terminal',
-        tone: state.editing ? 'yellow' : 'accent',
-        badge: state.editing ? 'editar' : ago(h.lastUsed),
-        action: state.editing ? `editar:${h.id}` : `conectar:${h.id}`,
-        actions: [{ action: `mover:${h.id}`, icon: 'folder', tooltip: 'mover pro grupo…' }],
-      })),
-    });
-  }
-  return out;
+  await afterConnect(host);
+  if (setting('commandsPanel', true)) await openCommands(host.alias);
 }
 
 /**
- * Os hosts por grupo, na ordem da tela: os sem grupo primeiro (só quando há
- * algum), e os grupos em ordem alfabética. Com `withEmpty` os grupos sem host
- * entram também, vazios.
+ * A conexão num painel só, como no Termius: o terminal (embutido) e os
+ * comandos do host numa coluna à direita dele. O painel abre na tela das
+ * sessões, ao lado da que está em foco -- a não ser que você prefira a tela do SSH.
  */
-function groupHosts(list, withEmpty) {
-  const byGroup = new Map();
-  const sorted = [...list].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-  if (sorted.some((h) => !h.group)) byGroup.set('', []);
-  for (const g of state.groups) if (withEmpty || sorted.some((h) => h.group === g)) byGroup.set(g, []);
-  for (const h of sorted) {
-    const g = h.group || '';
-    if (!byGroup.has(g)) byGroup.set(g, []);
-    byGroup.get(g).push(h);
+async function connectInPane(host) {
+  const label = host.name || host.alias;
+  let tabId;
+  try {
+    ({ tabId } =
+      (await mx.request('session.openShell', {
+        cwd: hosts.HOME,
+        command: hosts.commandFor(host, state.settings),
+        label,
+        embedded: true,
+        tag: keyOf(host),
+      })) || {});
+  } catch (e) {
+    await mx.request('window.showBanner', { text: `não abri o ssh: ${e.message}`, sticky: true });
+    return;
   }
-  return byGroup;
+  if (!tabId) return;
+  state.opened.set(tabId, keyOf(host));
+  state.live.set(tabId, { id: tabId, kind: 'shell', title: label, embedded: true });
+  const scope = conScope(tabId);
+  state.cons.set(scope, newCon(tabId, host.alias));
+  await showCon(scope);
+  await afterConnect(host);
 }
 
-/** O campo da pergunta aberta, se ela é desta superfície. */
-function askBlocks(where) {
-  const a = state.ask;
-  if (!a || a.where !== where) return [];
-  const label = a.kind === 'renomear' ? `novo nome de ${a.group}` : 'nome do grupo';
+async function afterConnect(host) {
+  metaOf(host.alias).lastUsed = new Date().toISOString();
+  persistMeta();
+  fetchHistory(host.alias);
+  await repaint();
+}
+
+const conScope = (tabId) => `con:${tabId}`;
+const newCon = (tabId, alias) => ({ tabId, alias, order: 'recentes', filter: '', side: setting('commandsPanel', true) });
+
+/** Abre (ou traz pra frente) o painel de uma conexão. */
+async function showCon(scope) {
+  const c = state.cons.get(scope);
+  if (!c) return;
+  const host = byAlias(c.alias) || { alias: c.alias, name: c.alias };
+  await mx.request('view.open', {
+    viewId: scope,
+    title: host.name,
+    blocks: conBlocks(scope),
+    sessions: state.onSessions && setting('openOnSessions', true),
+  });
+}
+
+/** O painel da conexão: o terminal e, à direita, os comandos (ou o botão que os mostra). */
+function conBlocks(scope) {
+  const c = state.cons.get(scope);
+  const term = { type: 'terminal', tabId: c.tabId, expand: true, autofocus: true, empty: 'a conexão fechou — reconecte pelo host na lista' };
+  if (!c.side) {
+    return [
+      { type: 'row', align: 'end', children: [{ type: 'button', action: `cmd-lado:${enc(scope)}`, icon: 'terminal', label: 'comandos', tooltip: 'mostrar os comandos deste host' }] },
+      term,
+    ];
+  }
+  return [{ type: 'split', width: SIDE_WIDTH, children: [term, ...commandBlocks(scope)] }];
+}
+
+// --- o histórico de cada host ----------------------------------------------------
+
+/**
+ * Lê o histórico e o sistema do host num ssh à parte, sem esperar: o painel e
+ * o ícone se atualizam quando ele volta.
+ */
+function fetchHistory(alias, { force = false } = {}) {
+  if (!setting('history', true) && !force) return;
+  fetchHistoryNow(alias);
+}
+
+/** A leitura de verdade; a promessa resolve quando ela acaba (e nunca rejeita). */
+function fetchHistoryNow(alias) {
+  if (state.fetching.has(alias)) return Promise.resolve();
+  state.fetching.add(alias);
+  repaintAlias(alias).catch(() => {});
+  const { binary, options, quoted } = hosts.probe(byAlias(alias) || { alias }, state.settings);
+  return history
+    .fetchRemote(quoted, { timeout: 25, binary, options })
+    .then((result) => {
+      if (result.error) mx.log(`histórico de ${alias}:`, result.error);
+      // Renomeado ou apagado enquanto o ssh lia: o resultado não tem mais dono.
+      if (!byAlias(alias)) return;
+      history.save(state.dataDir, alias, history.applyRemote(history.load(state.dataDir, alias), result));
+      const os = distro.detect(result.os);
+      if (os && os !== metaOf(alias).os) {
+        metaOf(alias).os = os;
+        metaDirty = true;
+      }
+    })
+    .catch((e) => mx.log(`histórico de ${alias}:`, String(e.stack || e)))
+    .finally(() => {
+      state.fetching.delete(alias);
+      scheduleFlush();
+    });
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    if (metaDirty) {
+      metaDirty = false;
+      persistMeta();
+    }
+    repaint().catch(() => {});
+  }, 300);
+}
+
+// Quantos hosts a varredura de sistema lê ao mesmo tempo.
+const SCAN_AT_ONCE = 4;
+let scanning = false;
+
+/**
+ * O ícone de cada host sem precisar conectar antes: lê, em segundo plano e
+ * poucos por vez, o sistema (e o histórico) dos hosts que ainda não têm
+ * sistema conhecido. Um host que não respondeu não é tentado de novo por um dia.
+ */
+async function scanSystems() {
+  if (scanning || !setting('history', true) || !setting('detectAll', false)) return;
+  scanning = true;
+  const now = Date.now();
+  const queue = state.list.filter((h) => {
+    if (h.os || h.icon) return false;
+    const tried = history.load(state.dataDir, h.alias).fetchedAt;
+    return !tried || now - new Date(tried).getTime() > 24 * 3600 * 1000;
+  });
+  const worker = async () => {
+    for (let h = queue.shift(); h; h = queue.shift()) await fetchHistoryNow(h.alias);
+  };
+  try {
+    await Promise.all(Array.from({ length: SCAN_AT_ONCE }, worker));
+  } finally {
+    scanning = false;
+  }
+}
+
+/** O terminal pra onde vai um comando: o do host em foco, senão o último aberto dele. */
+async function targetTab(alias) {
+  await syncSessions();
+  const live = byHost().get(`c:${alias}`)?.live || [];
+  if (!live.length) return null;
+  return live.find((id) => state.live.get(id)?.focused) || live[live.length - 1];
+}
+
+async function sendCommand(scope, cmd, submit) {
+  const ctx = ctxOf(scope);
+  const con = state.cons.get(scope);
+  const tabId = con ? (state.dead.has(con.tabId) ? null : con.tabId) : await targetTab(ctx.alias);
+  if (!tabId) {
+    await mx.request('clipboard.write', { text: cmd });
+    await mx.request('window.showBanner', { text: `nenhuma conexão aberta com ${ctx.alias}: copiei o comando` });
+    return;
+  }
+  try {
+    await mx.request('terminal.sendText', { tabId, text: cmd, submit });
+    // O terminal embutido mora no painel da conexão: quem vai pra frente é ele.
+    if (!con) await mx.request('session.focus', { tabId });
+  } catch (e) {
+    await mx.request('window.showBanner', { text: `não mandei o comando: ${e.message}` });
+    return;
+  }
+  history.save(state.dataDir, ctx.alias, history.recordSent(history.load(state.dataDir, ctx.alias), cmd));
+  await paintScope(scope);
+}
+
+// --- os comandos (na coluna da conexão, ou no painel avulso) -------------------------
+
+// O painel avulso: numa Maestria sem o bloco `split`, ou pra ver os comandos de
+// um host sem conexão aberta.
+const PANEL = 'painel';
+const SIDE_WIDTH = 300;
+const enc = encodeURIComponent;
+
+/** O estado de quem mostra os comandos: o painel avulso ou a coluna de uma conexão. */
+const ctxOf = (scope) => (scope === PANEL ? state.cmd : state.cons.get(scope));
+
+function commandBlocks(scope) {
+  const ctx = ctxOf(scope);
+  const alias = ctx.alias;
+  const inPane = scope !== PANEL;
+  const host = byAlias(alias) || { alias, name: alias };
+  const data = history.load(state.dataDir, alias);
+  const all = history.entries(data, { order: ctx.order, filter: ctx.filter });
+  const shown = all.slice(0, SHOW);
+  state.shown.set(scope, shown);
+  const ref = (n) => `${enc(scope)}|${n}`;
+  let status;
+  if (state.fetching.has(alias)) status = 'lendo o histórico do servidor…';
+  else if (data.error) status = `o histórico do servidor não veio: ${data.error}`;
+  else if (data.fetchedAt) status = `histórico lido ${ago(data.fetchedAt)}`;
+  else status = 'o histórico do servidor é lido quando você conecta';
+  const live = inPane ? !state.dead.has(ctx.tabId) : byHost().get(`c:${alias}`)?.live.length;
   return [
     {
-      type: 'input',
-      id: `ask${a.gen}`,
-      label,
-      value: a.kind === 'renomear' ? a.group : '',
-      placeholder: 'trabalho, pessoal, clientes… (enter)',
-      submit: 'ask-ok',
-    },
-    a.error ? { type: 'text', style: 'error', text: a.error } : null,
-    {
-      type: 'row',
-      children: [
-        { type: 'button', action: 'ask-ok', label: a.kind === 'renomear' ? 'renomear' : 'criar', style: 'primary', icon: 'check' },
-        { type: 'button', action: 'ask-cancelar', label: 'cancelar' },
+      type: 'header',
+      title: inPane ? 'Comandos' : host.name,
+      subtitle: inPane ? host.name : `${hosts.address(host)}${live ? ' · conectado' : ''}`,
+      avatar: inPane ? undefined : { svg: distro.look(host).svg },
+      status: !inPane && live ? 'green' : undefined,
+      actions: [
+        { action: `cmd-novo:${enc(scope)}`, icon: 'add', tooltip: 'fixar um comando novo' },
+        { action: `cmd-ler:${enc(scope)}`, icon: 'refresh', tooltip: 'reler o histórico do servidor' },
+        inPane
+          ? { action: `cmd-lado:${enc(scope)}`, icon: 'close', tooltip: 'esconder os comandos' }
+          : { action: `cmd-host:${enc(scope)}`, icon: 'server', tooltip: 'trocar de host' },
       ],
     },
+    { type: 'input', id: 'cmd-busca', icon: 'search', placeholder: 'buscar (enter)', value: ctx.filter, submit: `cmd-buscar:${enc(scope)}` },
+    {
+      type: 'tabs',
+      items: [
+        { label: 'recentes', action: `cmd-ordem:${ref('recentes')}`, active: ctx.order === 'recentes' },
+        { label: 'frequentes', action: `cmd-ordem:${ref('frequentes')}`, active: ctx.order === 'frequentes' },
+      ],
+    },
+    {
+      type: 'list',
+      flat: true,
+      empty: ctx.filter ? 'nada com essa busca' : 'nenhum comando ainda — os do servidor aparecem depois de conectar, e o + fixa um seu',
+      items: shown.map((e, n) => ({
+        title: e.cmd,
+        icon: e.pinned ? 'star' : 'terminal',
+        tone: e.pinned ? 'yellow' : 'faint',
+        meta: e.count > 1 ? `${e.count}×` : undefined,
+        action: `cmd-enviar:${ref(n)}`,
+        actions: [
+          { action: `cmd-rodar:${ref(n)}`, icon: 'play', tooltip: 'mandar e rodar (enter)' },
+          { action: `cmd-fixar:${ref(n)}`, icon: 'star', tooltip: e.pinned ? 'desafixar' : 'fixar no topo' },
+        ],
+        menu: [
+          { action: `cmd-enviar:${ref(n)}`, label: 'mandar pro terminal', icon: 'terminal' },
+          { action: `cmd-rodar:${ref(n)}`, label: 'mandar e rodar', icon: 'play' },
+          { action: `cmd-copiar:${ref(n)}`, label: 'copiar', icon: 'copy' },
+          { action: `cmd-fixar:${ref(n)}`, label: e.pinned ? 'desafixar' : 'fixar no topo', icon: 'star' },
+          { type: 'divider' },
+          { action: `cmd-tirar:${ref(n)}`, label: 'tirar da lista', icon: 'remove', tone: 'red' },
+        ],
+      })),
+    },
+    all.length > SHOW ? { type: 'text', style: 'faint', text: `mostrando ${SHOW} de ${all.length} — a busca acha o resto` } : null,
+    { type: 'text', style: data.error ? 'warning' : 'faint', text: status },
   ].filter(Boolean);
 }
 
-/** Os grupos na janela: um por linha, com renomear e apagar no hover. */
-function groupBlocks() {
-  if (!state.groups.length) return [];
-  return [
-    { type: 'divider' },
-    { type: 'heading', text: 'Grupos' },
-    {
-      type: 'list',
-      items: state.groups.map((g) => {
-        const n = state.saved.filter((h) => h.group === g).length;
-        return {
-          title: g,
-          subtitle: n ? `${n} ${n === 1 ? 'host' : 'hosts'}` : 'vazio',
-          icon: 'folder',
-          tone: 'accent',
-          action: `novo-no-grupo:${g}`,
-          actions: [
-            { action: `novo-no-grupo:${g}`, icon: 'add', tooltip: 'novo host neste grupo' },
-            { action: `renomear:${g}`, icon: 'edit', tooltip: 'renomear' },
-            { action: `apagar-grupo:${g}`, icon: 'remove', tooltip: 'apagar o grupo', tone: 'red' },
-          ],
-        };
-      }),
-    },
-  ];
+/**
+ * Os comandos de um host: na coluna da conexão aberta com ele, se há uma (e
+ * ela volta a aparecer se estava escondida); senão, no painel avulso.
+ */
+async function openCommands(alias) {
+  const con = [...state.cons.entries()].reverse().find(([scope, c]) => c.alias === alias && !state.dead.has(c.tabId));
+  if (con) {
+    con[1].side = true;
+    return showCon(con[0]);
+  }
+  state.cmd.alias = alias;
+  state.cmd.filter = '';
+  await mx.request('view.open', { viewId: COMMANDS, title: `comandos · ${alias}`, blocks: commandBlocks(PANEL) });
+  state.cmd.open = true;
+  if (!state.split) follow();
 }
 
+async function paintScope(scope) {
+  if (scope === PANEL) {
+    if (!state.cmd.open) return;
+    const { open } = await mx.request('view.update', { viewId: COMMANDS, title: `comandos · ${state.cmd.alias}`, blocks: commandBlocks(PANEL) });
+    if (!open) closeCommands();
+    return;
+  }
+  if (!state.cons.has(scope)) return;
+  const { open } = await mx.request('view.update', { viewId: scope, blocks: conBlocks(scope) });
+  if (!open) dropCon(scope);
+}
+
+function dropCon(scope) {
+  state.cons.delete(scope);
+  state.shown.delete(scope);
+}
+
+function closeCommands() {
+  state.cmd.open = false;
+  clearInterval(state.cmd.timer);
+  state.cmd.timer = null;
+}
+
+/**
+ * Numa Maestria sem o painel de conexão, o painel avulso acompanha o terminal
+ * em foco: focou a conexão de outro host, ele passa a ser dele.
+ */
+function follow() {
+  if (state.cmd.timer) return;
+  state.cmd.ticks = 0;
+  state.cmd.timer = setInterval(async () => {
+    try {
+      // De tempos em tempos pergunta se o painel ainda está aberto: fechado no x,
+      // a janela só conta no próximo view.update, e o relógio pararia de vez.
+      state.cmd.ticks += 1;
+      if (state.cmd.ticks % 20 === 0) {
+        const { open } = await mx.request('view.update', { viewId: COMMANDS });
+        if (!open) return closeCommands();
+      }
+      const s = await mx.request('sessions.focused');
+      if (!s || !s.id) return;
+      const tag = state.opened.get(s.id) || (s.owner === PLUGIN_ID && s.tag && (state.retag.get(s.id) || normalizeKey(s.tag)));
+      const host = tag && hostByKey(tag);
+      if (host && host.alias !== state.cmd.alias) {
+        state.cmd.alias = host.alias;
+        state.cmd.filter = '';
+        await paintScope(PANEL);
+      }
+    } catch (e) {
+      mx.log('painel de comandos:', e.message);
+    }
+  }, FOLLOW_MS);
+}
+
+/** As ações dos comandos: `<verbo>:<de quem>` ou `<verbo>:<de quem>|<linha ou valor>`. */
+async function commandAction(verb, arg, values) {
+  const bar = arg.indexOf('|');
+  const scope = decodeURIComponent(bar >= 0 ? arg.slice(0, bar) : arg) || PANEL;
+  const rest = bar >= 0 ? arg.slice(bar + 1) : '';
+  const ctx = ctxOf(scope);
+  if (!ctx) return;
+  const alias = ctx.alias;
+  const entry = () => (state.shown.get(scope) || [])[Number(rest)];
+  if (values && typeof values['cmd-busca'] === 'string') ctx.filter = values['cmd-busca'];
+  switch (verb) {
+    case 'cmd-enviar':
+    case 'cmd-rodar': {
+      const e = entry();
+      if (e) await sendCommand(scope, e.cmd, verb === 'cmd-rodar');
+      return;
+    }
+    case 'cmd-copiar': {
+      const e = entry();
+      if (e) await mx.request('clipboard.write', { text: e.cmd });
+      return;
+    }
+    case 'cmd-fixar':
+    case 'cmd-tirar': {
+      const e = entry();
+      if (!e) return;
+      const data = history.load(state.dataDir, alias);
+      history.save(state.dataDir, alias, verb === 'cmd-fixar' ? history.togglePin(data, e.cmd) : history.forget(data, e.cmd));
+      // Fixar e tirar valem pro host: todos os painéis dele mudam.
+      return repaintAlias(alias);
+    }
+    case 'cmd-novo': {
+      const cmd = await askText(`fixar um comando em ${alias}`, 'sudo systemctl status nginx');
+      if (!cmd) return;
+      const data = history.load(state.dataDir, alias);
+      if (!data.pinned.includes(cmd)) history.save(state.dataDir, alias, history.togglePin(data, cmd));
+      return repaintAlias(alias);
+    }
+    case 'cmd-ler':
+      fetchHistory(alias, { force: true });
+      return;
+    case 'cmd-ordem':
+      ctx.order = rest === 'frequentes' ? 'frequentes' : 'recentes';
+      break;
+    case 'cmd-lado':
+      ctx.side = !ctx.side;
+      break;
+    case 'cmd-host': {
+      const choice = await pickHost('comandos de qual host?');
+      if (!choice) return;
+      state.cmd.alias = choice.alias;
+      state.cmd.filter = '';
+      break;
+    }
+    case 'cmd-buscar':
+      break;
+    default:
+      mx.log('ação desconhecida nos comandos:', verb);
+      return;
+  }
+  await paintScope(scope);
+}
+
+async function repaintAlias(alias) {
+  if (state.cmd.open && state.cmd.alias === alias) await paintScope(PANEL);
+  for (const [scope, c] of state.cons) if (c.alias === alias) await paintScope(scope);
+}
+
+// --- a grade (rfw) e a janela em blocos ---------------------------------------------
+
+/** A cor do quadrado de um cartão sem ícone de sistema: a mesma pra um nome, sempre. */
+function toneOf(name) {
+  let h = 0;
+  for (const c of String(name)) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  return TONES[h % TONES.length];
+}
+
+/** Um menu no formato dos blocos, no formato do `Pressable`. */
+function rfwMenu(menu) {
+  return menu.map((m) =>
+    m.type === 'divider' ? { divider: true } : { label: m.label, icon: m.icon || '', action: m.action, red: m.tone === 'red' },
+  );
+}
+
+/** O menu de um host, igual no cartão e na aba. */
+function hostMenu(h) {
+  return [
+    { action: `comandos:${h.alias}`, label: 'comandos…', icon: 'terminal' },
+    { action: `editar:${h.alias}`, label: h.editable ? 'editar…' : 'abrir no config…', icon: 'edit' },
+    { action: `mover:${h.alias}`, label: 'mover pro grupo…', icon: 'folder' },
+    h.editable ? { action: `duplicar-host:${h.alias}`, label: 'duplicar', icon: 'copy' } : null,
+    { action: `copiar:${h.alias}`, label: 'copiar o comando', icon: 'copy' },
+    h.editable ? { type: 'divider' } : null,
+    h.editable ? { action: `apagar:${h.alias}`, label: 'apagar', icon: 'remove', tone: 'red' } : null,
+  ].filter(Boolean);
+}
+
+/** A segunda linha do cartão: o endereço e o sistema, como o "ssh, ubuntu" do Termius. */
+function subOf(h) {
+  const { label } = distro.look(h);
+  return label ? `${hosts.address(h)} · ${label}` : hosts.address(h);
+}
+
+function hostTile(h, terms) {
+  const item = sidebarItem(h, terms);
+  const status = item.tone === 'green' || item.tone === 'red' ? item.tone : '';
+  const sub = subOf(h);
+  const when = !status && item.badge ? ` · ${item.badge}` : '';
+  const look = distro.look(h);
+  return {
+    title: h.name,
+    sub: status ? `${item.badge} · ${sub}` : `${sub}${when}`,
+    icon: look.icon,
+    svg: look.svg,
+    tone: toneOf(h.name),
+    status,
+    action: item.action,
+    menu: rfwMenu(item.menu),
+    edit: `editar:${h.alias}`,
+  };
+}
+
+/** O menu de um grupo: no cartão (com o abrir) e no "…" da trilha. */
+function groupMenu(g, withOpen) {
+  return rfwMenu(
+    [
+      withOpen ? { action: `grupo:${g}`, label: 'abrir', icon: 'open' } : null,
+      { action: `novo-no-grupo:${g}`, label: 'novo host neste grupo', icon: 'add' },
+      { action: `renomear:${g}`, label: 'renomear…', icon: 'edit' },
+      { type: 'divider' },
+      { action: `apagar-grupo:${g}`, label: 'apagar o grupo', icon: 'remove', tone: 'red' },
+    ].filter(Boolean),
+  );
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const connected = (n) => (n ? ` · ${n} conectado${n > 1 ? 's' : ''}` : '');
+
+/** Os dados da grade: o topo, a trilha e as seções de cartões. */
+function gridData() {
+  const terms = byHost();
+  const live = (list) => list.filter((h) => terms.get(keyOf(h))?.live.length).length;
+  if (state.group && !state.groups.includes(state.group)) state.group = '';
+  const g = state.group;
+  const sections = [];
+  if (g) {
+    const list = state.list.filter((h) => h.group === g);
+    sections.push({
+      title: 'Hosts',
+      count: String(list.length),
+      empty: list.length ? '' : 'vazio — “novo host” cria um aqui, ou mova um host pra cá pelo botão direito nele',
+      items: list.map((h) => hostTile(h, terms)),
+    });
+  } else {
+    if (state.groups.length) {
+      sections.push({
+        title: 'Grupos',
+        count: String(state.groups.length),
+        empty: '',
+        items: state.groups.map((name) => {
+          const list = state.list.filter((h) => h.group === name);
+          const on = live(list);
+          return {
+            title: name,
+            sub: list.length ? plural(list.length, 'host', 'hosts') + connected(on) : 'vazio',
+            icon: 'folder',
+            tone: toneOf(name),
+            svg: '',
+            status: on ? 'green' : '',
+            action: `grupo:${name}`,
+            menu: groupMenu(name, true),
+            edit: '',
+          };
+        }),
+      });
+    }
+    const loose = state.list.filter((h) => !h.group);
+    if (loose.length || !state.list.length) {
+      sections.push({
+        title: 'Hosts',
+        count: String(loose.length),
+        empty: loose.length ? '' : 'nenhum host no ~/.ssh/config ainda — comece por “novo host”',
+        items: loose.map((h) => hostTile(h, terms)),
+      });
+    }
+  }
+  const inGroup = g ? state.list.filter((h) => h.group === g) : state.list;
+  return {
+    head: {
+      title: g || 'Hosts',
+      sub: plural(inGroup.length, 'host', 'hosts') + connected(g ? live(inGroup) : state.live.size),
+      newHost: g ? `novo-no-grupo:${g}` : 'novo',
+    },
+    crumb: { group: g, menu: g ? groupMenu(g, false) : [] },
+    sections,
+    hint: HINT,
+  };
+}
+
+/** A janela em blocos, pra uma Maestria sem widgets: a mesma lista da aba. */
 function blocks() {
-  const fromConfig = configHosts();
   return [
     {
       type: 'row',
       children: [
-        { type: 'button', action: 'novo', label: 'novo host', style: 'primary', icon: 'star' },
+        { type: 'button', action: 'novo', label: 'novo host', style: 'primary', icon: 'add' },
         { type: 'button', action: 'novo-grupo', label: 'novo grupo', icon: 'folder' },
-        {
-          type: 'button',
-          action: 'lapis',
-          label: state.editing ? 'pronto' : 'editar',
-          icon: state.editing ? 'check' : 'settings',
-          disabled: !state.saved.length && !state.editing,
-        },
       ],
     },
-    { type: 'heading', text: 'Salvos' },
-    ...savedBlocks(),
-    ...groupBlocks(),
-    ...(fromConfig.length
-      ? [
-          { type: 'divider' },
-          { type: 'heading', text: 'Do ~/.ssh/config' },
-          {
-            type: 'list',
-            items: fromConfig.map((h) => ({
-              title: h.alias,
-              subtitle: hosts.address(h),
-              icon: 'file',
-              tone: 'faint',
-              connect: `config:${h.alias}`,
-            })),
-          },
-        ]
-      : []),
-    {
-      type: 'text',
-      style: 'faint',
-      text: 'a senha, quando o servidor pede, você digita no terminal — o plugin não guarda senha. Pra não digitar, use uma chave.',
-    },
+    ...hostListBlocks(false),
+    { type: 'text', style: 'faint', text: HINT },
   ];
 }
 
 async function open() {
   reload();
   await syncSessions();
+  scanSystems().catch((err) => mx.log('varredura:', String(err.stack || err)));
   const params = { viewId: VIEW, title: 'SSH' };
   if (state.rfw) {
     params.rfw = { library: RFW_LIBRARY, root: 'root' };
@@ -388,176 +719,194 @@ async function refresh() {
   state.viewOpen = open;
 }
 
-// --- a grade (rfw) -------------------------------------------------------------
+// --- o formulário de um host -------------------------------------------------------
 
-/** A cor do quadrado de um cartão: a mesma pra um nome, sempre. */
-function toneOf(name) {
-  let h = 0;
-  for (const c of String(name)) h = (h * 31 + c.codePointAt(0)) >>> 0;
-  return TONES[h % TONES.length];
-}
-
-/** Um menu no formato dos blocos, no formato do `Pressable`. */
-function rfwMenu(menu) {
-  return menu.map((m) =>
-    m.type === 'divider' ? { divider: true } : { label: m.label, icon: m.icon || '', action: m.action, red: m.tone === 'red' },
-  );
-}
-
-/**
- * O cartão de um host. O que clicar faz, o menu e o estado vêm da linha da aba
- * ([sidebarItem]): conectar, ir pro terminal aberto, ver o que caiu.
- */
-function hostTile(host, terms, { title, sub, connect, menu, faint, edit }) {
-  const item = sidebarItem(host, terms, { title, subtitle: sub, connect, menu, idle: faint ? 'faint' : 'accent' });
-  const status = item.tone === 'green' || item.tone === 'red' ? item.tone : '';
-  const when = !status && item.badge ? ` · ${item.badge}` : '';
+/** O que o formulário mostra: o host de `alias` (ou o modelo de um novo). */
+function formValues(alias, group = '', copyOf = '') {
+  const h = byAlias(alias || copyOf);
+  if (!h) return { label: '', alias: '', hostname: '', user: '', port: '', identityFile: '', extra: '', group, icon: '', cli: '', newGroup: '' };
   return {
-    title,
-    sub: status ? `${item.badge} · ${sub}` : `${sub}${when}`,
-    icon: faint ? 'file' : 'server',
-    tone: faint ? 'faint' : toneOf(title),
-    status,
-    action: item.action,
-    menu: rfwMenu(item.menu),
-    edit: edit || '',
+    label: copyOf ? `${h.name} (cópia)` : h.label || '',
+    alias: copyOf ? `${h.alias}-copia` : h.alias,
+    hostname: h.hostname,
+    user: h.user,
+    port: h.port,
+    identityFile: h.identityFile,
+    extra: h.extra.join('; '),
+    group: h.group || '',
+    icon: h.icon || '',
+    cli: h.cli || '',
+    newGroup: '',
   };
 }
 
-function savedTile(h, terms) {
-  return hostTile(h, terms, {
-    title: h.name,
-    sub: hosts.address(h),
-    connect: `conectar:${h.id}`,
-    edit: `editar:${h.id}`,
-    menu: [
-      { action: `editar:${h.id}`, label: 'editar…', icon: 'edit' },
-      { action: `mover:${h.id}`, label: 'mover pro grupo…', icon: 'folder' },
-      { action: `duplicar-host:${h.id}`, label: 'duplicar', icon: 'copy' },
-      { action: `copiar:${h.id}`, label: 'copiar o comando', icon: 'copy' },
-      { type: 'divider' },
-      { action: `apagar:${h.id}`, label: 'apagar', icon: 'remove', tone: 'red' },
-    ],
-  });
-}
-
-/** O menu de um grupo: no cartão (com o abrir) e no "…" da trilha. */
-function groupMenu(g, withOpen) {
-  return rfwMenu(
-    [
-      withOpen ? { action: `grupo:${g}`, label: 'abrir', icon: 'open' } : null,
-      { action: `novo-no-grupo:${g}`, label: 'novo host neste grupo', icon: 'add' },
-      { action: `renomear:${g}`, label: 'renomear…', icon: 'edit' },
-      { type: 'divider' },
-      { action: `apagar-grupo:${g}`, label: 'apagar o grupo', icon: 'remove', tone: 'red' },
-    ].filter(Boolean),
-  );
-}
-
-const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-
-/** Os dados da grade: o topo, a trilha e as seções de cartões. */
-function gridData() {
-  const terms = byHost();
-  const live = (list) => list.filter((h) => terms.get(keyOf(h))?.live.length).length;
-  if (state.group && !state.groups.includes(state.group)) state.group = '';
-  const g = state.group;
-  const sorted = [...state.saved].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-  const sections = [];
-
-  if (g) {
-    const list = sorted.filter((h) => h.group === g);
-    sections.push({
-      title: 'Hosts',
-      count: String(list.length),
-      empty: list.length ? '' : 'vazio — “novo host” cria um aqui, ou mova um host pra cá pelo botão direito nele',
-      items: list.map((h) => savedTile(h, terms)),
-    });
-  } else {
-    if (state.groups.length) {
-      sections.push({
-        title: 'Grupos',
-        count: String(state.groups.length),
-        empty: '',
-        items: state.groups.map((name) => {
-          const list = sorted.filter((h) => h.group === name);
-          const on = live(list);
-          return {
-            title: name,
-            sub: list.length ? plural(list.length, 'host', 'hosts') + (on ? ` · ${on} conectado${on > 1 ? 's' : ''}` : '') : 'vazio',
-            icon: 'folder',
-            tone: toneOf(name),
-            status: on ? 'green' : '',
-            action: `grupo:${name}`,
-            menu: groupMenu(name, true),
-            edit: '',
-          };
-        }),
-      });
-    }
-    const loose = sorted.filter((h) => !h.group);
-    // Com todos os hosts em grupos, a seção sai: os grupos já são o caminho.
-    if (loose.length || !state.saved.length) {
-      sections.push({
-        title: 'Hosts',
-        count: String(loose.length),
-        empty: loose.length ? '' : 'nenhum host salvo ainda — comece por “novo host”',
-        items: loose.map((h) => savedTile(h, terms)),
-      });
-    }
-    const fromConfig = configHosts();
-    if (fromConfig.length) {
-      sections.push({
-        title: 'Do ~/.ssh/config',
-        count: String(fromConfig.length),
-        empty: '',
-        items: fromConfig.map((h) =>
-          hostTile(h, terms, {
-            title: h.alias,
-            sub: hosts.address(h),
-            connect: `config:${h.alias}`,
-            faint: true,
-            menu: [{ action: `copiar-config:${h.alias}`, label: 'copiar o comando', icon: 'copy' }],
-          }),
-        ),
-      });
-    }
-  }
-
-  // Dentro de um grupo, os números são os dele.
-  const inGroup = g ? sorted.filter((h) => h.group === g) : null;
-  const total = inGroup ? inGroup.length : state.saved.length + configHosts().length;
-  const on = inGroup ? live(inGroup) : state.live.size;
-  return {
-    head: {
-      title: g || 'Hosts',
-      sub: plural(total, 'host', 'hosts') + (on ? ` · ${on} conectado${on > 1 ? 's' : ''}` : ''),
-      newHost: g ? `novo-no-grupo:${g}` : 'novo',
+function hostFields(v, alias) {
+  const h = alias && byAlias(alias);
+  return [
+    { id: 'label', label: 'nome', placeholder: 'Ceph S1, produção, raspberry…', value: v.label, half: true },
+    { id: 'alias', label: 'alias no ~/.ssh/config', placeholder: 'vazio: o nome sem espaço', value: v.alias, half: true },
+    { id: 'hostname', label: 'endereço (HostName)', placeholder: 'exemplo.com ou 10.0.0.12', value: v.hostname },
+    { id: 'user', label: 'usuário', placeholder: 'ubuntu', value: v.user, half: true },
+    { id: 'port', label: 'porta', placeholder: '22', value: v.port, half: true },
+    { id: 'identityFile', label: 'chave privada (IdentityFile)', placeholder: '~/.ssh/id_ed25519 (vazio: a do ssh-agent)', value: v.identityFile },
+    { id: 'extra', label: 'outras diretivas', placeholder: 'ProxyJump bastion; ForwardAgent yes', value: v.extra },
+    v.cli ? { id: 'cli', label: 'opções na linha de comando (de antes do config)', value: v.cli } : null,
+    {
+      id: 'group',
+      type: 'select',
+      label: 'grupo',
+      value: v.group,
+      half: true,
+      options: [
+        { value: '', label: 'sem grupo' },
+        ...state.groups.map((g) => ({ value: g, label: g })),
+        { value: NEW_GROUP, label: 'novo grupo…' },
+      ],
     },
-    crumb: { group: g, menu: g ? groupMenu(g, false) : [] },
-    sections,
-    hint: HINT,
-  };
-}
-
-// --- o formulário (a janela ao lado) ---------------------------------------------
-
-/** O que a janela do formulário mostra agora, ou null quando não há nada pra ela. */
-function editorView() {
-  if (state.form) {
-    const h = state.form.id && state.saved.find((x) => x.id === state.form.id);
-    return { title: h ? h.name : 'novo host', blocks: formBlocks() };
-  }
-  if (state.ask && state.ask.where === 'window') {
-    return { title: state.ask.kind === 'renomear' ? 'renomear o grupo' : 'novo grupo', blocks: askBlocks('window') };
-  }
-  return null;
+    { id: 'icon', type: 'select', label: 'ícone', value: v.icon, half: true, options: distro.options(h && h.os) },
+    {
+      id: 'newGroup',
+      label: 'nome do novo grupo',
+      placeholder: 'CEPH, DB, monitoramento…',
+      value: v.newGroup,
+      required: true,
+      showIf: { field: 'group', value: NEW_GROUP },
+    },
+  ].filter(Boolean);
 }
 
 /**
- * Abre, atualiza ou fecha a janela do formulário. Fechada no x, ela leva junto
- * o formulário: o x é o cancelar.
+ * Grava o que veio do formulário: o bloco no config e o meta. Devolve o host
+ * salvo ou `{ error }`.
  */
+function saveHost(alias, values) {
+  const prev = alias ? byAlias(alias) : null;
+  const typed = { ...values };
+  if (typed.group === NEW_GROUP) {
+    typed.group = String(typed.newGroup || '').trim();
+    if (!typed.group) return { error: 'falta o nome do novo grupo' };
+  }
+  const result = hosts.normalize(typed);
+  if (result.error) return result;
+  const { host, meta } = result;
+  // As diretivas como estavam, se o campo não mudou: um `;` dentro de um
+  // ProxyCommand não vira duas.
+  if (prev && String(typed.extra || '').trim() === prev.extra.join('; ')) host.extra = prev.extra;
+  if (host.alias !== alias && byAlias(host.alias)) return { error: `já existe um host ${host.alias} no config` };
+  try {
+    sshconfig.upsert(prev ? prev.alias : null, host, prev ? prev.source : sshconfig.MAIN);
+  } catch (e) {
+    return { error: `não gravei o ~/.ssh/config: ${e.message}` };
+  }
+  const old = prev ? state.meta[prev.alias] || {} : {};
+  if (prev && prev.alias !== host.alias) {
+    delete state.meta[prev.alias];
+    history.rename(state.dataDir, prev.alias, host.alias);
+    for (const [tabId, key] of state.opened) {
+      if (key !== keyOf(prev)) continue;
+      state.retag.set(tabId, keyOf(host));
+      state.opened.set(tabId, keyOf(host));
+    }
+    saveRetag();
+    for (const c of state.cons.values()) if (c.alias === prev.alias) c.alias = host.alias;
+    if (state.cmd.alias === prev.alias) state.cmd.alias = host.alias;
+  }
+  state.meta[host.alias] = { ...old, ...meta };
+  if (meta.group) state.groups = state.groups.concat(meta.group);
+  persistMeta();
+  return { host: byAlias(host.alias) };
+}
+
+function openForm(alias, group = '', copyOf = '') {
+  const h = alias && byAlias(alias);
+  if (h && !h.editable) return openInConfig(h);
+  if (state.modal) {
+    hostModal(alias, formValues(alias, group, copyOf)).catch((e) => mx.log('formulário:', String(e.stack || e)));
+    return;
+  }
+  state.gen += 1;
+  state.editorRaise = true;
+  state.form = { alias: alias || null, values: formValues(alias, group, copyOf), gen: state.gen };
+}
+
+/**
+ * O formulário num modal (`window.form`). Um erro (porta fora da faixa, alias
+ * repetido) reabre o modal com o que foi digitado e o erro embaixo.
+ */
+async function hostModal(alias, values) {
+  const prev = alias ? byAlias(alias) : null;
+  let error = '';
+  for (;;) {
+    const answer = await mx.request('window.form', {
+      title: prev ? `editar ${prev.name}` : 'novo host',
+      fields: hostFields(values, alias),
+      buttons: [
+        prev ? { action: 'apagar', label: 'apagar', style: 'danger' } : null,
+        prev ? { action: 'duplicar', label: 'duplicar' } : null,
+        { action: 'conectar', label: 'salvar e conectar' },
+        { action: 'salvar', label: 'salvar', style: 'primary' },
+      ].filter(Boolean),
+      error,
+    });
+    if (!answer) return;
+    if (answer.action === 'apagar') return windowAction(`apagar:${prev.alias}`, {});
+    if (answer.action === 'duplicar') return windowAction(`duplicar-host:${prev.alias}`, {});
+    values = { ...values, ...(answer.values || {}) };
+    const saved = saveHost(alias, values);
+    if (saved.error) {
+      error = saved.error;
+      continue;
+    }
+    await repaint();
+    if (answer.action === 'conectar' && saved.host) await connect(saved.host);
+    return;
+  }
+}
+
+/** Um bloco com mais de um nome (`Host a b`) se edita no próprio arquivo. */
+async function openInConfig(h) {
+  try {
+    await mx.request('editor.open', { path: h.source, line: h.line });
+  } catch {
+    await mx.request('window.showBanner', { text: `${h.alias} divide o bloco com outros nomes: edite em ${h.source}, linha ${h.line}` });
+  }
+}
+
+/** O formulário numa janela ao lado, pra uma Maestria sem `window.form`. */
+function editorView() {
+  if (!state.form) return null;
+  const f = state.form;
+  const fields = hostFields(f.values, f.alias).filter((x) => !x.showIf || f.values[x.showIf.field] === x.showIf.value);
+  return {
+    title: f.alias ? `editar ${f.alias}` : 'novo host',
+    blocks: [
+      ...fields.map((x) =>
+        x.type === 'select'
+          ? { type: 'select', id: `f${f.gen}.${x.id}`, label: x.label, value: x.value, options: x.options, action: 'form-mudou' }
+          : { type: 'input', id: `f${f.gen}.${x.id}`, label: x.label, placeholder: x.placeholder, value: x.value || '', submit: 'salvar' },
+      ),
+      f.error ? { type: 'text', style: 'error', text: f.error } : null,
+      {
+        type: 'row',
+        children: [
+          { type: 'button', action: 'salvar', label: 'salvar', style: 'primary', icon: 'check' },
+          { type: 'button', action: 'salvar-conectar', label: 'salvar e conectar', icon: 'terminal' },
+          { type: 'button', action: 'cancelar', label: 'cancelar' },
+          f.alias ? { type: 'button', action: `apagar:${f.alias}`, label: 'apagar', style: 'danger' } : null,
+        ].filter(Boolean),
+      },
+    ].filter(Boolean),
+  };
+}
+
+/** O que foi digitado na janela do formulário, sem o prefixo do `gen`. */
+function typedValues(values) {
+  const prefix = `f${state.gen}.`;
+  const out = {};
+  for (const [k, v] of Object.entries(values || {})) if (k.startsWith(prefix)) out[k.slice(prefix.length)] = v;
+  return out;
+}
+
 async function syncEditor() {
   const want = editorView();
   try {
@@ -567,7 +916,6 @@ async function syncEditor() {
       return;
     }
     if (state.editorRaise || !state.editorOpen) {
-      // Ao lado da grade: a janela abre ao lado da que está em foco.
       if (!state.viewOpen && state.rfw) await open();
       await mx.request('view.open', { viewId: EDITOR, ...want });
       state.editorOpen = true;
@@ -578,197 +926,52 @@ async function syncEditor() {
     if (!still) {
       state.editorOpen = false;
       state.form = null;
-      if (state.ask && state.ask.where === 'window') state.ask = null;
     }
   } catch (e) {
     mx.log('formulário:', e.message);
   }
 }
 
-function openForm(id, group = '') {
-  if (state.modal) {
-    // Sem await: o modal espera você, e quem chamou segue redesenhando.
-    hostModal(id, group).catch((e) => mx.log('formulário:', String(e.stack || e)));
-    return;
-  }
-  state.gen += 1;
-  state.editorRaise = true;
-  const h = id && state.saved.find((x) => x.id === id);
-  state.form = { id: id || null, gen: state.gen, group: h ? h.group || '' : group };
-}
-
-/** O que foi digitado no formulário aberto, sem o prefixo do `gen`. */
-function formValues(values) {
-  const prefix = `f${state.gen}.`;
-  const out = {};
-  for (const [k, v] of Object.entries(values || {})) if (k.startsWith(prefix)) out[k.slice(prefix.length)] = v;
-  return out;
-}
-
-/** Salva o formulário. Devolve o host salvo, ou null quando voltou com erro. */
-function submit(values) {
-  const previous = state.form.id ? state.saved.find((h) => h.id === state.form.id) : null;
-  const typed = formValues(values);
-  if (typed.group === NEW_GROUP) {
-    typed.group = String(typed.newGroup || '').trim();
-    if (!typed.group) {
-      state.form.error = 'falta o nome do novo grupo';
-      return null;
-    }
-  }
-  const { host, error } = hosts.normalize({
-    ...typed,
-    id: previous && previous.id,
-    lastUsed: previous && previous.lastUsed,
-  });
-  if (error) {
-    state.form.error = error;
-    return null;
-  }
-  const i = state.saved.findIndex((h) => h.id === host.id);
-  if (i >= 0) state.saved[i] = host;
-  else state.saved.push(host);
-  persist();
-  state.form = null;
-  return host;
-}
-
-/** Os campos do host no modal, com o que já estava (ou o que voltou com erro). */
-function hostFields(v) {
-  return [
-    { id: 'name', label: 'nome', placeholder: 'produção, raspberry, vps…', value: v.name },
-    { id: 'host', label: 'host', placeholder: 'exemplo.com ou 10.0.0.12', value: v.host, required: true },
-    { id: 'user', label: 'usuário', placeholder: 'root', value: v.user, half: true },
-    { id: 'port', label: 'porta', placeholder: '22', value: v.port, half: true },
-    { id: 'key', label: 'chave privada', placeholder: '~/.ssh/id_ed25519 (vazio: a do ssh-agent)', value: v.key },
-    { id: 'options', label: 'opções do ssh', placeholder: '-A, -L 5432:localhost:5432, -o …', value: v.options },
-    {
-      id: 'group',
-      type: 'select',
-      label: 'grupo',
-      value: v.group,
-      options: [
-        { value: '', label: 'sem grupo' },
-        ...state.groups.map((g) => ({ value: g, label: g })),
-        { value: NEW_GROUP, label: 'novo grupo…' },
-      ],
-    },
-    {
-      id: 'newGroup',
-      label: 'nome do novo grupo',
-      placeholder: 'trabalho, pessoal, clientes…',
-      value: v.newGroup,
-      required: true,
-      showIf: { field: 'group', value: NEW_GROUP },
-    },
-  ];
-}
-
-/**
- * O formulário de um host num modal (`window.form`): o novo, ou o de [id]. Uma
- * porta fora da faixa reabre o modal com o que foi digitado e o erro embaixo.
- */
-async function hostModal(id, group = '') {
-  reload();
-  const prev = id ? state.saved.find((h) => h.id === id) : null;
-  if (id && !prev) return;
-  let values = {
-    name: prev ? prev.name : '',
-    host: prev ? prev.host : '',
-    user: prev ? prev.user : '',
-    port: prev && prev.port ? String(prev.port) : '',
-    key: prev ? prev.key : '',
-    options: prev ? prev.options : '',
-    group: prev ? prev.group || '' : group,
-    newGroup: '',
-  };
-  let error = '';
-  for (;;) {
-    const answer = await mx.request('window.form', {
-      title: prev ? `editar ${prev.name}` : 'novo host',
-      fields: hostFields(values),
-      buttons: [
-        prev ? { action: 'apagar', label: 'apagar', style: 'danger' } : null,
-        prev ? { action: 'duplicar', label: 'duplicar' } : null,
-        { action: 'conectar', label: 'salvar e conectar' },
-        { action: 'salvar', label: 'salvar', style: 'primary' },
-      ].filter(Boolean),
-      error,
-    });
-    if (!answer) return;
-    if (answer.action === 'apagar') return windowAction(`apagar:${prev.id}`, {});
-    if (answer.action === 'duplicar') return windowAction(`duplicar-host:${prev.id}`, {});
-    values = answer.values || {};
-    const typed = { ...values };
-    if (typed.group === NEW_GROUP) typed.group = String(typed.newGroup || '').trim();
-    const result = hosts.normalize({ ...typed, id: prev && prev.id, lastUsed: prev && prev.lastUsed });
-    if (result.error) {
-      error = result.error;
-      continue;
-    }
-    const i = state.saved.findIndex((h) => h.id === result.host.id);
-    if (i >= 0) state.saved[i] = result.host;
-    else state.saved.push(result.host);
-    persist();
-    await repaint();
-    if (answer.action === 'conectar') await connect(result.host);
-    return;
-  }
-}
-
 // --- grupos --------------------------------------------------------------------
 
-async function askGroup(kind, where, extra = {}) {
-  if (state.input) {
-    const name = await mx.request('window.input', {
-      title: kind === 'renomear' ? `renomear o grupo ${extra.group}` : 'novo grupo',
-      placeholder: 'trabalho, pessoal, clientes…',
-      value: kind === 'renomear' ? extra.group : '',
-    });
-    if (name) applyGroupName({ kind, ...extra }, String(name).trim());
-    return;
+/** Um texto curto: o campo rápido, senão o modal, senão avisa que esta Maestria não pergunta. */
+async function askText(title, placeholder, value = '') {
+  if (state.input) return mx.request('window.input', { title, placeholder, value });
+  if (state.modal) {
+    const answer = await mx.request('window.form', { title, fields: [{ id: 'text', label: title, placeholder, value, required: true }] });
+    return answer && answer.values && String(answer.values.text || '').trim();
   }
-  state.gen += 1;
-  if (where === 'window') state.editorRaise = true;
-  state.ask = { kind, where, gen: state.gen, ...extra };
+  await mx.request('window.showBanner', { text: 'esta Maestria não tem campo de texto: atualize o app pra isso' });
+  return null;
 }
 
-/** Responde a pergunta aberta com o que foi digitado. */
-function answerAsk(values) {
-  const a = state.ask;
-  const name = String((values || {})[`ask${a.gen}`] || '').trim();
-  if (!name) {
-    a.error = 'falta o nome';
-    return;
-  }
-  applyGroupName(a, name);
-  state.ask = null;
+const askName = (title, value = '') => askText(title, 'CEPH, DB, monitoramento…', value);
+
+async function newGroup(alias) {
+  const name = String((await askName('novo grupo')) || '').trim();
+  if (!name) return;
+  state.groups = state.groups.concat(name);
+  if (alias) metaOf(alias).group = name;
+  persistMeta();
 }
 
-/** Cria o grupo (e põe nele o host que pediu), ou renomeia o de `a.group`. */
-function applyGroupName(a, name) {
-  if (a.kind === 'renomear') {
-    if (name !== a.group) {
-      // Um nome que já existe junta os dois grupos.
-      for (const h of state.saved) if (h.group === a.group) h.group = name;
-      // A grade aberta no grupo segue o nome novo, em vez de voltar pra raiz.
-      if (state.group === a.group) state.group = name;
-      state.groups = state.groups.filter((g) => g !== a.group).concat(name);
-      if (state.collapsed.has(sectionKey(a.group))) {
-        state.collapsed.delete(sectionKey(a.group));
-        setCollapsed(sectionKey(name), true);
-      }
-    }
-  } else {
-    state.groups = state.groups.concat(name);
-    const h = a.hostId && state.saved.find((x) => x.id === a.hostId);
-    if (h) h.group = name;
+async function renameGroup(g) {
+  const name = String((await askName(`renomear o grupo ${g}`, g)) || '').trim();
+  if (!name || name === g) return;
+  // Um nome que já existe junta os dois grupos.
+  for (const m of Object.values(state.meta)) if (m.group === g) m.group = name;
+  if (state.group === g) state.group = name;
+  state.groups = state.groups.filter((x) => x !== g).concat(name);
+  if (state.collapsed.has(sectionKey(g))) {
+    state.collapsed.delete(sectionKey(g));
+    setCollapsed(sectionKey(name), true);
   }
-  persist();
+  hosts.saveGroups(state.dataDir, state.groups);
+  persistMeta();
 }
 
 /** "mover pro grupo…": os outros grupos, sem grupo e um novo. */
-async function moveHost(h, where) {
+async function moveHost(h) {
   const items = [
     ...state.groups.filter((g) => g !== h.group).map((g) => ({ value: `g:${g}`, label: g })),
     h.group ? { value: 'g:', label: 'sem grupo' } : null,
@@ -776,13 +979,13 @@ async function moveHost(h, where) {
   ].filter(Boolean);
   const choice = await mx.request('window.pick', { title: `mover ${h.name} pro grupo`, placeholder: 'grupo', items });
   if (!choice) return;
-  if (choice === 'novo') return askGroup('novo-grupo', where, { hostId: h.id });
-  h.group = choice.slice(2);
-  persist();
+  if (choice === 'novo') return newGroup(h.alias);
+  metaOf(h.alias).group = choice.slice(2);
+  persistMeta();
 }
 
 async function deleteGroup(g) {
-  const n = state.saved.filter((h) => h.group === g).length;
+  const n = state.list.filter((h) => h.group === g).length;
   if (n) {
     const sure = await mx.request('window.pick', {
       title: `apagar o grupo ${g}?`,
@@ -793,30 +996,27 @@ async function deleteGroup(g) {
     });
     if (sure !== 'sim') return;
   }
-  for (const h of state.saved) if (h.group === g) h.group = '';
+  for (const m of Object.values(state.meta)) if (m.group === g) m.group = '';
   state.groups = state.groups.filter((x) => x !== g);
+  hosts.saveGroups(state.dataDir, state.groups);
   setCollapsed(sectionKey(g), false);
-  persist();
+  persistMeta();
 }
 
+// --- as ações ---------------------------------------------------------------------
+
 /**
- * As ações de grupo, iguais na janela e na aba. Devolve true quando a ação era
- * de grupo (e já redesenhou tudo).
+ * As ações iguais na janela, nos cartões e na aba. Devolve true quando a ação
+ * era uma delas (e já redesenhou o que precisava).
  */
-async function groupAction(verb, arg, values, where) {
-  const byId = (id) => state.saved.find((h) => h.id === id);
+async function sharedAction(verb, arg) {
+  const h = byAlias(arg);
   switch (verb) {
     case 'novo-grupo':
-      await askGroup('novo-grupo', where);
+      await newGroup();
       break;
     case 'renomear':
-      if (state.groups.includes(arg)) await askGroup('renomear', where, { group: arg });
-      break;
-    case 'ask-ok':
-      if (state.ask) answerAsk(values);
-      break;
-    case 'ask-cancelar':
-      state.ask = null;
+      if (state.groups.includes(arg)) await renameGroup(arg);
       break;
     case 'recolher':
       setCollapsed(arg, !state.collapsed.has(arg));
@@ -824,18 +1024,50 @@ async function groupAction(verb, arg, values, where) {
     case 'apagar-grupo':
       await deleteGroup(arg);
       break;
-    case 'mover': {
-      const h = byId(arg);
-      if (h) await moveHost(h, where);
+    case 'mover':
+      if (h) await moveHost(h);
       break;
-    }
     case 'novo-no-grupo':
       openForm(null, arg);
-      // O formulário abre ao lado da janela de hosts; da aba, ela vem junto.
-      if (!state.viewOpen) await open();
+      if (!state.modal && !state.viewOpen) await open();
       break;
+    case 'novo':
+      openForm(null);
+      if (!state.modal && !state.viewOpen) await open();
+      break;
+    case 'editar':
+      if (h) openForm(arg);
+      break;
+    case 'duplicar-host':
+      if (h) openForm(null, h.group || '', arg);
+      break;
+    case 'comandos':
+      if (h) await openCommands(arg);
+      return true;
+    case 'apagar': {
+      if (!h || !h.editable) break;
+      const sure = await mx.request('window.pick', {
+        title: `apagar ${h.name}?`,
+        items: [
+          { value: 'nao', label: 'não, deixa' },
+          { value: 'sim', label: `sim, apagar ${h.name}`, detail: `tira o bloco Host ${h.alias} de ${h.source.replace(hosts.HOME, '~')}` },
+        ],
+      });
+      if (sure !== 'sim') break;
+      try {
+        sshconfig.remove(h.alias, h.source);
+      } catch (e) {
+        await mx.request('window.showBanner', { text: `não gravei o config: ${e.message}`, sticky: true });
+        break;
+      }
+      delete state.meta[h.alias];
+      history.drop(state.dataDir, h.alias);
+      state.form = null;
+      persistMeta();
+      break;
+    }
     default:
-      return false;
+      return sessionAction(verb, arg);
   }
   await redraw();
   return true;
@@ -843,9 +1075,8 @@ async function groupAction(verb, arg, values, where) {
 
 async function windowAction(action, values) {
   const [verb, arg] = [action.split(':')[0], action.slice(action.indexOf(':') + 1)];
-  if (await groupAction(verb, arg, values, 'window')) return;
-  if (await sessionAction(verb, arg)) return;
-  const byId = (id) => state.saved.find((h) => h.id === id);
+  if (verb.startsWith('cmd-')) return commandAction(verb, arg, values);
+  if (await sharedAction(verb, arg)) return;
   switch (verb) {
     case 'grupo':
       state.group = arg;
@@ -859,67 +1090,31 @@ async function windowAction(action, values) {
       reload();
       await syncSessions();
       break;
-    case 'novo':
-      openForm(null);
-      break;
-    case 'form-grupo':
-      // Trocou o grupo no formulário: o "novo grupo…" mostra o campo do nome.
-      if (state.form) state.form.group = formValues(values).group || '';
-      break;
-    case 'editar':
-      if (byId(arg)) openForm(arg);
-      break;
-    case 'lapis':
-      state.editing = !state.editing;
-      if (!state.editing) state.form = null;
+    case 'form-mudou':
+      if (state.form) state.form.values = { ...state.form.values, ...typedValues(values) };
       break;
     case 'cancelar':
       state.form = null;
       break;
     case 'salvar':
-      submit(values);
-      break;
     case 'salvar-conectar': {
-      const h = submit(values);
-      if (h) {
-        state.editing = false;
-        // Fecha o formulário antes: o terminal abre no lugar que ele deixa.
-        await redraw();
-        return connect(h);
+      if (!state.form) break;
+      state.form.values = { ...state.form.values, ...typedValues(values) };
+      const saved = saveHost(state.form.alias, state.form.values);
+      if (saved.error) {
+        state.form.error = saved.error;
+        break;
       }
-      break;
-    }
-    case 'duplicar-host': {
-      const h = byId(arg);
-      if (!h) break;
-      const copy = { ...h, id: undefined, name: `${h.name} (cópia)`, lastUsed: null };
-      const { host } = hosts.normalize(copy);
-      state.saved.push(host);
-      persist();
-      openForm(host.id);
-      break;
-    }
-    case 'apagar': {
-      const h = byId(arg);
-      if (!h) break;
-      const sure = await mx.request('window.pick', {
-        title: `apagar ${h.name}?`,
-        items: [
-          { value: 'nao', label: 'não, deixa' },
-          { value: 'sim', label: `sim, apagar ${h.name}`, detail: hosts.address(h) },
-        ],
-      });
-      if (sure !== 'sim') break;
-      state.saved = state.saved.filter((x) => x.id !== h.id);
-      persist();
       state.form = null;
-      if (!state.saved.length) state.editing = false;
+      if (verb === 'salvar-conectar' && saved.host) {
+        await redraw();
+        return connect(saved.host);
+      }
       break;
     }
     default:
       mx.log('ação desconhecida:', action);
   }
-  // Salvar, apagar e duplicar mudam a lista da aba também.
   await redraw();
 }
 
@@ -928,7 +1123,7 @@ async function windowAction(action, values) {
 /**
  * Relê as sessões e fica com os terminais do plugin: os de pé em `live`, os
  * que o ssh já deixou em `dead`. Um terminal é nosso pelo `owner`, e o host
- * dele pelo `tag` -- os dois voltam no sessions.list.
+ * dele pelo `tag`.
  */
 async function syncSessions() {
   let list;
@@ -943,9 +1138,62 @@ async function syncSessions() {
   state.dead = new Map();
   for (const s of Array.isArray(list) ? list : []) {
     if (s.owner !== PLUGIN_ID || !s.tag) continue;
-    state.opened.set(s.id, s.tag);
+    const key = state.retag.get(s.id) || normalizeKey(s.tag);
+    state.opened.set(s.id, key);
     (s.exited ? state.dead : state.live).set(s.id, s);
+    // Um plugin reiniciado reencontra os painéis de conexão pelo terminal embutido.
+    const host = s.embedded && hostByKey(key);
+    if (host && !state.cons.has(conScope(s.id))) state.cons.set(conScope(s.id), newCon(s.id, host.alias));
   }
+  for (const [scope, c] of state.cons) if (!state.opened.has(c.tabId)) dropCon(scope);
+  // Os terminais que já fecharam não precisam mais do nome novo.
+  const before = state.retag.size;
+  for (const tabId of [...state.retag.keys()]) if (!state.opened.has(tabId)) state.retag.delete(tabId);
+  if (state.retag.size !== before) saveRetag();
+}
+
+// O retag vai pro disco: um plugin reiniciado ainda acha o host renomeado pelo terminal dele.
+const retagFile = () => path.join(state.dataDir, 'retag.json');
+
+function saveRetag() {
+  try {
+    fs.mkdirSync(state.dataDir, { recursive: true });
+    fs.writeFileSync(retagFile(), JSON.stringify(Object.fromEntries(state.retag)) + '\n');
+  } catch (e) {
+    mx.log('retag:', e.message);
+  }
+}
+
+function loadRetag() {
+  try {
+    state.retag = new Map(Object.entries(JSON.parse(fs.readFileSync(retagFile(), 'utf8'))));
+  } catch {
+    state.retag = new Map();
+  }
+}
+
+/** Vai pro terminal: o painel da conexão, quando ele mora num, ou o próprio painel. */
+async function focusTab(tabId) {
+  if (state.cons.has(conScope(tabId))) return showCon(conScope(tabId));
+  await mx.request('session.focus', { tabId });
+}
+
+/** Fecha o terminal: o painel da conexão leva o terminal junto. */
+async function closeTab(tabId) {
+  const scope = conScope(tabId);
+  if (!state.cons.has(scope)) return closeTerm(tabId);
+  dropCon(scope);
+  try {
+    await mx.request('view.close', { viewId: scope });
+  } catch (e) {
+    mx.log('view.close:', e.message);
+  }
+}
+
+/** Um `s:<id>` de antes do config vira o `c:<alias>` do host migrado. */
+function normalizeKey(tag) {
+  if (tag.startsWith('s:') && state.migrated[tag.slice(2)]) return `c:${state.migrated[tag.slice(2)]}`;
+  return tag;
 }
 
 /** chave do host → os tabIds dos terminais dele, de pé e caídos. */
@@ -965,28 +1213,26 @@ function matches(filter, ...texts) {
 }
 
 /**
- * Uma linha da aba: o host. Sem terminal, clicar conecta. Com terminal de pé,
- * a linha *é* a conexão: verde, e clicar vai pra ela (e pra próxima, a cada
- * clique, quando há mais de uma). Com o ssh caído, vermelha: clicar mostra o
- * terminal com o motivo.
- *
- * No hover, no máximo duas coisas -- a que mais se faz naquele estado e o
- * fechar. O resto vai pro botão direito: com cinco ícones a linha ficava sem
- * lugar onde clicar.
+ * Uma linha da aba (e o comportamento de um cartão): sem terminal, clicar
+ * conecta. Com terminal de pé, verde, e clicar vai pra ele (e pro próximo, a
+ * cada clique). Com o ssh caído, vermelha: clicar mostra o terminal com o motivo.
  */
-function sidebarItem(host, terms, { title, subtitle, connect, menu, idle }) {
-  const key = keyOf(host);
+function sidebarItem(h, terms) {
+  const key = keyOf(h);
   const { live = [], dead = [] } = terms.get(key) || {};
-  const base = { title, subtitle, icon: 'server' };
+  const menu = hostMenu(h);
+  const look = distro.look(h);
+  const base = { title: h.name, subtitle: hosts.address(h), avatar: { svg: look.svg } };
   if (live.length) {
     const last = live[live.length - 1];
     return {
       ...base,
       tone: 'green',
+      status: 'green',
       badge: live.length > 1 ? `${live.length} abertos` : 'conectado',
       action: `ir:${key}`,
       actions: [
-        { action: `duplicar:${key}`, icon: 'add', tooltip: 'abrir outra conexão' },
+        { action: `comandos:${h.alias}`, icon: 'terminal', tooltip: 'comandos deste host' },
         { action: `fechar:${last}`, icon: 'stop', tooltip: 'fechar a conexão', tone: 'red' },
       ],
       menu: [
@@ -1003,6 +1249,7 @@ function sidebarItem(host, terms, { title, subtitle, connect, menu, idle }) {
     return {
       ...base,
       tone: 'red',
+      status: 'red',
       badge: 'caiu',
       action: `focar:${last}`,
       actions: [
@@ -1020,116 +1267,87 @@ function sidebarItem(host, terms, { title, subtitle, connect, menu, idle }) {
   }
   return {
     ...base,
-    tone: idle,
-    badge: ago(host.lastUsed),
-    action: connect,
-    menu: [{ action: connect, label: 'conectar', icon: 'play' }, { type: 'divider' }, ...menu],
+    tone: look.color ? 'accent' : 'faint',
+    badge: ago(h.lastUsed),
+    action: `conectar:${h.alias}`,
+    menu: [{ action: `conectar:${h.alias}`, label: 'conectar', icon: 'play' }, { type: 'divider' }, ...menu],
   };
 }
 
-function sidebarBlocks() {
-  const terms = byHost();
-  const fromConfig = configHosts();
-  const total = state.saved.length + fromConfig.length;
-  const filter = state.filter.trim().toLowerCase();
-  const out = [];
-
-  out.push({
-    type: 'row',
-    children: [
-      { type: 'button', action: 'novo', icon: 'add', style: 'icon', tooltip: 'novo host' },
-      { type: 'button', action: 'grupos', icon: 'folder', style: 'icon', tooltip: 'grupos: criar, renomear, apagar' },
-      { type: 'button', action: 'atualizar', icon: 'refresh', style: 'icon', tooltip: 'reler os hosts' },
-      { type: 'button', action: 'janela', icon: 'open', style: 'icon', tooltip: 'abrir a janela de hosts' },
-    ],
-  });
-  out.push(...askBlocks('sidebar'));
-  if (total > FILTER_FROM || filter) {
-    out.push({ type: 'input', id: 'filtro', placeholder: 'filtrar (enter)', submit: 'filtrar' });
+/**
+ * Os hosts por grupo, na ordem da tela: os sem grupo primeiro (só quando há
+ * algum), e os grupos em ordem alfabética. Com `withEmpty` os grupos sem host
+ * entram também, vazios.
+ */
+function groupHosts(list, withEmpty) {
+  const out = new Map();
+  if (list.some((h) => !h.group)) out.set('', []);
+  for (const g of state.groups) if (withEmpty || list.some((h) => h.group === g)) out.set(g, []);
+  for (const h of list) {
+    const g = h.group || '';
+    if (!out.has(g)) out.set(g, []);
+    out.get(g).push(h);
   }
+  return out;
+}
 
-  const saved = [...state.saved]
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
-    .filter((h) => matches(filter, h.name, h.host, h.user, h.group));
-  // Os sem grupo em "salvos", e cada grupo numa seção própria, em ordem
-  // alfabética. Filtrando, os grupos sem resultado somem.
-  const byGroup = groupHosts(saved, !filter);
-  if (!byGroup.size) byGroup.set('', []);
-  for (const [g, list] of byGroup) {
-    // Filtrando, tudo aberto: o filtro é pra achar, e um grupo fechado esconderia o achado.
+/** As seções de hosts da aba (e da janela em blocos), um grupo por seção. */
+function hostListBlocks(flat) {
+  const terms = byHost();
+  const filter = state.filter.trim().toLowerCase();
+  const list = state.list.filter((h) => matches(filter, h.name, h.alias, h.hostname, h.user, h.group));
+  const groups = groupHosts(list, !filter);
+  if (!groups.size) groups.set('', []);
+  const out = [];
+  for (const [g, items] of groups) {
+    // Filtrando, tudo aberto: um grupo fechado esconderia o achado.
     const closed = !filter && state.collapsed.has(sectionKey(g));
-    out.push(sectionBlock(g || 'salvos', sectionKey(g), list, terms, filter));
+    out.push(sectionBlock(g || 'hosts', sectionKey(g), items, terms, filter));
     if (closed) continue;
     out.push({
       type: 'list',
-      flat: true,
-      empty: filter
-        ? 'nada com esse filtro'
-        : g
-          ? 'vazio — botão direito num host, “mover pro grupo…”'
-          : 'nenhum host salvo — o + cria um',
-      items: list.map((h) =>
-        sidebarItem(h, terms, {
-          title: h.name,
-          subtitle: hosts.address(h),
-          connect: `conectar:${h.id}`,
-          idle: 'accent',
-          menu: [
-            { action: `editar:${h.id}`, label: 'editar…', icon: 'edit' },
-            { action: `mover:${h.id}`, label: 'mover pro grupo…', icon: 'folder' },
-            { action: `copiar:${h.id}`, label: 'copiar o comando', icon: 'copy' },
-            { type: 'divider' },
-            { action: `apagar:${h.id}`, label: 'apagar', icon: 'remove', tone: 'red' },
-          ],
-        }),
-      ),
-    });
-  }
-
-  const config = fromConfig.filter((h) => matches(filter, h.alias, h.hostname, h.user));
-  if (config.length) {
-    out.push(sectionBlock('~/.ssh/config', 'config', config, terms, filter));
-  }
-  if (config.length && (filter || !state.collapsed.has('config'))) {
-    out.push({
-      type: 'list',
-      flat: true,
-      items: config.map((h) =>
-        sidebarItem(h, terms, {
-          title: h.alias,
-          subtitle: hosts.address(h) === h.alias ? undefined : hosts.address(h),
-          connect: `config:${h.alias}`,
-          idle: 'faint',
-          menu: [{ action: `copiar-config:${h.alias}`, label: 'copiar o comando', icon: 'copy' }],
-        }),
-      ),
+      flat,
+      empty: filter ? 'nada com esse filtro' : g ? 'vazio — botão direito num host, “mover pro grupo…”' : 'nenhum host — o + cria um',
+      items: items.map((h) => sidebarItem(h, terms)),
     });
   }
   return out;
 }
 
+function sidebarBlocks() {
+  const out = [
+    {
+      type: 'row',
+      children: [
+        { type: 'button', action: 'novo', icon: 'add', style: 'icon', tooltip: 'novo host' },
+        { type: 'button', action: 'grupos', icon: 'folder', style: 'icon', tooltip: 'grupos: criar, renomear, apagar' },
+        { type: 'button', action: 'atualizar', icon: 'refresh', style: 'icon', tooltip: 'reler o ~/.ssh/config' },
+        { type: 'button', action: 'janela', icon: 'open', style: 'icon', tooltip: 'abrir a janela de hosts' },
+      ],
+    },
+  ];
+  if (state.list.length > FILTER_FROM || state.filter) {
+    out.push({ type: 'input', id: 'filtro', icon: 'search', placeholder: 'filtrar (enter)', value: state.filter, submit: 'filtrar' });
+  }
+  return [...out, ...hostListBlocks(true)];
+}
+
 /**
- * A régua de uma seção da aba, com a seta de abrir e fechar. Fechada com um
- * host conectado lá dentro, ela diz quantos -- senão a conexão some da vista.
+ * A régua de uma seção, com a seta de abrir e fechar. Fechada com um host
+ * conectado lá dentro, ela diz quantos -- senão a conexão some da vista.
  */
 function sectionBlock(text, key, list, terms, filter) {
   if (filter) return { type: 'section', text, count: list.length };
   const closed = state.collapsed.has(key);
   const live = list.filter((h) => terms.get(keyOf(h))?.live.length).length;
-  const count = closed && live ? `${list.length} · ${live} conectado${live > 1 ? 's' : ''}` : list.length;
+  const count = closed && live ? `${list.length}${connected(live)}` : list.length;
   return { type: 'section', text, count, collapsed: closed, action: `recolher:${key}` };
 }
 
-/**
- * Manda a aba. Com a aba escondida também: ela aparece pronta. O selo vai
- * vazio, que é o que tira o número de conexões que uma versão anterior punha
- * no ícone.
- */
 async function pushSidebar() {
   try {
     await mx.request('sidebar.update', { blocks: sidebarBlocks(), badge: '' });
   } catch (e) {
-    // Uma Maestria sem a aba da lateral: a janela continua servindo.
     mx.log('sidebar.update:', e.message);
   }
 }
@@ -1137,61 +1355,37 @@ async function pushSidebar() {
 async function sidebarAction(action, values) {
   const [verb, arg] = [action.split(':')[0], action.slice(action.indexOf(':') + 1)];
   if (values && typeof values.filtro === 'string') state.filter = values.filtro;
-  if (await groupAction(verb, arg, values, 'sidebar')) return;
-  if (await sessionAction(verb, arg)) return;
-  const byId = (id) => state.saved.find((h) => h.id === id);
   switch (verb) {
-    case 'novo':
-    case 'editar':
-      // O formulário mora numa janela, ao lado da de hosts: a aba abre as duas.
-      reload();
-      if (verb === 'editar' && !byId(arg)) break;
-      openForm(verb === 'editar' ? arg : null);
-      if (!state.viewOpen) await open();
-      return redraw();
     case 'janela':
-      await open();
-      return;
+      return open();
     case 'grupos':
-      // A régua de uma seção não tem menu: os grupos se mexem por aqui.
       return pickGroup();
-    case 'apagar':
-      // A mesma confirmação da janela, que já redesenha as duas.
-      return windowAction(action, values);
     case 'atualizar':
       reload();
       await syncSessions();
-      break;
+      return repaint();
     case 'filtrar':
-      break;
+      return pushSidebar();
     default:
-      mx.log('ação desconhecida na aba:', action);
+      if (!(await sharedAction(verb, arg))) mx.log('ação desconhecida na aba:', action);
   }
-  await pushSidebar();
 }
 
 /**
- * O que um host faz, igual na aba e nos cartões da janela: conectar, ir pro
- * terminal, abrir outra conexão, reconectar, fechar e copiar o comando. Devolve
- * true quando a ação era dessas (e já redesenhou o que precisava).
+ * O que um host faz, igual na aba e nos cartões: conectar, ir pro terminal,
+ * abrir outra conexão, reconectar, fechar e copiar o comando.
  */
 async function sessionAction(verb, arg) {
-  const byId = (id) => state.saved.find((h) => h.id === id);
   switch (verb) {
     case 'conectar': {
-      const h = byId(arg);
-      if (h) await connect(h);
+      const h = byAlias(arg) || { alias: arg, name: arg };
+      await connect(h);
       return true;
     }
-    case 'config':
-      await connect({ alias: arg });
-      return true;
     case 'focar':
-      await mx.request('session.focus', { tabId: arg });
+      await focusTab(arg);
       return true;
     case 'ir': {
-      // A próxima conexão do host depois da que está em foco: com duas, cada
-      // clique alterna entre elas.
       await syncSessions();
       const live = byHost().get(arg)?.live || [];
       if (!live.length) {
@@ -1199,7 +1393,7 @@ async function sessionAction(verb, arg) {
         return true;
       }
       const at = live.findIndex((id) => state.live.get(id)?.focused);
-      await mx.request('session.focus', { tabId: live[(at + 1) % live.length] });
+      await focusTab(live[(at + 1) % live.length]);
       return true;
     }
     case 'duplicar':
@@ -1207,22 +1401,19 @@ async function sessionAction(verb, arg) {
       const key = verb === 'duplicar' ? arg : state.opened.get(arg);
       const host = key && hostByKey(key);
       if (!host) return true;
-      // Reconectar troca o terminal caído por um novo, no lugar dele na lista.
-      if (verb === 'reconectar') await closeTerm(arg);
+      if (verb === 'reconectar') await closeTab(arg);
       await connect(host);
       return true;
     }
     case 'fechar':
-      await closeTerm(arg);
+      await closeTab(arg);
       await syncSessions();
       await repaint();
       return true;
-    case 'copiar':
-    case 'copiar-config': {
-      const h = verb === 'copiar' ? byId(arg) : { alias: arg };
-      if (!h) return true;
+    case 'copiar': {
+      const h = byAlias(arg) || { alias: arg };
       await mx.request('clipboard.write', { text: hosts.commandFor(h, state.settings) });
-      await mx.request('window.showBanner', { text: `copiei o comando de ${labelOf(h)}` });
+      await mx.request('window.showBanner', { text: `copiei o comando de ${h.name || h.alias}` });
       return true;
     }
     default:
@@ -1239,13 +1430,13 @@ async function pickGroup() {
     items: [
       { value: 'novo', label: 'novo grupo…' },
       ...state.groups.map((x) => {
-        const n = state.saved.filter((h) => h.group === x).length;
-        return { value: `g:${x}`, label: x, detail: n ? `${n} ${n === 1 ? 'host' : 'hosts'}` : 'vazio' };
+        const n = state.list.filter((h) => h.group === x).length;
+        return { value: `g:${x}`, label: x, detail: n ? plural(n, 'host', 'hosts') : 'vazio' };
       }),
     ],
   });
   if (!g) return;
-  if (g === 'novo') return groupAction('novo-grupo', '', {}, 'sidebar');
+  if (g === 'novo') return sharedAction('novo-grupo', '');
   const name = g.slice(2);
   const what = await mx.request('window.pick', {
     title: name,
@@ -1255,14 +1446,15 @@ async function pickGroup() {
       { value: 'apagar-grupo', label: 'apagar o grupo', detail: 'os hosts dele ficam sem grupo' },
     ],
   });
-  if (what) await groupAction(what, name, {}, 'sidebar');
+  if (what) await sharedAction(what, name);
 }
 
-/** O host de uma chave do mapa (`s:<id>` ou `c:<alias>`). */
+/** O host de uma chave do mapa (`c:<alias>`). */
 function hostByKey(key) {
-  if (key.startsWith('s:')) return state.saved.find((h) => h.id === key.slice(2));
-  if (key.startsWith('c:')) return { alias: key.slice(2) };
-  return undefined;
+  const k = normalizeKey(key);
+  if (!k.startsWith('c:')) return undefined;
+  const alias = k.slice(2);
+  return byAlias(alias) || { alias, name: alias };
 }
 
 async function closeTerm(tabId) {
@@ -1273,33 +1465,68 @@ async function closeTerm(tabId) {
   }
 }
 
+/** O seletor de host: os mais recentes primeiro. */
+async function pickHost(title) {
+  reload();
+  if (!state.list.length) return null;
+  const recent = [...state.list].sort((a, b) => String(b.lastUsed || '').localeCompare(String(a.lastUsed || '')));
+  const choice = await mx.request('window.pick', {
+    title,
+    placeholder: 'nome, alias ou endereço',
+    items: recent.map((h) => ({ value: h.alias, label: h.group ? `${h.name} · ${h.group}` : h.name, detail: hosts.address(h) })),
+  });
+  return choice ? byAlias(choice) : null;
+}
+
+/** O seletor rápido: digita um pedaço do nome ou do endereço, enter, conectado. */
+async function pickAndConnect() {
+  const h = await pickHost('conectar por ssh');
+  if (h) await connect(h);
+  else if (!state.list.length) {
+    await open();
+    await mx.request('window.showBanner', { text: 'nenhum host ainda — crie um aqui' });
+  }
+}
+
 mx.onNotification('view.action', async ({ viewId, action, values = {} }) => {
   // Na grade em widgets, o clique manda a ação em `a`, e o menu em `action`.
   if (viewId === VIEW && action === 'act') return windowAction(values.a || values.action, values);
-  if (viewId === VIEW || viewId === EDITOR) return windowAction(action, values);
+  // Um plugin reiniciado só conhece os painéis de conexão depois de reler as sessões.
+  if (viewId.startsWith('con:') && !state.cons.has(viewId)) await syncSessions();
+  if (viewId === VIEW || viewId === EDITOR || viewId === COMMANDS || state.cons.has(viewId)) return windowAction(action, values);
   if (viewId === SIDEBAR) return sidebarAction(action, values);
 });
 
+/** O ssh de um host saiu: o shell de lá acabou de gravar o histórico. */
+function afterExit(tabId) {
+  const host = state.opened.has(tabId) && hostByKey(state.opened.get(tabId));
+  if (host) setTimeout(() => fetchHistory(host.alias), 1000);
+}
+
 mx.onNotification('event', async (e) => {
   switch (e.type) {
+    case 'view.closed':
+      if (e.viewId === COMMANDS) closeCommands();
+      if (state.cons.has(e.viewId)) dropCon(e.viewId);
+      return;
     case 'sidebar.shown':
-      // A cada clique no ícone: relê os hosts e os terminais.
       reload();
       await syncSessions();
+      scanSystems().catch((err) => mx.log('varredura:', String(err.stack || err)));
       return pushSidebar();
     case 'session.closed':
       if (!state.opened.has(e.tabId)) return;
+      if (!state.dead.has(e.tabId)) afterExit(e.tabId);
       state.opened.delete(e.tabId);
       state.live.delete(e.tabId);
       state.dead.delete(e.tabId);
       return repaint();
     case 'session.exited':
-      // O ssh saiu: a linha do host fica vermelha, com o terminal esperando.
       if (!state.opened.has(e.tabId)) return;
+      afterExit(e.tabId);
       await syncSessions();
       return repaint();
     case 'session.status':
-      // O ssh saiu e o painel ficou: o sessions.list diz se ele ainda está de pé.
       if (!state.opened.has(e.tabId)) return;
       await syncSessions();
       return repaint();
@@ -1307,40 +1534,21 @@ mx.onNotification('event', async (e) => {
   }
 });
 
-/** O seletor rápido: digita um pedaço do nome ou do endereço, enter, conectado. */
-async function pickAndConnect() {
-  reload();
-  const recent = [...state.saved].sort((a, b) => String(b.lastUsed || '').localeCompare(String(a.lastUsed || '')));
-  const items = [
-    ...recent.map((h) => ({
-      value: `s:${h.id}`,
-      label: h.group ? `${h.name} · ${h.group}` : h.name,
-      detail: hosts.address(h),
-    })),
-    ...configHosts().map((h) => ({ value: `c:${h.alias}`, label: h.alias, detail: `~/.ssh/config · ${hosts.address(h)}` })),
-  ];
-  if (!items.length) {
-    await open();
-    await mx.request('window.showBanner', { text: 'nenhum host ainda — salve um aqui' });
-    return;
-  }
-  const choice = await mx.request('window.pick', {
-    title: 'conectar por ssh',
-    placeholder: 'nome ou endereço',
-    items,
-  });
-  if (!choice) return;
-  if (choice.startsWith('c:')) return connect({ alias: choice.slice(2) });
-  const h = state.saved.find((x) => x.id === choice.slice(2));
-  if (h) await connect(h);
-}
-
 mx.onRequest('initialize', (params) => {
   state.dataDir = params.dataDir || state.dataDir;
   state.settings = params.settings || {};
   state.rfw = Number(params.rfw) >= 1;
   state.input = Number(params.input) >= 1;
   state.modal = Number(params.form) >= 1;
+  state.split = Number(params.split) >= 1;
+  state.onSessions = Number(params.viewOnSessions) >= 1;
+  sshconfig.setBackupDir(path.join(state.dataDir, 'config-backups'));
+  loadRetag();
+  try {
+    state.migrated = hosts.migrate(state.dataDir);
+  } catch (e) {
+    mx.log('não passei os hosts salvos pro ~/.ssh/config:', String(e.stack || e));
+  }
   reload();
   return {};
 });
@@ -1354,7 +1562,11 @@ mx.onRequest('command.invoke', async ({ command }) => {
   if (command === 'hosts') await open();
   // Sem await: o seletor espera você, e o command.invoke tem 30s pra voltar.
   else if (command === 'conectar') pickAndConnect().catch((e) => mx.log('conectar:', String(e.stack || e)));
-  else throw new Error(`comando desconhecido: ${command}`);
+  else if (command === 'comandos') {
+    pickHost('comandos de qual host?')
+      .then((h) => h && openCommands(h.alias))
+      .catch((e) => mx.log('comandos:', String(e.stack || e)));
+  } else throw new Error(`comando desconhecido: ${command}`);
   return null;
 });
 
