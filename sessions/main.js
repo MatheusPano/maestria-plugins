@@ -326,6 +326,18 @@ async function answer(key, text, message = false) {
   return mx.request('window.showBanner', { text: `enviado para ${where}` }).catch(() => {});
 }
 
+/** Tira o cartão [key] de "precisa de você"/"trabalhando": vai para Feito, até o gerente postar outro. */
+function dismiss(key) {
+  const node = state.links.nodes[key];
+  if (!node || !node.card) return null;
+  const now = Date.now();
+  node.card = { ...node.card, state: 'done', action: null, answered: null, headline: 'Dispensado por você.', at: now, doneAt: now };
+  delete state.ui.writing[key];
+  delete state.ui.rejecting[key];
+  save();
+  return schedule();
+}
+
 /** Manda [text] direto pro gerente do painel [key]. */
 async function tell(key, text) {
   const body = String(text || '').trim();
@@ -373,6 +385,7 @@ async function onCard(verb, key, rest, values) {
   };
   if (verb === 'detail') return openCard(key);
   if (verb === 'notes') return flip(state.ui.open);
+  if (verb === 'dismiss') return dismiss(key);
   if (verb === 'reject') return flip(state.ui.rejecting);
   if (verb === 'write') return flip(state.ui.writing);
   if (verb === 'tell') return tell(key, values && values.text);
@@ -440,7 +453,7 @@ async function retitle(keys) {
   }
 }
 
-const CARD_VERBS = ['detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'link', 'option', 'use', 'approve', 'answer'];
+const CARD_VERBS = ['detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'link', 'dismiss', 'option', 'use', 'approve', 'answer'];
 
 async function onAction(act, values) {
   const [verb, a, b, ...more] = act.split(':');

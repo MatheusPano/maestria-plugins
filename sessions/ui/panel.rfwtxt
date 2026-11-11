@@ -234,6 +234,10 @@ widget TitleRow = Row(
     SizedBox(width: 8.0),
     Text(text: args.c.age, style: { fontSize: 11.0, color: switch args.c.state { "needs_you": data.theme.red, default: data.theme.faint } }),
     SizedBox(width: 4.0),
+    switch args.c.canDismiss {
+      true: IconButton(icon: "check", tooltip: "dispensar: o cartão vai para Feito", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.dismiss }),
+      default: SizedBox(),
+    },
     IconButton(icon: "more", tooltip: "abrir o cartão", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.detail }),
   ],
 );
@@ -707,6 +711,10 @@ widget detail = SingleChildScrollView(
           SizedBox(width: 10.0),
           Text(text: data.card.age, style: { fontSize: 12.0, color: data.theme.dim }),
           SizedBox(width: 10.0),
+          switch data.card.canDismiss {
+            true: Padding(padding: [0.0, 0.0, 6.0, 0.0], child: Btn(label: "dispensar", icon: "check", act: data.card.acts.dismiss, kind: "sec")),
+            default: SizedBox(),
+          },
           switch data.card.acts.focus {
             "": SizedBox(),
             default: Btn(label: "ir para a aba", icon: "open", act: data.card.acts.focus, kind: "sec"),

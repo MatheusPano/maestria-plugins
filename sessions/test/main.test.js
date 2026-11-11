@@ -196,3 +196,15 @@ test('o painel abre em todas as conversas e manda mensagem a uma sem gerente', a
     sessions.splice(2);
   }
 });
+
+test('dispensar um cartão leva ele para Feito, sem ação, até o gerente postar outro', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'responda na aba', action: { kind: 'question', text: 'A ou B?' } } });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(read()).find((k) => read()[k].tabId === 'w');
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `dismiss:${key}` } });
+  await tick();
+  const card = read()[key].card;
+  assert.deepEqual([card.state, card.action, card.headline], ['done', null, 'Dispensado por você.']);
+});
