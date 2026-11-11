@@ -331,7 +331,7 @@ function dismiss(key) {
   const node = state.links.nodes[key];
   if (!node || !node.card) return null;
   const now = Date.now();
-  node.card = { ...node.card, state: 'done', action: null, answered: null, headline: 'Dispensado por você.', at: now, doneAt: now };
+  node.card = { ...node.card, state: 'done', dismissed: true, action: null, answered: null, headline: 'Dispensado por você.', at: now, doneAt: now };
   delete state.ui.writing[key];
   delete state.ui.rejecting[key];
   save();

@@ -29,6 +29,17 @@ test('quem espera você ganha do cartão; sem cartão, o status ao vivo decide',
   assert.equal(taskOf({ title: 'faz a task#88832', branch: '' }), 'TASK#88832');
 });
 
+test('sessão hibernada, encerrada ou fechada não está trabalhando; dispensado fica em Feito mesmo rodando', () => {
+  assert.equal(stateOf(null, { status: 'ended', hibernated: true }), 'done');
+  assert.equal(stateOf({ state: 'done' }, { status: 'ended', hibernated: true }), 'done');
+  assert.equal(stateOf({ state: 'done' }, { status: 'tool', hibernated: true }), 'done');
+  assert.equal(stateOf({ state: 'working' }, { status: 'ended' }), 'done');
+  assert.equal(stateOf({ state: 'working' }, null), 'done');
+  assert.equal(stateOf({ state: 'needs_you' }, null), 'needs_you');
+  assert.equal(stateOf({ state: 'done' }, { status: 'tool' }), 'working');
+  assert.equal(stateOf({ state: 'done', dismissed: true }, { status: 'tool' }), 'done');
+});
+
 test('o quadro separa as três colunas na ordem de entrada na árvore (precisa de você: primeiro quem entrou antes), feito só de hoje', () => {
   const { l, g, kid } = setup();
   kid('a', { state: 'needs_you', since: min(5) });
@@ -260,7 +271,7 @@ test('todo cartão com sessão viva tem caixa de mensagem; o feito só abre a ca
   const w = kid('w', { state: 'working', at: 1 });
   kid('q', { state: 'needs_you', action: { kind: 'question', text: 'sigo?' }, at: 1 });
   const d = kid('d', { state: 'done', at: 1, doneAt: NOW });
-  kid('x', { state: 'working', at: 1 });
+  kid('x', { state: 'working', at: NOW });
   const sessions = [{ id: 'g', title: 'g' }, { id: 'w', title: 'w', status: 'tool' }, { id: 'q', title: 'q', status: 'idle' }, { id: 'd', title: 'd', status: 'idle' }];
   const ui = { writing: { [d]: true } };
   const b = board(l, g, sessions, ui, NOW);
