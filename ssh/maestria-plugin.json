@@ -1,8 +1,8 @@
 {
   "id": "maestria.ssh",
   "name": "SSH",
-  "version": "1.3.1",
-  "description": "Os seus hosts de SSH salvos, como no Termius: clicou, abriu um terminal já conectado. Mostra também os hosts do ~/.ssh/config. O ícone na faixa é uma tela só do SSH, como o cofre do Termius: os grupos e os hosts em cartões, e cada conexão abre ao lado da grade.",
+  "version": "2.0.0",
+  "description": "Os seus hosts de SSH como no Termius: clicou, abriu um terminal já conectado, com o painel de comandos daquele host ao lado (o histórico do servidor, os que você mandou e os fixados; um clique manda pro terminal). Os hosts são os do ~/.ssh/config: criar e editar aqui grava lá. Grupos e o ícone do sistema de cada host, numa tela própria em cartões.",
   "icon": "icons/server.svg",
   "author": "Matheus Pano",
   "maestria": 1,
@@ -12,10 +12,12 @@
   ],
   "activationEvents": [
     "onCommand:hosts",
-    "onCommand:conectar"
+    "onCommand:conectar",
+    "onCommand:comandos"
   ],
   "permissions": [
-    "sessions.create"
+    "sessions.create",
+    "terminal.write"
   ],
   "contributes": {
     "sidebar": true,
@@ -34,15 +36,40 @@
         "id": "conectar",
         "title": "ssh: conectar a um host…",
         "key": "meta+shift+s"
+      },
+      {
+        "id": "comandos",
+        "title": "ssh: comandos de um host…"
       }
     ],
     "settings": [
       {
-        "id": "sshConfig",
+        "id": "history",
         "type": "boolean",
         "default": true,
-        "title": "mostrar os hosts do ~/.ssh/config",
-        "description": "os Host sem curinga do seu config (e dos Include dele) aparecem numa seção própria, só pra conectar."
+        "title": "ler o histórico de comandos do servidor",
+        "description": "ao conectar e ao sair, um ssh à parte (sem pergunta, só com chave ou agente) lê o fim do ~/.bash_history e do ~/.zsh_history do host e o /etc/os-release, pro painel de comandos e pro ícone. Fica na pasta de dados do plugin."
+      },
+      {
+        "id": "detectAll",
+        "type": "boolean",
+        "default": false,
+        "title": "descobrir o sistema de todos os hosts",
+        "description": "ao abrir a lista, lê em segundo plano (4 por vez) o sistema e o histórico dos hosts que ainda não têm ícone, sem precisar conectar antes — um ssh em cada Host do config, inclusive os que você nunca abriu por aqui. Desligado, o ícone vem na primeira conexão. Um host que não respondeu é tentado de novo no dia seguinte."
+      },
+      {
+        "id": "commandsPanel",
+        "type": "boolean",
+        "default": true,
+        "title": "mostrar os comandos ao lado do terminal",
+        "description": "a coluna de comandos do host, à direita do terminal da conexão (o botão \"comandos\" no topo do painel a mostra e esconde). Numa Maestria sem esse painel, os comandos abrem numa janela à parte, que acompanha o terminal em foco."
+      },
+      {
+        "id": "openOnSessions",
+        "type": "boolean",
+        "default": true,
+        "title": "abrir a conexão na tela das sessões",
+        "description": "o painel da conexão abre ao lado da sessão em foco, entre os seus claudes e terminais, em vez de na tela do SSH. O botão de dividir no topo do painel leva e traz."
       },
       {
         "id": "binary",

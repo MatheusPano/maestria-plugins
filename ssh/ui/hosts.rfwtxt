@@ -5,7 +5,7 @@
 // `event "act"` com a ação em `a` (ou `action`, quando vem de um menu).
 //
 // Cada cartão (`Tile`) é um grupo ou um host: `title`, `sub`, `icon`, `tone` (a
-// cor do quadrado), `status` ("" | "green" | "red": a bolinha no canto do
+// cor do quadrado), `svg` (o ícone do sistema, desenhado no lugar do quadrado), `status` ("" | "green" | "red": a bolinha no canto do
 // quadrado), `badge`, `action`, `menu` e `edit` (a ação do lápis; "" sem lápis).
 
 import core.widgets;
@@ -148,8 +148,8 @@ widget Section = Padding(
           primary: false,
           gridDelegate: {
             type: "maxCrossAxisExtent",
-            maxCrossAxisExtent: 320.0,
-            mainAxisExtent: 58.0,
+            maxCrossAxisExtent: 300.0,
+            mainAxisExtent: 62.0,
             mainAxisSpacing: 10.0,
             crossAxisSpacing: 10.0,
           },
@@ -219,37 +219,17 @@ widget Tile = Container(
 );
 
 // O quadrado colorido do Termius, com a bolinha de conectado (ou de caído) no canto.
+// Um host traz o ícone inteiro em `svg` (o quadrado na cor do sistema e o
+// desenho em branco); um grupo, só o desenho e o `tone`.
 widget Avatar = SizedBox(
-  width: 36.0,
-  height: 36.0,
+  width: 38.0,
+  height: 38.0,
   child: Stack(
     children: [
-      Container(
-        width: 34.0,
-        height: 34.0,
-        decoration: {
-          type: "box",
-          borderRadius: [{ x: 8.0 }],
-          color: switch args.t.tone {
-            "accent": data.theme.accent,
-            "blue": data.theme.blue,
-            "cyan": data.theme.cyan,
-            "green": data.theme.green,
-            "yellow": data.theme.yellow,
-            "red": data.theme.red,
-            "purple": data.theme.purple,
-            "magenta": data.theme.magenta,
-            default: data.theme.active,
-          },
-        },
-        child: Center(
-          child: Glyph(
-            icon: args.t.icon,
-            size: 17.0,
-            color: switch args.t.tone { "faint": data.theme.dim, default: 0xFFFFFFFF },
-          ),
-        ),
-      ),
+      switch args.t.svg {
+        "": Square(t: args.t),
+        default: Svg(svg: args.t.svg, width: 36.0, height: 36.0),
+      },
       switch args.t.status {
         "": SizedBox(),
         default: Positioned(
@@ -268,5 +248,33 @@ widget Avatar = SizedBox(
         ),
       },
     ],
+  ),
+);
+
+// O quadrado de um grupo: o desenho por cima da cor do tema.
+widget Square = Container(
+  width: 36.0,
+  height: 36.0,
+  decoration: {
+    type: "box",
+    borderRadius: [{ x: 9.0 }],
+    color: switch args.t.tone {
+      "accent": data.theme.accent,
+      "blue": data.theme.blue,
+      "cyan": data.theme.cyan,
+      "green": data.theme.green,
+      "yellow": data.theme.yellow,
+      "red": data.theme.red,
+      "purple": data.theme.purple,
+      "magenta": data.theme.magenta,
+      default: data.theme.active,
+    },
+  },
+  child: Center(
+    child: Glyph(
+      icon: args.t.icon,
+      size: 20.0,
+      color: switch args.t.tone { "faint": data.theme.dim, default: 0xFFFFFFFF },
+    ),
   ),
 );
