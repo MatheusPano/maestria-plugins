@@ -128,4 +128,26 @@ function replies(home) {
   };
 }
 
-module.exports = { replies, lastReplyIn, linksIn, slug };
+/** A pasta onde a conversa [sessionId] rodou, lida do começo do transcript; null se não achar. */
+function cwdOf(home, sessionId) {
+  const file = sessionId && transcriptOf(path.join(home, '.claude', 'projects'), sessionId, null, new Map());
+  if (!file) return null;
+  let head = '';
+  try {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    head = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, 0));
+    fs.closeSync(fd);
+  } catch {
+    return null;
+  }
+  for (const line of head.split('\n')) {
+    try {
+      const j = JSON.parse(line);
+      if (j && typeof j.cwd === 'string' && j.cwd) return j.cwd;
+    } catch {}
+  }
+  return null;
+}
+
+module.exports = { replies, lastReplyIn, linksIn, slug, cwdOf };

@@ -10,7 +10,7 @@ const { Links, tinted, bare } = require('./lib/links');
 const { sidebar } = require('./lib/tree');
 const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
 const { deliver } = require('./lib/answers');
-const { replies } = require('./lib/replies');
+const { replies, cwdOf } = require('./lib/replies');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
@@ -356,6 +356,26 @@ function dismiss(key) {
   return schedule();
 }
 
+/** Reabre a conversa de um nó cuja aba fechou (com --resume), na pasta e com o nome dele; se a aba está aberta, vai pra ela. */
+async function resume(key) {
+  const n = state.links.nodes[key];
+  if (!n) return null;
+  const open = (await listSessions()).find((s) => s.id === n.tabId && !s.exited);
+  if (open) return mx.request('session.focus', { tabId: open.id });
+  if (!n.sessionId) throw new Error(`não sei qual conversa era "${n.name}": ela nunca reportou o sessionId`);
+  const cwd = (n.cwd && isDir(n.cwd) && n.cwd) || cwdOf(os.homedir(), n.sessionId);
+  if (!cwd || !isDir(cwd)) throw new Error(`não achei a pasta da conversa "${n.name}"`);
+  const r = await mx.request('session.openClaude', { cwd, label: tinted(n.name, n.color, n.manager), resume: n.sessionId });
+  if (!r || !r.resumed) {
+    if (r && r.tabId) await mx.request('session.close', { tabId: r.tabId }).catch(() => {});
+    throw new Error('esta Maestria ainda não retoma conversas por plugin; atualize a Maestria');
+  }
+  n.tabId = r.tabId;
+  n.cwd = cwd;
+  save();
+  return null;
+}
+
 /** Manda [text] direto pro gerente do painel [key]. */
 async function tell(key, text) {
   const body = String(text || '').trim();
@@ -482,6 +502,7 @@ async function onAction(act, values) {
   const titleOf = async (tabId) => ((await mx.request('sessions.list')) || []).find((s) => s.id === tabId)?.title || tabId;
   if (verb === 'novo') return createManager();
   if (verb === 'focus') return mx.request('session.focus', { tabId: a });
+  if (verb === 'resume') return resume(a);
   if (verb === 'panel') return showPanel(a, 'raise');
   if (verb === 'switch') return showPanel(a, 'switch');
   if (verb === 'older') {

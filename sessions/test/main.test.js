@@ -241,3 +241,26 @@ test('links.json estragado: fica guardado ao lado e a cópia da última subida a
   assert.equal(Object.values(nodes).find((n) => n.tabId === 'w').parent, 'n1');
   assert.equal(fs.existsSync(`${file}.tmp`), false);
 });
+
+test('retomar uma sessão fechada reabre a conversa com --resume, na pasta e com o nome; Maestria sem resume fecha a aba nova e avisa', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: { n1: { tabId: 'velha', sessionId: 'conv1', cwd: dataDir, name: 'tarefas', color: 'green', manager: true, parent: null } }, seq: 1 }));
+  handlers.req.initialize({ dataDir });
+  const side = (a) => handlers.note['view.action']({ viewId: 'sidebar', action: a });
+  queue['session.openClaude'] = [{ tabId: 'nova', resumed: true }];
+  const before = calls.length;
+  side('resume:n1');
+  await tick();
+  const open = calls.slice(before).find(([m]) => m === 'session.openClaude')[1];
+  assert.deepEqual(open, { cwd: dataDir, label: '◆◆ tarefas', resume: 'conv1' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes.n1.tabId, 'nova');
+  fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: { n1: { tabId: 'velha', sessionId: 'conv1', cwd: dataDir, name: 'tarefas', color: 'green', manager: true, parent: null } }, seq: 1 }));
+  handlers.req.initialize({ dataDir });
+  queue['session.openClaude'] = [{ tabId: 'fresca' }];
+  const mark = calls.length;
+  side('resume:n1');
+  await tick();
+  const after = calls.slice(mark);
+  assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['fresca']);
+  assert.match(after.find(([m]) => m === 'window.showBanner')[1].text, /não retoma/);
+});

@@ -2,6 +2,8 @@
 // Quem abriu quem: cada gerente tem uma cor (a lã do Minecraft) e as sessões que ele abre herdam a cor.
 // O tabId muda quando a Maestria reabre; o sessionId do claude não, e é por ele que um nó se reencontra.
 
+const path = require('path');
+
 // A fonte da Maestria não tem emoji colorido: no nome da aba vai a forma, e a cor fica na aba do plugin.
 const COLORS = [
   { id: 'red', mark: '●', hex: '#E5534B' },
@@ -113,14 +115,16 @@ class Links {
     return changed;
   }
 
-  /** As abas vivas cujo título perdeu a marca da cor (ou a dupla, de gerente). */
+  /** As abas vivas cujo título perdeu a marca da cor (ou a dupla, de gerente); um título que é só a pasta volta ao nome do nó. */
   retitles(sessions) {
     const live = new Map(sessions.filter((x) => !x.exited).map((x) => [x.id, x]));
     const out = [];
     for (const n of Object.values(this.nodes)) {
       const s = live.get(n.tabId);
       if (!s || !s.title) continue;
-      const title = tinted(s.title, n.color, n.manager);
+      const shown = bare(s.title);
+      const generic = shown === '~' || (s.cwd && shown === path.basename(s.cwd));
+      const title = tinted(generic && n.name ? n.name : s.title, n.color, n.manager);
       if (title !== s.title) out.push({ tabId: s.id, title });
     }
     return out;

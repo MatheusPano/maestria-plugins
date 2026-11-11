@@ -152,3 +152,26 @@ test('gerente leva a marca dobrada; retitles só pede o que perdeu a marca e man
   ]);
   assert.equal(bare(`${mark}${mark} renomeado`), 'renomeado');
 });
+
+test('um título que é só a pasta (a aba retomada na mão) volta ao nome do nó, com a marca', () => {
+  const l = new Links({}, () => 0);
+  const g = l.add({ tabId: 't1', name: 'tarefas', manager: true });
+  const mark = (name) => tinted(name, l.nodes[g].color, true);
+  assert.deepEqual(l.retitles([{ id: 't1', title: '~', cwd: '/home/u' }, { id: 't2', title: 'x' }]), [{ tabId: 't1', title: mark('tarefas') }]);
+  assert.deepEqual(l.retitles([{ id: 't1', title: 'repo', cwd: '/srv/repo' }]), [{ tabId: 't1', title: mark('tarefas') }]);
+  assert.deepEqual(l.retitles([{ id: 't1', title: 'outro nome', cwd: '/srv/repo' }]), [{ tabId: 't1', title: mark('outro nome') }]);
+});
+
+test('gerente com a aba fechada diz "fechada" e o clique retoma a conversa; sessão fechada também retoma', () => {
+  const l = new Links({}, () => 0);
+  const r = l.add({ tabId: 'velha', name: 'tarefas', manager: true });
+  const kid = l.add({ tabId: 'k', parent: r, name: 'filha' });
+  const gone = l.add({ tabId: 'sumiu', parent: r, name: 'fechou' });
+  l.nodes[gone].card = { state: 'needs_you', headline: 'merge o PR' };
+  const items = sidebar(l, [{ id: 'k', title: 'filha', status: 'tool' }]).blocks[1].items;
+  const [boss, closed, live] = items;
+  assert.deepEqual([boss.title, boss.subtitle, boss.action, boss.menu[0].action], ['tarefas', 'fechada · 1 precisa de você · 1 trabalhando', `resume:${r}`, `resume:${r}`]);
+  assert.deepEqual([closed.title, closed.action, closed.menu.map((m) => m.action)], ['fechou', `resume:${gone}`, [`resume:${gone}`, `forget:${gone}`]]);
+  assert.equal(live.action, 'focus:k');
+  assert.ok(kid);
+});
