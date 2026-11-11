@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const os = require('os');
 const path = require('path');
 const mx = require('./maestria');
@@ -273,8 +273,20 @@ async function createManager(context = {}) {
   await showPanel(key, 'raise').catch((e) => mx.log('painel:', e.message));
 }
 
+const exec = (cmd, args) =>
+  new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 8000 }, (err, stdout) => resolve({ code: err ? (Number.isInteger(err.code) ? err.code : 1) : 0, stdout: String(stdout || '') }));
+  });
+
+const prsOf = (s) => {
+  const r = s && s.sessionId ? readReply(s.sessionId, s.cwd) : null;
+  return ((r && r.links) || []).map((l) => l.url);
+};
+
 const ctx = ({ tabId, cwd }) => ({
-  request: (method, params) => mx.request(method, params),
+  request,
+  exec,
+  prsOf,
   home: os.homedir(),
   cwd,
   tabId,

@@ -650,6 +650,10 @@ widget Done = Box(
       true: Padding(padding: [0.0, 6.0, 0.0, 0.0], child: Text(text: args.c.headline, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim })),
       default: SizedBox(),
     },
+    switch args.c.because {
+      "": SizedBox(),
+      default: Padding(padding: [0.0, 4.0, 0.0, 0.0], child: Text(text: args.c.because, maxLines: 2, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint })),
+    },
     switch args.c.writing {
       true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão (vai direto para a aba)"),
       default: SizedBox(),

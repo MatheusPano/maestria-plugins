@@ -196,8 +196,43 @@ function actionOf(action) {
   };
 }
 
-async function card({ tabId, state, headline, bullets, action, proof }, ctx) {
+const TRUNK = new Set(['main', 'master', 'develop', 'dev']);
+const PULL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
+
+/** O que impede um "done" ([blockers]) e o que só merece aviso ([warnings]): sessão rodando ou esperando, PR aberto, commit sem push, pasta suja. */
+async function doneChecks(s, prs, ctx) {
+  const blockers = [];
+  const warnings = [];
+  if (s.needsYou || PROMPT.has(s.status)) blockers.push(`a sessão está esperando o usuário na aba (${s.statusLabel || s.status})`);
+  else if (s.status && !s.hibernated && !RESTING.has(s.status) && !['ended', 'unknown'].includes(s.status)) blockers.push(`a sessão ainda está trabalhando (${s.statusLabel || s.status})`);
+  if (!ctx.exec) return { blockers, warnings };
+  for (const url of [...new Set(prs.filter((u) => PULL.test(u)).map((u) => u.match(PULL)[0]))]) {
+    const r = await ctx.exec('gh', ['pr', 'view', url, '--json', 'state', '-q', '.state']);
+    if (r.code !== 0) warnings.push(`não deu pra conferir ${url} com o gh`);
+    else if (r.stdout.trim() === 'OPEN') blockers.push(`o PR ${url} ainda está aberto`);
+  }
+  if (!s.cwd) return { blockers, warnings };
+  const git = (...args) => ctx.exec('git', ['-C', s.cwd, ...args]);
+  const head = await git('rev-parse', '--abbrev-ref', 'HEAD');
+  if (head.code !== 0) return { blockers, warnings };
+  const branch = head.stdout.trim();
+  const ahead = await git('rev-list', '--count', '@{u}..HEAD');
+  if (ahead.code === 0 && Number(ahead.stdout) > 0) blockers.push(`${Number(ahead.stdout)} commit(s) sem push em ${branch}`);
+  if (ahead.code !== 0 && !TRUNK.has(branch)) {
+    const local = await git('rev-list', '--count', 'HEAD', '--not', '--remotes');
+    if (local.code === 0 && Number(local.stdout) > 0) blockers.push(`a branch ${branch} nunca foi enviada (${Number(local.stdout)} commit(s) só aqui)`);
+  }
+  const dirty = await git('status', '--porcelain');
+  if (dirty.code === 0 && dirty.stdout.trim()) warnings.push(`${dirty.stdout.trim().split('\n').length} arquivo(s) alterados sem commit em ${s.cwd}`);
+  return { blockers, warnings };
+}
+
+async function card({ tabId, state, headline, bullets, action, proof, doneBecause }, ctx) {
   if (!STATES.includes(state)) throw new ToolError(`state precisa ser um de: ${STATES.join(', ')}.`);
+  const because = String(doneBecause || '').trim();
+  if (state === 'done' && !because) {
+    throw new ToolError('done precisa de doneBecause: o que fez a tarefa acabar (ex.: "PR #12 mergeado", "deploy feito", "só investigação, sem código"). Se ainda falta algo, é needs_you ou working.');
+  }
   const list = (Array.isArray(bullets) ? bullets : []).map((b) => String(b).trim()).filter(Boolean);
   if (list.length > MAX_BULLETS) throw new ToolError(`No máximo ${MAX_BULLETS} bullets por cartão.`);
   const act = actionOf(action);
@@ -215,6 +250,15 @@ async function card({ tabId, state, headline, bullets, action, proof }, ctx) {
   } catch (e) {
     if (e instanceof ProofError) throw new ToolError(e.message);
     throw e;
+  }
+  let warnings = [];
+  if (state === 'done') {
+    const found = ctx.prsOf ? ctx.prsOf(s) : [];
+    const checked = await doneChecks(s, [...((staged && staged.prs) || []).map((p) => p.url), ...found], ctx);
+    if (checked.blockers.length) {
+      throw new ToolError(`Ainda não é done: ${checked.blockers.join('; ')}. Use needs_you (com o PR em proof) ou working, e diga ao usuário o que falta.`);
+    }
+    warnings = checked.warnings;
   }
   const parent = await parentOf(ctx);
   if (!parent) throw new ToolError('Só um gerente escreve cartões: chame de uma sessão da Maestria.');
@@ -235,10 +279,11 @@ async function card({ tabId, state, headline, bullets, action, proof }, ctx) {
     at: now,
     since: prev.state === state && prev.since ? prev.since : now,
     doneAt: state === 'done' ? (prev.state === 'done' && prev.doneAt) || now : null,
+    doneBecause: state === 'done' ? because : null,
   };
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));
-  return ok({ tabId, state, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...takeAnswers(ctx) });
+  return ok({ tabId, state, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
 }
 
 const HANDLERS = { sessions_open: open, sessions_list: list, sessions_send: send, sessions_rename: rename, sessions_card: card, sessions_close: close };

@@ -74,7 +74,7 @@ test('depois de abrir o painel, os refresh mandam só os dados (o template de no
 test('a caixa do topo manda direto pro gerente e a do cartão feito abre e fecha', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
   handlers.req.initialize({ dataDir });
-  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'done' } });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'done', doneBecause: 'PR mergeado', doneBecause: 'PR mergeado' } });
   const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
   const g = Object.keys(nodes).find((k) => nodes[k].tabId === 'g');
   const before = calls.length;

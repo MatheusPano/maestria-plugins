@@ -161,6 +161,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     reply: replied ? plain(replied.text) : '',
     replyLong: Boolean(replied) && shownLines(plain(replied.text)) > REPLY_LINES,
     hasHeadline: Boolean(headline),
+    because: state === 'done' && c.doneBecause ? `feito porque: ${c.doneBecause}` : '',
     kind,
     command: kind === 'command' ? shown(action.text) : '',
     shell: kind === 'command' && !claudeCommand(action.text) && !isLink(action.text),
