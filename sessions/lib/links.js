@@ -18,6 +18,7 @@ const BY_ID = new Map(COLORS.map((c) => [c.id, c]));
 const LEGACY = ['🟥', '🟦', '🟩', '🟨', '🟪', '🟧', '🟫', '⬜', '⬛'];
 const PREFIX = new RegExp(`^(?:(?:${[...COLORS.map((c) => c.mark), ...LEGACY].join('|')})\\s*)+`, 'u');
 const FORGET_MS = 3 * 24 * 3600 * 1000;
+const SEEN_MS = 3600 * 1000;
 
 const colorOf = (id) => BY_ID.get(id) || COLORS[0];
 const bare = (name) => String(name || '').replace(PREFIX, '').trim();
@@ -79,20 +80,30 @@ class Links {
     return { key: this.add({ tabId, name, manager: true }), created: true };
   }
 
-  /** Acerta os nós com a lista viva: sessionId novo, tabId trocado, e esquece o que sumiu há dias. */
+  /** Acerta os nós com a lista viva: tabId trocado, sessionId novo (o /clear troca na mesma aba), e esquece o que sumiu há dias. */
   reconcile(sessions) {
     const byTab = new Map(sessions.map((s) => [s.id, s]));
     const bySession = new Map(sessions.filter((s) => s.sessionId).map((s) => [s.sessionId, s]));
+    const owned = new Set(Object.values(this.nodes).map((n) => n.sessionId).filter(Boolean));
     let changed = false;
     for (const [key, n] of Object.entries(this.nodes)) {
       let s = byTab.get(n.tabId);
-      if (s && n.sessionId && s.sessionId && s.sessionId !== n.sessionId) s = null;
+      if (s && n.sessionId && s.sessionId && s.sessionId !== n.sessionId) {
+        if (bySession.has(n.sessionId) || owned.has(s.sessionId)) s = null;
+        else {
+          n.sessionId = s.sessionId;
+          owned.add(s.sessionId);
+          changed = true;
+        }
+      }
       if (!s && n.sessionId) s = bySession.get(n.sessionId);
       if (s) {
-        if (n.tabId !== s.id) n.tabId = s.id;
+        const now = this.now();
+        if (n.tabId !== s.id || (!n.sessionId && s.sessionId) || (s.cwd && n.cwd !== s.cwd) || now - (n.seenAt || 0) > SEEN_MS) changed = true;
+        n.tabId = s.id;
         if (!n.sessionId && s.sessionId) n.sessionId = s.sessionId;
-        n.seenAt = this.now();
-        changed = true;
+        if (s.cwd) n.cwd = s.cwd;
+        n.seenAt = now;
       } else if (this.now() - (n.seenAt || 0) > FORGET_MS) {
         delete this.nodes[key];
         for (const m of Object.values(this.nodes)) if (m.parent === key) m.parent = n.parent;

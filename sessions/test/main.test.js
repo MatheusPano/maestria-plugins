@@ -225,3 +225,19 @@ test('as ações do menu da lateral chegam ao que fazem: "ligar ao gerente" pend
   const w = Object.values(read()).find((n) => n.tabId === 'w');
   assert.equal(w && w.parent, g);
 });
+
+test('links.json estragado: fica guardado ao lado e a cópia da última subida assume; o arquivo é trocado inteiro', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  const file = path.join(dataDir, 'links.json');
+  fs.writeFileSync(file, JSON.stringify({ nodes: { n1: { tabId: 'g', name: 'g', manager: true, color: 'red', parent: null } }, seq: 1 }));
+  handlers.req.initialize({ dataDir });
+  fs.writeFileSync(file, '{"nodes": {"n1": {"tab');
+  handlers.req.initialize({ dataDir });
+  const kept = fs.readdirSync(dataDir).filter((f) => f.startsWith('links.json.estragado-'));
+  assert.equal(kept.length, 1);
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+  const nodes = JSON.parse(fs.readFileSync(file, 'utf8')).nodes;
+  assert.equal(nodes.n1.name, 'g');
+  assert.equal(Object.values(nodes).find((n) => n.tabId === 'w').parent, 'n1');
+  assert.equal(fs.existsSync(`${file}.tmp`), false);
+});

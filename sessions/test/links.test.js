@@ -29,13 +29,29 @@ test('reconcile segue o sessionId quando o tabId muda e esquece o que sumiu há 
   assert.equal(l.nodes[gone], undefined);
 });
 
-test('um tabId reaproveitado por outra conversa não herda o nó', () => {
-  const l = new Links({}, () => 0);
+test('depois do /clear a aba ganha outro sessionId e o nó segue a aba; se a conversa antiga está noutra aba, o nó vai com ela', () => {
+  let now = 0;
+  const l = new Links({}, () => now);
   const k = l.add({ tabId: 't1', name: 'g' });
-  l.reconcile([{ id: 't1', sessionId: 's1' }]);
-  l.reconcile([{ id: 't1', sessionId: 'outra' }]);
-  assert.equal(l.nodes[k].tabId, 't1');
-  assert.equal(l.nodes[k].seenAt, 0);
+  const other = l.add({ tabId: 't9', name: 'o' });
+  l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }, { id: 't9', sessionId: 's9' }]);
+  now = 10;
+  l.reconcile([{ id: 't1', sessionId: 's2', cwd: '/r' }, { id: 't9', sessionId: 's9' }]);
+  assert.deepEqual([l.nodes[k].tabId, l.nodes[k].sessionId, l.nodes[k].seenAt, l.nodes[k].cwd], ['t1', 's2', 10, '/r']);
+  l.reconcile([{ id: 't1', sessionId: 's9' }, { id: 't2', sessionId: 's2' }]);
+  assert.equal(l.nodes[k].tabId, 't2');
+  assert.equal(l.nodes[other].sessionId, 's9');
+});
+
+test('reconcile só pede pra salvar quando algo muda (ou o visto ficou velho), não a cada evento', () => {
+  let now = 0;
+  const l = new Links({}, () => now);
+  l.add({ tabId: 't1', name: 'g' });
+  assert.equal(l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }]), true);
+  now = 1000;
+  assert.equal(l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }]), false);
+  now = 2 * 3600 * 1000;
+  assert.equal(l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }]), true);
 });
 
 test('a lateral põe quem precisa de você primeiro, com o pedido do cartão, e dobra as prontas', () => {

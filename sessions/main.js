@@ -69,20 +69,40 @@ const isDir = (p) => {
   }
 };
 
-function save() {
+function writeLinks() {
   if (!state.file) return;
+  const tmp = `${state.file}.tmp`;
   try {
     fs.mkdirSync(path.dirname(state.file), { recursive: true });
-    fs.writeFileSync(state.file, JSON.stringify(state.links.toJSON()));
+    fs.writeFileSync(tmp, JSON.stringify(state.links.toJSON()));
+    fs.renameSync(tmp, state.file);
   } catch (e) {
     mx.log('não salvou os vínculos:', e.message);
   }
+}
+
+function save() {
+  writeLinks();
   schedule();
 }
 
+/** Lê os vínculos; um arquivo estragado fica guardado ao lado e a cópia da última subida assume. */
 function load() {
+  const bak = `${state.file}.bak`;
   try {
     state.links = new Links(JSON.parse(fs.readFileSync(state.file, 'utf8')));
+    fs.copyFileSync(state.file, bak);
+    return;
+  } catch (e) {
+    if (e.code !== 'ENOENT') {
+      mx.log('links.json ilegível, usando a cópia:', e.message);
+      try {
+        fs.renameSync(state.file, `${state.file}.estragado-${Date.now()}`);
+      } catch {}
+    }
+  }
+  try {
+    state.links = new Links(JSON.parse(fs.readFileSync(bak, 'utf8')));
   } catch {
     state.links = new Links();
   }
@@ -90,11 +110,7 @@ function load() {
 
 async function refresh() {
   const sessions = await listSessions();
-  if (state.links.reconcile(sessions)) {
-    try {
-      fs.writeFileSync(state.file, JSON.stringify(state.links.toJSON()));
-    } catch {}
-  }
+  if (state.links.reconcile(sessions)) writeLinks();
   const wrong = state.links.retitles(sessions);
   for (const tabId of [...state.retitled.keys()]) if (!wrong.some((w) => w.tabId === tabId)) state.retitled.delete(tabId);
   await Promise.all(
