@@ -7,6 +7,9 @@ const { STATES, MAX_BULLETS, RESTING } = require('./cards');
 const { proofOf, audioOf, ProofError } = require('./proof');
 
 const KINDS = ['command', 'question', 'approve'];
+const LINK = 'maestria://maestria.sessions';
+const cardLink = (tabId) => `${LINK}/card/${tabId}`;
+const panelLink = (tabId) => `${LINK}/panel/${tabId}`;
 const MAX_OPTIONS = 6;
 
 const ok = (v) => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }] });
@@ -84,6 +87,7 @@ function summary(s, links) {
     manager: Boolean(n && n.manager),
     lastPrompt: act.lastPrompt ?? null,
     lastMessage: act.lastMessage ?? null,
+    ...(n && n.card ? { card: cardLink(s.id) } : {}),
   };
 }
 
@@ -224,7 +228,7 @@ async function card({ tabId, state, headline, bullets, action, proof }, ctx) {
   };
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));
-  return ok({ tabId, state, cards: links.subtree(links.rootOf(key)).length - 1, ...takeAnswers(ctx) });
+  return ok({ tabId, state, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...takeAnswers(ctx) });
 }
 
 const HANDLERS = { sessions_open: open, sessions_list: list, sessions_send: send, sessions_rename: rename, sessions_card: card, sessions_close: close };
@@ -241,4 +245,4 @@ async function handle(name, args, ctx) {
   }
 }
 
-module.exports = { handle, resolveCwd, ToolError };
+module.exports = { handle, resolveCwd, ToolError, LINK };

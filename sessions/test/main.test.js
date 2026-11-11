@@ -288,3 +288,22 @@ test('o diagnóstico abre pela lateral e "arrumar tudo" só faz o automático', 
   assert.equal(nodes.n3.card.state, 'needs_you');
   assert.deepEqual(fs.readdirSync(path.join(dataDir, 'proof')), []);
 });
+
+test('um link maestria:// clicado abre o painel do gerente e o cartão da sessão; sessions_card devolve o link', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const res = await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'olha' } });
+  const out = JSON.parse(res.content[0].text);
+  assert.deepEqual([out.link, out.panel], ['maestria://maestria.sessions/card/w', 'maestria://maestria.sessions/panel/g']);
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'link', action: 'card/w', values: { tabId: 'g' } });
+  await tick();
+  const card = calls.slice(before).find(([m, p]) => m === 'view.open' && p.viewId === `cartao:${key}`);
+  assert.ok(card, 'abriu o cartão');
+  const mark = calls.length;
+  handlers.note['view.action']({ viewId: 'link', action: 'card/sumiu', values: {} });
+  await tick();
+  assert.match(calls.slice(mark).find(([m]) => m === 'window.showBanner')[1].text, /não está mais na árvore/);
+});
