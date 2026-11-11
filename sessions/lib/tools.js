@@ -3,7 +3,8 @@
 
 const path = require('path');
 const { tinted, colorOf } = require('./links');
-const { STATES, MAX_BULLETS, RESTING } = require('./cards');
+const { STATES, MAX_BULLETS, RESTING, PROMPT } = require('./cards');
+const relay = require('./relay');
 const { proofOf, audioOf, ProofError } = require('./proof');
 
 const KINDS = ['command', 'question', 'approve'];
@@ -87,7 +88,9 @@ function summary(s, links) {
     manager: Boolean(n && n.manager),
     lastPrompt: act.lastPrompt ?? null,
     lastMessage: act.lastMessage ?? null,
-    ...(n && n.card ? { card: cardLink(s.id) } : {}),
+    ...(n && n.card
+      ? { card: cardLink(s.id), cardState: n.card.state, cardHeadline: n.card.headline || null, doneBecause: n.card.doneBecause || null }
+      : {}),
   };
 }
 
@@ -99,17 +102,24 @@ async function list({ mine }, ctx) {
     const me = ctx.links.byTab(ctx.tabId);
     out = out.filter((s) => me && s.parentTabId === ctx.tabId);
   }
-  return ok({ sessions: out, ...takeAnswers(ctx) });
+  return ok({ sessions: out, ...takeAnswers(ctx, all) });
 }
 
-/** As respostas que o usuário deu nos cartões deste gerente desde a última leitura (e as esvazia). */
-function takeAnswers(ctx) {
+/** O que chegou pra este gerente desde a última leitura (e esvazia): as respostas nos cartões e as novidades das sessões. */
+function takeAnswers(ctx, sessions = []) {
   const n = ctx.links.node(ctx.links.byTab(ctx.tabId));
-  if (!n || !n.inbox || !n.inbox.length) return {};
-  const answers = n.inbox;
-  n.inbox = [];
-  ctx.save();
-  return { answers };
+  if (!n) return {};
+  const out = {};
+  if (n.inbox && n.inbox.length) {
+    out.answers = n.inbox;
+    n.inbox = [];
+  }
+  if (n.events && n.events.length) {
+    out.events = relay.lines(ctx.links, n.events, sessions);
+    n.events = [];
+  }
+  if (Object.keys(out).length) ctx.save();
+  return out;
 }
 
 async function send({ tabId, text }, ctx) {

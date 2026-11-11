@@ -307,3 +307,65 @@ test('um link maestria:// clicado abre o painel do gerente e o cartão da sessã
   await tick();
   assert.match(calls.slice(mark).find(([m]) => m === 'window.showBanner')[1].text, /não está mais na árvore/);
 });
+
+test('o que você digita direto numa sessão chega ao gerente parado; a mensagem mandada pelo painel não conta como digitada', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+    const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+    const hook = (name, payload) => handlers.note.event({ type: 'hook', tabId: 'w', name, payload });
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `message:${key}`, text: 'pelo painel' } });
+    await tick();
+    hook('UserPromptSubmit', { prompt: 'pelo painel' });
+    hook('UserPromptSubmit', { prompt: 'usa a v2 da API' });
+    const before = calls.length;
+    await new Promise((r) => setTimeout(r, 900));
+    const toManager = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+    assert.equal(toManager.length, 1);
+    assert.match(toManager[0], /O usuário escreveu direto para "w": "usa a v2 da API"/);
+    assert.doesNotMatch(toManager[0], /pelo painel/);
+  } finally {
+    Object.assign(relay.limits, was);
+  }
+});
+
+test('se o aviso ao gerente falha, a fila volta e sai na próxima', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const realRequest = fake.request;
+    let fail = true;
+    fake.request = async (m, p) => {
+      if (m === 'terminal.sendText' && p.tabId === 'g' && fail) {
+        fail = false;
+        throw new Error('aba sumiu');
+      }
+      return realRequest(m, p);
+    };
+    try {
+      handlers.note.event({ type: 'hook', tabId: 'w', name: 'UserPromptSubmit', payload: { prompt: 'segunda tentativa' } });
+      const before = calls.length;
+      await new Promise((r) => setTimeout(r, 900));
+      handlers.note.event({ type: 'hook', tabId: 'g', name: 'Stop', payload: {} });
+      await new Promise((r) => setTimeout(r, 500));
+      const got = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+      assert.equal(got.length, 1);
+      assert.match(got[0], /segunda tentativa/);
+    } finally {
+      fake.request = realRequest;
+    }
+  } finally {
+    Object.assign(relay.limits, was);
+  }
+});

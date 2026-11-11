@@ -12,12 +12,13 @@ const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/card
 const { deliver } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
+const relay = require('./lib/relay');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
   '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe avisos [sessions] Novidades (e events nos resultados das ferramentas) quando uma sessão termina o turno, espera o usuário, ou quando o usuário escreve direto nela: confira, atualize o cartão e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -35,6 +36,7 @@ const state = {
   ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, unfolded: {}, showOld: false, playing: null, focus: null },
   title: undefined,
   doctor: false,
+  sent: new relay.Sent(),
   retitled: new Map(),
 };
 const PANEL = 'painel';
@@ -52,6 +54,12 @@ function liveLine(payload) {
   if (input.file_path) return `${name} ${path.basename(String(input.file_path))}`;
   if (name === 'Bash' && input.command) return String(input.command).split('\n')[0].slice(0, 100);
   return name;
+}
+
+/** O mx.request, guardando o que o plugin escreve numa aba: isso não é você digitando direto nela. */
+function request(method, params) {
+  if (method === 'terminal.sendText' && params && params.tabId) state.sent.note(params.tabId, params.text);
+  return mx.request(method, params);
 }
 
 const withLive = (sessions) =>
@@ -115,6 +123,7 @@ function load() {
 async function refresh() {
   const sessions = await listSessions();
   if (state.links.reconcile(sessions)) writeLinks();
+  await flushRelays(sessions);
   const wrong = state.links.retitles(sessions);
   for (const tabId of [...state.retitled.keys()]) if (!wrong.some((w) => w.tabId === tabId)) state.retitled.delete(tabId);
   await Promise.all(
@@ -291,10 +300,45 @@ mx.onRequest('command.invoke', ({ command, context }) => {
   return null;
 });
 
+/** Um hook de uma sessão com gerente vira evento na fila dele: turno terminado, esperando você, ou o que você digitou direto nela. */
+function relayHook(name, tabId, payload) {
+  const key = state.links.byTab(tabId);
+  if (!key || !state.links.nodes[key].parent) return;
+  const p = payload || {};
+  let event = null;
+  if (name === 'UserPromptSubmit' && p.prompt && !state.sent.take(tabId, p.prompt)) event = { kind: 'direct', text: String(p.prompt) };
+  else if (name === 'Stop') event = { kind: 'turn' };
+  else if (name === 'Notification' && !/waiting for your input/i.test(String(p.message || ''))) event = { kind: 'waiting', text: String(p.message || '') };
+  if (!event || !relay.queue(state.links, key, event)) return;
+  writeLinks();
+  setTimeout(schedule, relay.limits.quiet + 500);
+}
+
+/** Manda a fila de cada gerente que pode receber agora (parado, sem foco, sem pergunta). */
+async function flushRelays(sessions) {
+  const now = Date.now();
+  for (const node of Object.values(state.links.nodes)) {
+    const manager = sessions.find((s) => s.id === node.tabId);
+    if (!relay.due(node, manager, now)) continue;
+    const sent = node.events;
+    node.events = [];
+    node.relayedAt = now;
+    try {
+      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, sent, sessions), submit: true });
+    } catch (e) {
+      mx.log('aviso ao gerente:', e.message);
+      node.events = [...sent, ...(node.events || [])];
+      node.relayedAt = 0;
+    }
+    writeLinks();
+  }
+}
+
 mx.onNotification('event', ({ type, tabId, name, payload }) => {
   if (type === 'hook' && tabId) {
     if (name === 'PreToolUse') state.live[tabId] = liveLine(payload);
     else if (name === 'Stop' || name === 'SessionEnd') delete state.live[tabId];
+    relayHook(name, tabId, payload);
   }
   if (type === 'sidebar.shown' || type === 'hook' || String(type).startsWith('session.')) schedule();
 });
@@ -356,7 +400,7 @@ function toggleAudio(key, kind, i) {
 
 async function answer(key, text, message = false) {
   stopAudio();
-  const { via, title } = await deliver(key, text, { links: state.links, request: mx.request, sessions: await listSessions(), message });
+  const { via, title } = await deliver(key, text, { links: state.links, request, sessions: await listSessions(), message });
   delete state.ui.picked[key];
   delete state.ui.rejecting[key];
   delete state.ui.writing[key];
@@ -406,7 +450,7 @@ async function tell(key, text) {
   const m = (await listSessions()).find((s) => s.id === node.tabId && !s.exited);
   if (!m) throw new Error('a aba do gerente está fechada');
   if (m.hibernated || PROMPT.has(m.status)) throw new Error('o gerente está num prompt: responda na aba dele');
-  await mx.request('terminal.sendText', { tabId: m.id, text: body, submit: true });
+  await request('terminal.sendText', { tabId: m.id, text: body, submit: true });
   if (state.ui.focus === key) delete state.ui.focus;
   const clear = `tell-${key}`;
   state.ui.clears[clear] = (state.ui.clears[clear] || 0) + 1;
@@ -426,7 +470,7 @@ async function onFree(verb, key, values) {
   const s = (await listSessions()).find((x) => x.id === key.slice(1) && !x.exited);
   if (!s) throw new Error('essa aba fechou');
   if (s.hibernated || PROMPT.has(s.status)) throw new Error(`${bare(s.title)} está num prompt: responda na aba`);
-  await mx.request('terminal.sendText', { tabId: s.id, text: body, submit: true });
+  await request('terminal.sendText', { tabId: s.id, text: body, submit: true });
   delete state.ui.writing[key];
   state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
   schedule();
@@ -465,7 +509,7 @@ async function onCard(verb, key, rest, values) {
   }
   if (!action) return null;
   if (verb === 'send' && action.kind === 'command' && action.tabId) {
-    await mx.request('terminal.sendText', { tabId: action.tabId, text: action.text, submit: false });
+    await request('terminal.sendText', { tabId: action.tabId, text: action.text, submit: false });
     return mx.request('session.focus', { tabId: action.tabId });
   }
   if (verb === 'copy') {
@@ -595,5 +639,9 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
     mx.request('window.showBanner', { text: `sessions: ${e.message}` }).catch(() => {});
   });
 });
+
+setInterval(() => {
+  if (Object.values(state.links.nodes).some((n) => n.events && n.events.length)) schedule();
+}, relay.limits.gap / 2).unref();
 
 mx.start();
