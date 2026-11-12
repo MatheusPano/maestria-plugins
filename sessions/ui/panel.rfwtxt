@@ -473,7 +473,34 @@ widget MessageBox = Gap(
         true: Padding(padding: [2.0, 4.0, 0.0, 0.0], child: Text(text: args.c.images, style: { fontSize: 11.0, color: data.theme.dim })),
         default: SizedBox(),
       },
+      switch args.c.hasSuggestion {
+        true: Suggestion(c: args.c),
+        default: SizedBox(),
+      },
     ],
+  ),
+);
+
+widget Suggestion = Padding(
+  padding: [0.0, 6.0, 0.0, 0.0],
+  child: Pressable(
+    radius: 6.0,
+    color: data.theme.bg,
+    hoverColor: data.theme.hover,
+    onTap: event "act" { a: args.c.acts.suggest },
+    child: Container(
+      padding: [10.0, 6.0, 10.0, 6.0],
+      decoration: { type: "box", borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+      child: Row(
+        children: [
+          Glyph(icon: "send", size: 12.0, color: data.theme.accent),
+          SizedBox(width: 8.0),
+          Expanded(child: Text(text: args.c.suggestion, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim })),
+          SizedBox(width: 8.0),
+          Text(text: "sugestão do Claude", style: { fontSize: 10.5, color: data.theme.faint }),
+        ],
+      ),
+    ),
   ),
 );
 
