@@ -102,7 +102,7 @@ test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~, 
     assert.ok(mine.some(([m, p]) => m === 'window.showBanner' && p.text === 'não é uma pasta: /nao/existe/mesmo'));
     const open = mine.find(([m]) => m === 'session.openClaude')[1];
     assert.equal(open.cwd, sub);
-    assert.match(open.label, /^(\S)\1 meu gerente$/u);
+    assert.match(open.label, /^\S \[G\] meu gerente$/u);
     assert.equal(mine.filter(([m]) => m === 'window.input').length, 3);
     const shown = mine.filter(([m]) => m === 'view.open' || m === 'view.update').pop()[1].data;
     assert.equal(shown.name, 'meu gerente');
@@ -252,7 +252,7 @@ test('retomar uma sessão fechada reabre a conversa com --resume, na pasta e com
   side('resume:n1');
   await tick();
   const open = calls.slice(before).find(([m]) => m === 'session.openClaude')[1];
-  assert.deepEqual(open, { cwd: dataDir, label: '◆◆ tarefas', resume: 'conv1' });
+  assert.deepEqual(open, { cwd: dataDir, label: '◆ [G] tarefas', resume: 'conv1' });
   assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes.n1.tabId, 'nova');
   fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: { n1: { tabId: 'velha', sessionId: 'conv1', cwd: dataDir, name: 'tarefas', color: 'green', manager: true, parent: null } }, seq: 1 }));
   handlers.req.initialize({ dataDir });

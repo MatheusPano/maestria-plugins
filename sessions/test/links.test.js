@@ -5,10 +5,13 @@ const assert = require('node:assert/strict');
 const { Links, tinted, bare } = require('../lib/links');
 const { sidebar } = require('../lib/tree');
 
-test('tinted troca a cor da frente em vez de empilhar', () => {
-  assert.equal(tinted('a', 'red'), '● a');
-  assert.equal(tinted('▲ a', 'red'), '● a');
+test('tinted troca a cor e o papel da frente em vez de empilhar', () => {
+  assert.equal(tinted('a', 'red'), '● [S] a');
+  assert.equal(tinted('a', 'red', true), '● [G] a');
+  assert.equal(tinted('▲ [G] a', 'red'), '● [S] a');
+  assert.equal(tinted('▲▲ a', 'red', true), '● [G] a');
   assert.equal(bare('🟩  b'), 'b');
+  assert.equal(bare('[G] solta'), '[G] solta');
 });
 
 test('reconcile segue o sessionId quando o tabId muda e esquece o que sumiu há dias', () => {
@@ -135,7 +138,7 @@ test('link move a subárvore pra cor do novo pai e recusa ciclo; promote dá cor
   assert.equal(l.nodes[fresh].color, 'red');
 });
 
-test('gerente leva a marca dobrada; retitles só pede o que perdeu a marca e mantém o nome que a aba tem', () => {
+test('gerente leva [G] e sessão [S]; retitles só pede o que perdeu a marca e mantém o nome que a aba tem', () => {
   const l = new Links({}, () => 1);
   const g = l.add({ tabId: 'g', name: 'coord', manager: true });
   l.add({ tabId: 'a', parent: g, name: 'a' });
@@ -143,12 +146,12 @@ test('gerente leva a marca dobrada; retitles só pede o que perdeu a marca e man
   const mark = tinted('x', l.nodes[g].color).split(' ')[0];
   const sessions = [
     { id: 'g', title: `${mark} renomeado` },
-    { id: 'a', title: `${mark} a` },
+    { id: 'a', title: `${mark} [S] a` },
     { id: 'b', title: 'b sem marca' },
   ];
   assert.deepEqual(l.retitles(sessions), [
-    { tabId: 'g', title: `${mark}${mark} renomeado` },
-    { tabId: 'b', title: `${mark} b sem marca` },
+    { tabId: 'g', title: `${mark} [G] renomeado` },
+    { tabId: 'b', title: `${mark} [S] b sem marca` },
   ]);
   assert.equal(bare(`${mark}${mark} renomeado`), 'renomeado');
 });

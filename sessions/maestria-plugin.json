@@ -2,7 +2,7 @@
   "id": "maestria.sessions",
   "name": "Sessions",
   "version": "1.2.0",
-  "description": "Gerentes de sessões na Maestria: um claude gerente abre e conduz outras sessões como ferramenta, e as sessões dele herdam a cor do gerente no nome da aba (o gerente leva a marca dobrada). A aba da lateral mostra a árvore de gerentes e quem espera você. O painel mostra todas as conversas do Claude em três colunas (precisa de você, trabalhando, feito hoje), com filtro por gerente, os cartões que o gerente preenche (sessions_card) e uma caixa para mandar mensagem a qualquer sessão. Uma sessão ou gerente de aba fechada volta com retomar, e o diagnóstico da lateral aponta gerente fechado com sessões abertas, cartão parado, conversa sem hooks e arquivos soltos.",
+  "description": "Gerentes de sessões na Maestria: um claude gerente abre e conduz outras sessões como ferramenta, e as sessões dele herdam a cor do gerente no nome da aba, com [G] no gerente e [S] nas sessões dele (\"▲ [G] tarefas\", \"▲ [S] LMS banner\"). A aba da lateral mostra a árvore de gerentes e quem espera você. O painel mostra todas as conversas do Claude em três colunas (precisa de você, trabalhando, feito hoje), com filtro por gerente, os cartões que o gerente preenche (sessions_card) e uma caixa para mandar mensagem a qualquer sessão. Uma sessão ou gerente de aba fechada volta com retomar, e o diagnóstico da lateral aponta gerente fechado com sessões abertas, cartão parado, conversa sem hooks e arquivos soltos.",
   "icon": "icons/sessions.svg",
   "author": "William",
   "maestria": 1,

@@ -7,7 +7,7 @@ const path = require('path');
 /** Aberta é viva ou hibernada: a hibernada tem o processo parado (exited), mas a aba e a conversa continuam. */
 const isOpen = (s) => Boolean(s) && (!s.exited || Boolean(s.hibernated));
 
-// A fonte da Maestria não tem emoji colorido: no nome da aba vai a forma, e a cor fica na aba do plugin.
+// A fonte da Maestria não tem emoji colorido: no nome da aba vai a forma da cor e [G] (gerente) ou [S] (sessão de um gerente); a cor fica na aba do plugin.
 const COLORS = [
   { id: 'red', mark: '●', hex: '#E5534B' },
   { id: 'blue', mark: '▲', hex: '#4FA3F7' },
@@ -21,13 +21,13 @@ const COLORS = [
 ];
 const BY_ID = new Map(COLORS.map((c) => [c.id, c]));
 const LEGACY = ['🟥', '🟦', '🟩', '🟨', '🟪', '🟧', '🟫', '⬜', '⬛'];
-const PREFIX = new RegExp(`^(?:(?:${[...COLORS.map((c) => c.mark), ...LEGACY].join('|')})\\s*)+`, 'u');
+const PREFIX = new RegExp(`^(?:(?:${[...COLORS.map((c) => c.mark), ...LEGACY].join('|')})\\s*)+(?:\\[[GS]\\]\\s*)?`, 'u');
 const FORGET_MS = 3 * 24 * 3600 * 1000;
 const SEEN_MS = 3600 * 1000;
 
 const colorOf = (id) => BY_ID.get(id) || COLORS[0];
 const bare = (name) => String(name || '').replace(PREFIX, '').trim();
-const tinted = (name, colorId, manager = false) => `${colorOf(colorId).mark.repeat(manager ? 2 : 1)} ${bare(name)}`;
+const tinted = (name, colorId, manager = false) => `${colorOf(colorId).mark} [${manager ? 'G' : 'S'}] ${bare(name)}`;
 
 class Links {
   constructor(data = {}, now = Date.now) {

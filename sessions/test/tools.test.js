@@ -40,14 +40,14 @@ test('sessions_open abre em segundo plano, com a cor de quem chama no nome e o p
   const ctx = makeCtx();
   const res = await tools.handle('sessions_open', { cwd: '~/repo', name: 'TASK#1', prompt: '  faz X  ' }, ctx);
   assert.equal(res.isError, undefined);
-  assert.deepEqual(opened(ctx).params, { cwd: '/home/u/repo', label: '● TASK#1', background: true, prompt: 'faz X' });
-  assert.deepEqual(body(res), { tabId: 'tab9', name: '● TASK#1', cwd: '/home/u/repo', prompted: true, color: 'red' });
+  assert.deepEqual(opened(ctx).params, { cwd: '/home/u/repo', label: '● [S] TASK#1', background: true, prompt: 'faz X' });
+  assert.deepEqual(body(res), { tabId: 'tab9', name: '● [S] TASK#1', cwd: '/home/u/repo', prompted: true, color: 'red' });
 });
 
 test('quem chama vira gerente: a aba dele ganha a cor, e a nova fica ligada a ele', async () => {
   const ctx = makeCtx();
   await tools.handle('sessions_open', { cwd: '/srv/app', name: 'a' }, ctx);
-  assert.deepEqual(ctx.calls.find((c) => c.method === 'session.rename').params, { tabId: 'me', title: '●● coordenador' });
+  assert.deepEqual(ctx.calls.find((c) => c.method === 'session.rename').params, { tabId: 'me', title: '● [G] coordenador' });
   const me = ctx.links.byTab('me');
   const child = ctx.links.byTab('tab9');
   assert.equal(ctx.links.nodes[me].manager, true);
@@ -163,7 +163,7 @@ test('sessions_rename mantém a cor de uma sessão ligada', async () => {
   const ctx = makeCtx({ sessions: [{ id: 'me', title: 'a' }, { id: 'tab9', title: '● x' }, { id: 'loose', title: 'y' }] });
   await tools.handle('sessions_open', { cwd: '/srv/app', name: 'x' }, ctx);
   let res = await tools.handle('sessions_rename', { tabId: 'tab9', name: 'novo nome' }, ctx);
-  assert.equal(body(res).title, '● novo nome');
+  assert.equal(body(res).title, '● [S] novo nome');
   res = await tools.handle('sessions_rename', { tabId: 'loose', name: 'solto' }, ctx);
   assert.equal(body(res).title, 'solto');
   assert.equal((await tools.handle('sessions_rename', { tabId: 'nada', name: 'z' }, ctx)).isError, true);
@@ -188,7 +188,7 @@ test('sessions_card guarda o cartão, liga a sessão ao gerente e abre o painel'
     proof: null, at: 0, since: 0, doneAt: null, doneBecause: null,
   });
   assert.deepEqual(shown, [me]);
-  assert.ok(ctx.calls.some((c) => c.method === 'session.rename' && c.params.tabId === 'w' && c.params.title === '● TASK#5 worker'));
+  assert.ok(ctx.calls.some((c) => c.method === 'session.rename' && c.params.tabId === 'w' && c.params.title === '● [S] TASK#5 worker'));
 });
 
 test('sessions_card recusa estado, bullets e action inválidos', async () => {
