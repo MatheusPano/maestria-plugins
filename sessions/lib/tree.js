@@ -1,7 +1,7 @@
 'use strict';
 // A aba da lateral: cada gerente com as sessões dele embaixo, quem precisa de você primeiro, e as prontas dobradas.
 
-const { colorOf, bare } = require('./links');
+const { colorOf, bare, isOpen } = require('./links');
 const { stateOf, liveOf, waitOf, repliedOf, plain } = require('./cards');
 
 const STATUS_TONE = {
@@ -61,12 +61,13 @@ function managerItem(links, key, live, depth) {
   const n = counts(links, key, live);
   const parts = [n.needs_you && `${n.needs_you} precisa${n.needs_you > 1 ? 'm' : ''} de você`, n.working && `${n.working} trabalhando`, n.done && `${n.done} pronta${n.done > 1 ? 's' : ''}`].filter(Boolean);
   const menu = [
+    ...(session ? [] : [{ action: `resume:${key}`, label: 'retomar a conversa', icon: 'play' }]),
     { action: `panel:${key}`, label: 'abrir painel', icon: 'stack' },
     ...(depth > 0 ? [{ action: `unlink:${key}`, label: 'tirar da árvore', icon: 'remove' }] : []),
   ];
   return {
     title: bare(session ? session.title : node.name) || node.name,
-    subtitle: parts.join(' · ') || (session ? session.statusLabel || session.status || '' : 'fechada'),
+    subtitle: session ? parts.join(' · ') || session.statusLabel || session.status || '' : ['fechada', ...parts].join(' · '),
     subtitleTone: n.needs_you ? 'red' : undefined,
     avatar: { plain: true, icon: 'dot', color: color.hex, size: 18 },
     strong: true,
@@ -75,7 +76,7 @@ function managerItem(links, key, live, depth) {
     status: session ? STATUS_TONE[session.status] || 'faint' : undefined,
     meta: n.needs_you ? String(n.needs_you) : undefined,
     metaTone: n.needs_you ? 'red' : undefined,
-    action: session ? `focus:${session.id}` : `panel:${key}`,
+    action: session ? `focus:${session.id}` : `resume:${key}`,
     actions: [{ action: `panel:${key}`, icon: 'stack', tooltip: 'painel' }],
     menu,
   };
@@ -90,7 +91,19 @@ function sessionItem(links, key, live, depth, now) {
   const replied = repliedOf(card, session);
   const since = replied ? replied.at : card && (st === 'done' ? card.doneAt : card.since);
   if (!session) {
-    return { title: name, subtitle: 'fechada', dim: true, indent: depth, icon: 'dot', tone: 'faint', menu: [{ action: `forget:${key}`, label: 'esquecer', icon: 'trash' }] };
+    return {
+      title: name,
+      subtitle: 'fechada · clique para retomar',
+      dim: true,
+      indent: depth,
+      icon: 'dot',
+      tone: 'faint',
+      action: `resume:${key}`,
+      menu: [
+        { action: `resume:${key}`, label: 'retomar a conversa', icon: 'play' },
+        { action: `forget:${key}`, label: 'esquecer', icon: 'trash' },
+      ],
+    };
   }
   return {
     title: name,
@@ -156,10 +169,10 @@ function looseItem(links, s) {
 
 function sidebar(links, sessions, ui = {}, now = Date.now()) {
   const linked = new Set(Object.values(links.nodes).map((n) => n.tabId));
-  const loose = sessions.filter((s) => s.kind === 'claude' && !s.exited && !s.embedded && !linked.has(s.id));
-  const waiting = sessions.filter((s) => !s.exited && s.needsYou && linked.has(s.id)).length;
+  const loose = sessions.filter((s) => s.kind === 'claude' && isOpen(s) && !s.embedded && !linked.has(s.id));
+  const waiting = sessions.filter((s) => isOpen(s) && s.needsYou && linked.has(s.id)).length;
   const blocks = [
-    { type: 'header', title: 'Gerentes', actions: [{ action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
+    { type: 'header', title: 'Gerentes', actions: [{ action: 'doctor', icon: 'clean', tooltip: 'diagnóstico' }, { action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
     {
       type: 'list',
       flat: true,

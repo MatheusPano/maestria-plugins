@@ -5,10 +5,13 @@ const assert = require('node:assert/strict');
 const { Links, tinted, bare } = require('../lib/links');
 const { sidebar } = require('../lib/tree');
 
-test('tinted troca a cor da frente em vez de empilhar', () => {
-  assert.equal(tinted('a', 'red'), '● a');
-  assert.equal(tinted('▲ a', 'red'), '● a');
+test('tinted troca a cor e o papel da frente em vez de empilhar', () => {
+  assert.equal(tinted('a', 'red'), '● [S] a');
+  assert.equal(tinted('a', 'red', true), '● [G] a');
+  assert.equal(tinted('▲ [G] a', 'red'), '● [S] a');
+  assert.equal(tinted('▲▲ a', 'red', true), '● [G] a');
   assert.equal(bare('🟩  b'), 'b');
+  assert.equal(bare('[G] solta'), '[G] solta');
 });
 
 test('reconcile segue o sessionId quando o tabId muda e esquece o que sumiu há dias', () => {
@@ -29,13 +32,29 @@ test('reconcile segue o sessionId quando o tabId muda e esquece o que sumiu há 
   assert.equal(l.nodes[gone], undefined);
 });
 
-test('um tabId reaproveitado por outra conversa não herda o nó', () => {
-  const l = new Links({}, () => 0);
+test('depois do /clear a aba ganha outro sessionId e o nó segue a aba; se a conversa antiga está noutra aba, o nó vai com ela', () => {
+  let now = 0;
+  const l = new Links({}, () => now);
   const k = l.add({ tabId: 't1', name: 'g' });
-  l.reconcile([{ id: 't1', sessionId: 's1' }]);
-  l.reconcile([{ id: 't1', sessionId: 'outra' }]);
-  assert.equal(l.nodes[k].tabId, 't1');
-  assert.equal(l.nodes[k].seenAt, 0);
+  const other = l.add({ tabId: 't9', name: 'o' });
+  l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }, { id: 't9', sessionId: 's9' }]);
+  now = 10;
+  l.reconcile([{ id: 't1', sessionId: 's2', cwd: '/r' }, { id: 't9', sessionId: 's9' }]);
+  assert.deepEqual([l.nodes[k].tabId, l.nodes[k].sessionId, l.nodes[k].seenAt, l.nodes[k].cwd], ['t1', 's2', 10, '/r']);
+  l.reconcile([{ id: 't1', sessionId: 's9' }, { id: 't2', sessionId: 's2' }]);
+  assert.equal(l.nodes[k].tabId, 't2');
+  assert.equal(l.nodes[other].sessionId, 's9');
+});
+
+test('reconcile só pede pra salvar quando algo muda (ou o visto ficou velho), não a cada evento', () => {
+  let now = 0;
+  const l = new Links({}, () => now);
+  l.add({ tabId: 't1', name: 'g' });
+  assert.equal(l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }]), true);
+  now = 1000;
+  assert.equal(l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }]), false);
+  now = 2 * 3600 * 1000;
+  assert.equal(l.reconcile([{ id: 't1', sessionId: 's1', cwd: '/r' }]), true);
 });
 
 test('a lateral põe quem precisa de você primeiro, com o pedido do cartão, e dobra as prontas', () => {
@@ -119,7 +138,7 @@ test('link move a subárvore pra cor do novo pai e recusa ciclo; promote dá cor
   assert.equal(l.nodes[fresh].color, 'red');
 });
 
-test('gerente leva a marca dobrada; retitles só pede o que perdeu a marca e mantém o nome que a aba tem', () => {
+test('gerente leva [G] e sessão [S]; retitles só pede o que perdeu a marca e mantém o nome que a aba tem', () => {
   const l = new Links({}, () => 1);
   const g = l.add({ tabId: 'g', name: 'coord', manager: true });
   l.add({ tabId: 'a', parent: g, name: 'a' });
@@ -127,12 +146,35 @@ test('gerente leva a marca dobrada; retitles só pede o que perdeu a marca e man
   const mark = tinted('x', l.nodes[g].color).split(' ')[0];
   const sessions = [
     { id: 'g', title: `${mark} renomeado` },
-    { id: 'a', title: `${mark} a` },
+    { id: 'a', title: `${mark} [S] a` },
     { id: 'b', title: 'b sem marca' },
   ];
   assert.deepEqual(l.retitles(sessions), [
-    { tabId: 'g', title: `${mark}${mark} renomeado` },
-    { tabId: 'b', title: `${mark} b sem marca` },
+    { tabId: 'g', title: `${mark} [G] renomeado` },
+    { tabId: 'b', title: `${mark} [S] b sem marca` },
   ]);
   assert.equal(bare(`${mark}${mark} renomeado`), 'renomeado');
+});
+
+test('um título que é só a pasta (a aba retomada na mão) volta ao nome do nó, com a marca', () => {
+  const l = new Links({}, () => 0);
+  const g = l.add({ tabId: 't1', name: 'tarefas', manager: true });
+  const mark = (name) => tinted(name, l.nodes[g].color, true);
+  assert.deepEqual(l.retitles([{ id: 't1', title: '~', cwd: '/home/u' }, { id: 't2', title: 'x' }]), [{ tabId: 't1', title: mark('tarefas') }]);
+  assert.deepEqual(l.retitles([{ id: 't1', title: 'repo', cwd: '/srv/repo' }]), [{ tabId: 't1', title: mark('tarefas') }]);
+  assert.deepEqual(l.retitles([{ id: 't1', title: 'outro nome', cwd: '/srv/repo' }]), [{ tabId: 't1', title: mark('outro nome') }]);
+});
+
+test('gerente com a aba fechada diz "fechada" e o clique retoma a conversa; sessão fechada também retoma', () => {
+  const l = new Links({}, () => 0);
+  const r = l.add({ tabId: 'velha', name: 'tarefas', manager: true });
+  const kid = l.add({ tabId: 'k', parent: r, name: 'filha' });
+  const gone = l.add({ tabId: 'sumiu', parent: r, name: 'fechou' });
+  l.nodes[gone].card = { state: 'needs_you', headline: 'merge o PR' };
+  const items = sidebar(l, [{ id: 'k', title: 'filha', status: 'tool' }]).blocks[1].items;
+  const [boss, closed, live] = items;
+  assert.deepEqual([boss.title, boss.subtitle, boss.action, boss.menu[0].action], ['tarefas', 'fechada · 1 precisa de você · 1 trabalhando', `resume:${r}`, `resume:${r}`]);
+  assert.deepEqual([closed.title, closed.action, closed.menu.map((m) => m.action)], ['fechou', `resume:${gone}`, [`resume:${gone}`, `forget:${gone}`]]);
+  assert.equal(live.action, 'focus:k');
+  assert.ok(kid);
 });

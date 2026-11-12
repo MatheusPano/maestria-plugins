@@ -98,6 +98,7 @@ widget Tell = switch data.canTell {
       id: data.tell.input,
       placeholder: "mensagem para o gerente (vai direto para a aba dele)",
       clear: data.tell.clear,
+      autofocus: data.tell.focus,
       fontSize: 12.5,
       multiline: true,
       maxLines: 5,
@@ -127,6 +128,7 @@ widget Lane = Padding(
       ),
       Expanded(
         child: SingleChildScrollView(
+          id: args.col.state,
           primary: false,
           padding: [0.0, 0.0, 0.0, 16.0],
           child: Column(
@@ -232,6 +234,10 @@ widget TitleRow = Row(
     SizedBox(width: 8.0),
     Text(text: args.c.age, style: { fontSize: 11.0, color: switch args.c.state { "needs_you": data.theme.red, default: data.theme.faint } }),
     SizedBox(width: 4.0),
+    switch args.c.canDismiss {
+      true: IconButton(icon: "check", tooltip: "dispensar: o cartão vai para Feito", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.dismiss }),
+      default: SizedBox(),
+    },
     IconButton(icon: "more", tooltip: "abrir o cartão", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.detail }),
   ],
 );
@@ -254,14 +260,26 @@ widget Command = Column(
   crossAxisAlignment: "stretch",
   children: [
     Gap(
-      child: Container(
-        padding: [12.0, 9.0, 12.0, 9.0],
-        decoration: { type: "box", color: data.theme.hover, borderRadius: [{ x: 6.0 }] },
-        child: Text(
-          text: [switch args.c.shell { true: "$ ", default: "" }, args.c.command],
-          style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.fg },
+      child: switch args.c.link {
+        true: Pressable(
+          radius: 6.0,
+          color: data.theme.hover,
+          hoverColor: data.theme.border,
+          onTap: event "act" { a: args.c.acts.link },
+          child: Container(
+            padding: [12.0, 9.0, 12.0, 9.0],
+            child: Text(text: args.c.command, style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.accent }),
+          ),
         ),
-      ),
+        default: Container(
+          padding: [12.0, 9.0, 12.0, 9.0],
+          decoration: { type: "box", color: data.theme.hover, borderRadius: [{ x: 6.0 }] },
+          child: Text(
+            text: [switch args.c.shell { true: "$ ", default: "" }, args.c.command],
+            style: { fontSize: 12.0, fontFamily: data.theme.mono, color: data.theme.fg },
+          ),
+        ),
+      },
     ),
     SizedBox(height: 6.0),
     Text(text: args.c.howTo, style: { fontSize: 11.0, color: data.theme.dim }),
@@ -272,11 +290,18 @@ widget Command = Column(
     Gap(
       child: Row(
         children: [
-          switch args.c.canSend {
-            true: Btn(label: args.c.sendLabel, icon: "send", act: args.c.acts.send, kind: "pri"),
-            default: Btn(label: "copiar", icon: "copy", act: args.c.acts.copy, kind: "pri"),
+          switch args.c.link {
+            true: Btn(label: "abrir", icon: "open", act: args.c.acts.link, kind: "pri"),
+            default: switch args.c.canSend {
+              true: Btn(label: args.c.sendLabel, icon: "send", act: args.c.acts.send, kind: "pri"),
+              default: Btn(label: "copiar", icon: "copy", act: args.c.acts.copy, kind: "pri"),
+            },
           },
           SizedBox(width: 6.0),
+          switch args.c.link {
+            true: IconBtn(icon: "copy", tip: "copiar", act: args.c.acts.copy),
+            default: SizedBox(),
+          },
           switch args.c.canSend {
             true: IconBtn(icon: "copy", tip: "copiar", act: args.c.acts.copy),
             default: SizedBox(),
@@ -483,7 +508,27 @@ widget Proofs = Column(
       default: SizedBox(),
     },
     switch args.c.hasPrs {
-      true: Gap(child: Wrap(spacing: 5.0, runSpacing: 5.0, children: [...for p in args.c.prs: Pr(p: p)])),
+      true: Gap(
+        child: Wrap(
+          spacing: 5.0,
+          runSpacing: 5.0,
+          crossAxisAlignment: "center",
+          children: [
+            switch args.c.branch {
+              "": SizedBox(),
+              default: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "branch", size: 12.0, color: data.theme.faint),
+                  SizedBox(width: 4.0),
+                  Text(text: args.c.branch, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.0, fontFamily: data.theme.mono, color: data.theme.dim }),
+                ],
+              ),
+            },
+            ...for p in args.c.prs: Pr(p: p),
+          ],
+        ),
+      ),
       default: SizedBox(),
     },
     switch args.c.hasSounds {
@@ -605,6 +650,10 @@ widget Done = Box(
       true: Padding(padding: [0.0, 6.0, 0.0, 0.0], child: Text(text: args.c.headline, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim })),
       default: SizedBox(),
     },
+    switch args.c.because {
+      "": SizedBox(),
+      default: Padding(padding: [0.0, 4.0, 0.0, 0.0], child: Text(text: args.c.because, maxLines: 2, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint })),
+    },
     switch args.c.writing {
       true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão (vai direto para a aba)"),
       default: SizedBox(),
@@ -666,6 +715,10 @@ widget detail = SingleChildScrollView(
           SizedBox(width: 10.0),
           Text(text: data.card.age, style: { fontSize: 12.0, color: data.theme.dim }),
           SizedBox(width: 10.0),
+          switch data.card.canDismiss {
+            true: Padding(padding: [0.0, 0.0, 6.0, 0.0], child: Btn(label: "dispensar", icon: "check", act: data.card.acts.dismiss, kind: "sec")),
+            default: SizedBox(),
+          },
           switch data.card.acts.focus {
             "": SizedBox(),
             default: Btn(label: "ir para a aba", icon: "open", act: data.card.acts.focus, kind: "sec"),
@@ -779,4 +832,70 @@ widget image = Container(
 widget Label = Padding(
   padding: [0.0, 0.0, 0.0, 8.0],
   child: Text(text: args.text, style: { fontSize: 10.5, fontWeight: "w600", color: data.theme.faint, letterSpacing: 0.6 }),
+);
+
+widget doctor = SingleChildScrollView(
+  primary: false,
+  padding: [22.0, 18.0, 22.0, 22.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: "start",
+              children: [
+                Text(text: data.summary, style: { fontSize: 17.0, fontWeight: "w600", color: data.theme.fg }),
+                SizedBox(height: 2.0),
+                Text(text: data.counts, style: { fontSize: 12.0, color: data.theme.dim }),
+              ],
+            ),
+          ),
+          switch data.canFixAll {
+            true: Btn(label: data.fixAllLabel, icon: "check", act: "doctor-all", kind: "pri"),
+            default: SizedBox(),
+          },
+        ],
+      ),
+      SizedBox(height: 14.0),
+      switch data.isEmpty {
+        true: Text(text: "Nenhum gerente fechado com sessões abertas, nenhum cartão parado, nenhum arquivo solto.", style: { fontSize: 12.5, color: data.theme.dim }),
+        default: SizedBox(),
+      },
+      ...for f in data.findings: Finding(f: f),
+    ],
+  ),
+);
+
+widget Finding = Padding(
+  padding: [0.0, 0.0, 0.0, 8.0],
+  child: Container(
+    padding: [12.0, 10.0, 12.0, 10.0],
+    decoration: { type: "box", color: data.theme.bg, borderRadius: [{ x: 8.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Row(
+      crossAxisAlignment: "start",
+      children: [
+        Padding(
+          padding: [0.0, 5.0, 0.0, 0.0],
+          child: Dot(color: switch args.f.tone { "red": data.theme.red, "yellow": data.theme.yellow, default: data.theme.faint }, size: 8.0),
+        ),
+        SizedBox(width: 10.0),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              Text(text: args.f.title, style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg, height: 1.35 }),
+              SizedBox(height: 3.0),
+              Text(text: args.f.detail, style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 }),
+            ],
+          ),
+        ),
+        switch args.f.hasFix {
+          true: Padding(padding: [10.0, 0.0, 0.0, 0.0], child: Btn(label: args.f.fixLabel, icon: "check", act: args.f.act, kind: "sec")),
+          default: SizedBox(),
+        },
+      ],
+    ),
+  ),
 );

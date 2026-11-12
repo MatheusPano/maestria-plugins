@@ -1,8 +1,8 @@
 {
   "id": "maestria.sessions",
   "name": "Sessions",
-  "version": "1.1.0",
-  "description": "Gerentes de sessões na Maestria: um claude gerente abre e conduz outras sessões como ferramenta, e as sessões dele herdam a cor do gerente no nome da aba (o gerente leva a marca dobrada). A aba da lateral mostra a árvore de gerentes e quem espera você. O painel mostra todas as conversas do Claude em três colunas (precisa de você, trabalhando, feito hoje), com filtro por gerente, os cartões que o gerente preenche (sessions_card) e uma caixa para mandar mensagem a qualquer sessão.",
+  "version": "1.2.0",
+  "description": "Gerentes de sessões na Maestria: um claude gerente abre e conduz outras sessões como ferramenta, e as sessões dele herdam a cor do gerente no nome da aba, com [G] no gerente e [S] nas sessões dele (\"▲ [G] tarefas\", \"▲ [S] LMS banner\"). A aba da lateral mostra a árvore de gerentes e quem espera você. O painel mostra todas as conversas do Claude em três colunas (precisa de você, trabalhando, feito hoje), com filtro por gerente, os cartões que o gerente preenche (sessions_card) e uma caixa para mandar mensagem a qualquer sessão. Uma sessão ou gerente de aba fechada volta com retomar, e o diagnóstico da lateral aponta gerente fechado com sessões abertas, cartão parado, conversa sem hooks e arquivos soltos.",
   "icon": "icons/sessions.svg",
   "author": "William",
   "maestria": 1,
@@ -69,7 +69,7 @@
       },
       {
         "name": "sessions_send",
-        "description": "Send a message to an existing Claude session, as if typed in its terminal and submitted. Refused while that session waits for the user (permission or question) or is hibernated. If it is busy, the message is queued by Claude Code.",
+        "description": "Send a message to an existing Claude session, as if typed in its terminal and submitted. Refused while that session waits for the user (permission or question). A hibernated session is woken first and the message goes once it is ready. If it is busy, the message is queued by Claude Code.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -129,7 +129,7 @@
       },
       {
         "name": "sessions_card",
-        "description": "Set or replace the card of a session you manage, in your manager panel (a Maestria board: needs-you, working, done today). Use it instead of writing status reports in chat. state: working, needs_you or done. headline: one sentence, what the user has to do (or what is happening). Up to 3 short bullets (the session's notes, folded on the card). action: a command for the user to run (kind \"command\", tabId = the tab it belongs to: the card types it there), a question (kind \"question\", optional options A/B/C, each with an optional audio file to listen to) or an approval (kind \"approve\": approve / reject with a reason). Answers go straight into the session's terminal (to you instead while it sits in a permission prompt), and you get a copy in the `answers` of your next sessions_list or sessions_card. proof: images (absolute paths, shown as thumbnails), prs (url, ci), audio (absolute paths) and log (the last lines of a run). A session not yet in your tree is linked to you.",
+        "description": "Set or replace the card of a session you manage, in your manager panel (a Maestria board: needs-you, working, done today). Use it instead of writing status reports in chat. Only for a session in your own tree (one you opened or linked), never your own tab. The result has link (this card) and panel (your panel): to point the user at a card or the panel, paste that maestria:// link bare on its own line, not inside markdown; clicking it in Maestria opens it there. state: working, needs_you or done. done means nothing is left for the session or the user: the PR merged or deployed, the task closed. Pushed but waiting for a PR to be opened, reviewed or merged, or for any decision, is needs_you (put the PR in proof); still running is working. done needs doneBecause and is refused while the session runs or waits on the user, while a PR in proof or in its transcript is open, or with commits not pushed. The result (and sessions_list) also carries events: what happened in your sessions since you last looked (a turn ended, a session waits on the user, the user typed straight into one); act on them. headline: one sentence, what the user has to do (or what is happening). Up to 3 short bullets (the session's notes, folded on the card). action: a command for the user to run (kind \"command\", tabId = the tab it belongs to: the card types it there), a question (kind \"question\", optional options A/B/C, each with an optional audio file to listen to) or an approval (kind \"approve\": approve / reject with a reason). Answers go straight into the session's terminal (to you instead while it sits in a permission prompt), and you get a copy in the `answers` of your next sessions_list or sessions_card. proof: images (absolute paths, shown as thumbnails), prs (url, ci), audio (absolute paths) and log (the last lines of a run). A session not yet in your tree is linked to you.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -148,6 +148,10 @@
             "headline": {
               "type": "string",
               "description": "One sentence: what the user has to do, or what the session is doing."
+            },
+            "doneBecause": {
+              "type": "string",
+              "description": "Required with state done: what finished it (\"PR #12 merged\", \"deployed\", \"task closed\", \"investigation only, no code\"). Shown on the card."
             },
             "bullets": {
               "type": "array",

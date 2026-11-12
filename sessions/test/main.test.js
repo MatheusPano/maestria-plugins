@@ -74,7 +74,7 @@ test('depois de abrir o painel, os refresh mandam só os dados (o template de no
 test('a caixa do topo manda direto pro gerente e a do cartão feito abre e fecha', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
   handlers.req.initialize({ dataDir });
-  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'done' } });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'done', doneBecause: 'PR mergeado', doneBecause: 'PR mergeado' } });
   const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
   const g = Object.keys(nodes).find((k) => nodes[k].tabId === 'g');
   const before = calls.length;
@@ -84,14 +84,15 @@ test('a caixa do topo manda direto pro gerente e a do cartão feito abre e fecha
   assert.deepEqual(sent, [['g', 'como está o ceph?', true]]);
 });
 
-test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~', async () => {
+test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~, e abre o painel dele com a caixa de mensagem em foco', async () => {
   const home = os.homedir();
   const sub = fs.mkdtempSync(path.join(home, '.sessions-test-'));
   try {
     queue['folders.list'] = [[{ root: '/var/www/x', name: 'x' }]];
     queue['window.pick'] = [':outra-pasta'];
-    queue['window.input'] = ['/nao/existe/mesmo', `~/${path.basename(sub)}`, 'meu gerente', ''];
+    queue['window.input'] = ['/nao/existe/mesmo', `~/${path.basename(sub)}`, 'meu gerente'];
     queue['session.openClaude'] = [{ tabId: 'novo' }];
+    sessions.push({ id: 'novo', kind: 'claude', title: 'meu gerente', status: 'thinking' });
     const before = calls.length;
     handlers.note['view.action']({ viewId: 'sidebar', action: 'novo' });
     await tick();
@@ -101,8 +102,13 @@ test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~',
     assert.ok(mine.some(([m, p]) => m === 'window.showBanner' && p.text === 'não é uma pasta: /nao/existe/mesmo'));
     const open = mine.find(([m]) => m === 'session.openClaude')[1];
     assert.equal(open.cwd, sub);
-    assert.match(open.label, /^(\S)\1 meu gerente$/u);
+    assert.match(open.label, /^\S \[G\] meu gerente$/u);
+    assert.equal(mine.filter(([m]) => m === 'window.input').length, 3);
+    const shown = mine.filter(([m]) => m === 'view.open' || m === 'view.update').pop()[1].data;
+    assert.equal(shown.name, 'meu gerente');
+    assert.equal(shown.tell.focus, true);
   } finally {
+    sessions.splice(sessions.findIndex((s) => s.id === 'novo'), 1);
     fs.rmSync(sub, { recursive: true, force: true });
   }
 });
@@ -119,6 +125,19 @@ test('mensagem pela caixa de um cartão de comando chega na aba sem apagar o com
   assert.deepEqual(calls.slice(before).filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text]), [['w', 'olha os logs antes']]);
   const card = read()[key].card;
   assert.deepEqual([card.state, card.headline, card.action.text, card.answered.text, card.answered.message], ['needs_you', 'rode isso', 'make deploy', 'olha os logs antes', true]);
+});
+
+test('cartão de comando com um link: o cartão abre o link no navegador em vez de mandar para a aba', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const url = 'https://github.com/cefis/x/compare/main...feature/TASK%2389380?expand=1';
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'abra o PR', action: { kind: 'command', text: url, tabId: 'w' } } });
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `browse:${key}` } });
+  await tick();
+  assert.deepEqual(calls.slice(before).filter(([m]) => m === 'window.openUrl' || m === 'terminal.sendText').map(([m, p]) => [m, p.url]), [['window.openUrl', url]]);
 });
 
 test('um painel só: trocar de gerente atualiza o mesmo painel, e o cartão de outro gerente não o tira de quem você olha', async () => {
@@ -175,5 +194,178 @@ test('o painel abre em todas as conversas e manda mensagem a uma sem gerente', a
     assert.deepEqual(calls.slice(before).filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text]), [['solta', 'oi']]);
   } finally {
     sessions.splice(2);
+  }
+});
+
+test('dispensar um cartão leva ele para Feito, sem ação, até o gerente postar outro', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'responda na aba', action: { kind: 'question', text: 'A ou B?' } } });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(read()).find((k) => read()[k].tabId === 'w');
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `dismiss:${key}` } });
+  await tick();
+  const card = read()[key].card;
+  assert.deepEqual([card.state, card.action, card.headline], ['done', null, 'Dispensado por você.']);
+});
+
+test('as ações do menu da lateral chegam ao que fazem: "ligar ao gerente" pendura a sessão solta no gerente', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const side = (a) => handlers.note['view.action']({ viewId: 'sidebar', action: a });
+  const lastSidebar = () => calls.filter(([m]) => m === 'sidebar.update').map(([, p]) => p).pop();
+  side('manager:g');
+  await new Promise((r) => setTimeout(r, 400));
+  const g = Object.keys(read()).find((k) => read()[k].tabId === 'g');
+  const loose = lastSidebar().blocks.flatMap((b) => b.items || []).find((i) => i.action === 'focus:w');
+  const link = loose.menu.find((m) => m.label === 'ligar ao gerente').children[0].action;
+  side(link);
+  await tick();
+  const w = Object.values(read()).find((n) => n.tabId === 'w');
+  assert.equal(w && w.parent, g);
+});
+
+test('links.json estragado: fica guardado ao lado e a cópia da última subida assume; o arquivo é trocado inteiro', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  const file = path.join(dataDir, 'links.json');
+  fs.writeFileSync(file, JSON.stringify({ nodes: { n1: { tabId: 'g', name: 'g', manager: true, color: 'red', parent: null } }, seq: 1 }));
+  handlers.req.initialize({ dataDir });
+  fs.writeFileSync(file, '{"nodes": {"n1": {"tab');
+  handlers.req.initialize({ dataDir });
+  const kept = fs.readdirSync(dataDir).filter((f) => f.startsWith('links.json.estragado-'));
+  assert.equal(kept.length, 1);
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+  const nodes = JSON.parse(fs.readFileSync(file, 'utf8')).nodes;
+  assert.equal(nodes.n1.name, 'g');
+  assert.equal(Object.values(nodes).find((n) => n.tabId === 'w').parent, 'n1');
+  assert.equal(fs.existsSync(`${file}.tmp`), false);
+});
+
+test('retomar uma sessão fechada reabre a conversa com --resume, na pasta e com o nome; Maestria sem resume fecha a aba nova e avisa', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: { n1: { tabId: 'velha', sessionId: 'conv1', cwd: dataDir, name: 'tarefas', color: 'green', manager: true, parent: null } }, seq: 1 }));
+  handlers.req.initialize({ dataDir });
+  const side = (a) => handlers.note['view.action']({ viewId: 'sidebar', action: a });
+  queue['session.openClaude'] = [{ tabId: 'nova', resumed: true }];
+  const before = calls.length;
+  side('resume:n1');
+  await tick();
+  const open = calls.slice(before).find(([m]) => m === 'session.openClaude')[1];
+  assert.deepEqual(open, { cwd: dataDir, label: '◆ [G] tarefas', resume: 'conv1' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes.n1.tabId, 'nova');
+  fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: { n1: { tabId: 'velha', sessionId: 'conv1', cwd: dataDir, name: 'tarefas', color: 'green', manager: true, parent: null } }, seq: 1 }));
+  handlers.req.initialize({ dataDir });
+  queue['session.openClaude'] = [{ tabId: 'fresca' }];
+  const mark = calls.length;
+  side('resume:n1');
+  await tick();
+  const after = calls.slice(mark);
+  assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['fresca']);
+  assert.match(after.find(([m]) => m === 'window.showBanner')[1].text, /não retoma/);
+});
+
+test('o diagnóstico abre pela lateral e "arrumar tudo" só faz o automático', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  fs.mkdirSync(path.join(dataDir, 'proof'));
+  fs.writeFileSync(path.join(dataDir, 'proof', 'solta.png'), 'x');
+  fs.writeFileSync(path.join(dataDir, 'links.json'), JSON.stringify({ nodes: {
+    n1: { tabId: 'g', name: 'g', manager: true, color: 'red', parent: null },
+    n2: { tabId: 'fechou', name: 'vazia', color: 'red', parent: 'n1' },
+    n3: { tabId: 'outra', name: 'parada', color: 'red', parent: 'n1', card: { state: 'needs_you', headline: 'x', at: 1 } },
+  }, seq: 3 }));
+  handlers.req.initialize({ dataDir });
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'sidebar', action: 'doctor' });
+  await tick();
+  const opened = calls.slice(before).find(([m, p]) => m === 'view.open' && p.viewId === 'diagnostico')[1];
+  assert.equal(opened.rfw.root, 'doctor');
+  assert.equal(opened.data.canFixAll, true);
+  handlers.note['view.action']({ viewId: 'diagnostico', action: 'act', values: { a: 'doctor-all' } });
+  await tick();
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  assert.deepEqual(Object.keys(nodes), ['n1', 'n3']);
+  assert.equal(nodes.n3.card.state, 'needs_you');
+  assert.deepEqual(fs.readdirSync(path.join(dataDir, 'proof')), []);
+});
+
+test('um link maestria:// clicado abre o painel do gerente e o cartão da sessão; sessions_card devolve o link', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const res = await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'olha' } });
+  const out = JSON.parse(res.content[0].text);
+  assert.deepEqual([out.link, out.panel], ['maestria://maestria.sessions/card/w', 'maestria://maestria.sessions/panel/g']);
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'link', action: 'card/w', values: { tabId: 'g' } });
+  await tick();
+  const card = calls.slice(before).find(([m, p]) => m === 'view.open' && p.viewId === `cartao:${key}`);
+  assert.ok(card, 'abriu o cartão');
+  const mark = calls.length;
+  handlers.note['view.action']({ viewId: 'link', action: 'card/sumiu', values: {} });
+  await tick();
+  assert.match(calls.slice(mark).find(([m]) => m === 'window.showBanner')[1].text, /não está mais na árvore/);
+});
+
+test('o que você digita direto numa sessão chega ao gerente parado; a mensagem mandada pelo painel não conta como digitada', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+    const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+    const hook = (name, payload) => handlers.note.event({ type: 'hook', tabId: 'w', name, payload });
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `message:${key}`, text: 'pelo painel' } });
+    await tick();
+    hook('UserPromptSubmit', { prompt: 'pelo painel' });
+    hook('UserPromptSubmit', { prompt: 'usa a v2 da API' });
+    const before = calls.length;
+    await new Promise((r) => setTimeout(r, 900));
+    const toManager = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+    assert.equal(toManager.length, 1);
+    assert.match(toManager[0], /O usuário escreveu direto para "w": "usa a v2 da API"/);
+    assert.doesNotMatch(toManager[0], /pelo painel/);
+  } finally {
+    Object.assign(relay.limits, was);
+  }
+});
+
+test('se o aviso ao gerente falha, a fila volta e sai na próxima', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const realRequest = fake.request;
+    let fail = true;
+    fake.request = async (m, p) => {
+      if (m === 'terminal.sendText' && p.tabId === 'g' && fail) {
+        fail = false;
+        throw new Error('aba sumiu');
+      }
+      return realRequest(m, p);
+    };
+    try {
+      handlers.note.event({ type: 'hook', tabId: 'w', name: 'UserPromptSubmit', payload: { prompt: 'segunda tentativa' } });
+      const before = calls.length;
+      await new Promise((r) => setTimeout(r, 900));
+      handlers.note.event({ type: 'hook', tabId: 'g', name: 'Stop', payload: {} });
+      await new Promise((r) => setTimeout(r, 500));
+      const got = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+      assert.equal(got.length, 1);
+      assert.match(got[0], /segunda tentativa/);
+    } finally {
+      fake.request = realRequest;
+    }
+  } finally {
+    Object.assign(relay.limits, was);
   }
 });

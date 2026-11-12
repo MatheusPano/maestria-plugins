@@ -29,6 +29,17 @@ test('quem espera você ganha do cartão; sem cartão, o status ao vivo decide',
   assert.equal(taskOf({ title: 'faz a task#88832', branch: '' }), 'TASK#88832');
 });
 
+test('sessão hibernada, encerrada ou fechada não está trabalhando; dispensado fica em Feito mesmo rodando', () => {
+  assert.equal(stateOf(null, { status: 'ended', hibernated: true }), 'done');
+  assert.equal(stateOf({ state: 'done' }, { status: 'ended', hibernated: true }), 'done');
+  assert.equal(stateOf({ state: 'done' }, { status: 'tool', hibernated: true }), 'done');
+  assert.equal(stateOf({ state: 'working' }, { status: 'ended' }), 'done');
+  assert.equal(stateOf({ state: 'working' }, null), 'done');
+  assert.equal(stateOf({ state: 'needs_you' }, null), 'needs_you');
+  assert.equal(stateOf({ state: 'done' }, { status: 'tool' }), 'working');
+  assert.equal(stateOf({ state: 'done', dismissed: true }, { status: 'tool' }), 'done');
+});
+
 test('o quadro separa as três colunas na ordem de entrada na árvore (precisa de você: primeiro quem entrou antes), feito só de hoje', () => {
   const { l, g, kid } = setup();
   kid('a', { state: 'needs_you', since: min(5) });
@@ -260,7 +271,7 @@ test('todo cartão com sessão viva tem caixa de mensagem; o feito só abre a ca
   const w = kid('w', { state: 'working', at: 1 });
   kid('q', { state: 'needs_you', action: { kind: 'question', text: 'sigo?' }, at: 1 });
   const d = kid('d', { state: 'done', at: 1, doneAt: NOW });
-  kid('x', { state: 'working', at: 1 });
+  kid('x', { state: 'working', at: NOW });
   const sessions = [{ id: 'g', title: 'g' }, { id: 'w', title: 'w', status: 'tool' }, { id: 'q', title: 'q', status: 'idle' }, { id: 'd', title: 'd', status: 'idle' }];
   const ui = { writing: { [d]: true } };
   const b = board(l, g, sessions, ui, NOW);
@@ -325,4 +336,26 @@ test('cartão "feito" de uma sessão que voltou a rodar aparece em Trabalhando',
   const c = cols(board(l, g, [{ id: 'g' }, { id: 'w', title: 'w', status: 'tool', activity: { lastTool: 'Bash npm test' } }], {}, NOW));
   assert.deepEqual(c.working.map((x) => [x.title, x.hasLive]), [['w', true]]);
   assert.equal(c.done.length, 0);
+});
+
+test('comando que é só um link vira link: sem "$", sem enviar para a aba, com o verbo browse', () => {
+  const links = new Links();
+  const g = links.add({ tabId: 'g', name: 'g', manager: true });
+  const w = links.add({ tabId: 'w', name: 'w', parent: g });
+  links.nodes[w].card = { state: 'needs_you', headline: 'abra o PR', action: { kind: 'command', text: 'https://github.com/a/b/pull/1', tabId: 'w' }, at: 1 };
+  const sessions = [{ id: 'g', kind: 'claude', title: 'g', status: 'idle' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle' }];
+  const c = board(links, g, sessions, { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {} }).cols[0].cards[0];
+  assert.deepEqual([c.link, c.shell, c.canSend, c.acts.link], [true, false, false, `browse:${w}`]);
+});
+
+test('o cartão mostra a branch da sessão e os PRs achados no transcript, sem repetir o que o gerente postou', () => {
+  const links = new Links();
+  const g = links.add({ tabId: 'g', name: 'g', manager: true });
+  const w = links.add({ tabId: 'w', name: 'w', parent: g });
+  links.nodes[w].card = { state: 'working', headline: 'x', at: 1, proof: { images: [], audio: [], log: '', prs: [{ url: 'https://github.com/a/b/pull/1', label: 'b#1', ci: 'ok' }] } };
+  const reply = { text: 'pronto', at: 5, links: [{ url: 'https://github.com/a/b/pull/1', label: 'PR #1 · b' }, { url: 'https://github.com/a/c/pull/2', label: 'PR #2 · c' }] };
+  const sessions = [{ id: 'g', kind: 'claude', title: 'g', status: 'idle' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle', branch: 'feature/TASK#1', reply }];
+  const c = board(links, g, sessions, { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {} }).cols[0].cards[0];
+  assert.equal(c.branch, 'feature/TASK#1');
+  assert.deepEqual(c.prs.map((p) => [p.label, p.act]), [['b#1', `pr:${w}:0`], ['PR #2 · c', 'url:w:1']]);
 });

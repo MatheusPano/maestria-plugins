@@ -1,7 +1,7 @@
 'use strict';
 // Os dados do quadro do gerente (precisa de você, trabalhando, feito hoje); o desenho é ui/panel.rfwtxt.
 
-const { colorOf, bare } = require('./links');
+const { colorOf, bare, isOpen } = require('./links');
 
 const STATES = ['working', 'needs_you', 'done'];
 const MAX_BULLETS = 3;
@@ -19,6 +19,7 @@ const taskOf = (s) => {
 
 /** O estado que vale: a sessão esperando você ganha do que o gerente escreveu. */
 const RESTING = new Set(['ready', 'idle']);
+const STOPPED = new Set([...RESTING, 'ended', 'unknown']);
 
 const REPLY_LINES = 8;
 const LINE_CHARS = 40;
@@ -39,11 +40,12 @@ function repliedOf(card, session) {
 function stateOf(card, session) {
   if (session && session.needsYou) return 'needs_you';
   if (repliedOf(card, session)) return 'needs_you';
-  const running = Boolean(session) && !RESTING.has(session.status) && session.status !== 'unknown';
-  if (card && card.state === 'done' && running) return 'working';
+  const running = Boolean(session) && !session.hibernated && !STOPPED.has(session.status);
+  const gone = !session || session.hibernated || session.status === 'ended';
+  if (card && card.state === 'done') return running && !card.dismissed ? 'working' : 'done';
+  if (card && card.state === 'working' && gone) return 'done';
   if (card && card.state) return card.state;
-  if (!session) return 'done';
-  return session.status === 'idle' || session.status === 'ready' ? 'done' : 'working';
+  return running ? 'working' : 'done';
 }
 
 const hex = (h) => 0xff000000 + parseInt(String(h).replace('#', ''), 16);
@@ -59,7 +61,7 @@ function ago(ms, now) {
   return `há ${Math.floor(min / 60)} h`;
 }
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
-const liveOf = (sessions) => new Map(sessions.filter((s) => !s.exited).map((s) => [s.id, s]));
+const liveOf = (sessions) => new Map(sessions.filter(isOpen).map((s) => [s.id, s]));
 const ALL = '*';
 const FREE = 0xff8b8b8b;
 const firstLine = (text) => plain(text).split('\n').map((l) => l.trim()).find(Boolean) || '';
@@ -76,15 +78,25 @@ function split(title, task) {
 
 const short = (task) => (task ? `#${task.split('#')[1]}` : '');
 
-function proofData(proof, key, limit) {
+const TRUNK = new Set(['main', 'master', 'develop', 'dev', 'HEAD']);
+
+function proofData(proof, key, limit, session = null) {
   const p = proof || { images: [], prs: [], audio: [], log: '' };
+  const posted = new Set(p.prs.map((pr) => pr.url));
+  const found = ((session && session.reply && session.reply.links) || []).map((l, i) => ({ ...l, i })).filter((l) => !posted.has(l.url));
+  const prs = [
+    ...p.prs.map((pr, i) => ({ label: pr.label || pr.url, ci: pr.ci, act: `pr:${key}:${i}` })),
+    ...found.map((l) => ({ label: l.label, ci: 'none', act: `url:${session.id}:${l.i}` })),
+  ];
+  const branch = session && session.branch && !TRUNK.has(session.branch) ? session.branch : '';
   const images = p.images.slice(0, limit).map((im, i) => ({ path: im.rel, act: `image:${key}:${i}` }));
   return {
     images,
     hasImages: images.length > 0,
     more: p.images.length > limit ? `+${p.images.length - limit}` : '',
-    prs: p.prs.map((pr, i) => ({ label: pr.label, ci: pr.ci, act: `pr:${key}:${i}` })),
-    hasPrs: p.prs.length > 0,
+    prs,
+    branch,
+    hasPrs: prs.length > 0 || Boolean(branch),
     sounds: p.audio.map((a, i) => ({ label: a.label, act: `play:${key}:proof:${i}` })),
     hasSounds: p.audio.length > 0,
     hasLog: Boolean(p.log),
@@ -97,7 +109,10 @@ const claudeCommand = (text) => /^\s*!/.test(text);
 /** Junta "/" e "-" ao que vem em volta, pra quebra de linha cair nos espaços e não no meio de um caminho. */
 const shown = (text) => String(text).replace(/[/-]/g, (m) => `\u2060${m}\u2060`);
 
+const isLink = (text) => /^https?:\/\/\S+$/.test(String(text || '').trim());
+
 function howTo(text, canSend) {
+  if (isLink(text)) return 'Clique para abrir no navegador';
   if (canSend) return 'Clique em Enviar → na aba, aperte Enter';
   return claudeCommand(text) ? 'Copie e cole no prompt do Claude, depois Enter' : 'Copie e cole no terminal';
 }
@@ -146,10 +161,12 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     reply: replied ? plain(replied.text) : '',
     replyLong: Boolean(replied) && shownLines(plain(replied.text)) > REPLY_LINES,
     hasHeadline: Boolean(headline),
+    because: state === 'done' && c.doneBecause ? `feito porque: ${c.doneBecause}` : '',
     kind,
     command: kind === 'command' ? shown(action.text) : '',
-    shell: kind === 'command' && !claudeCommand(action.text),
-    canSend: kind === 'command' && Boolean(target),
+    shell: kind === 'command' && !claudeCommand(action.text) && !isLink(action.text),
+    link: kind === 'command' && isLink(action.text),
+    canSend: kind === 'command' && Boolean(target) && !isLink(action.text),
     sendLabel: 'Enviar para a aba',
     howTo: kind === 'command' ? howTo(action.text, Boolean(target)) : '',
     hasTarget: Boolean(target || (session && kind !== 'command')),
@@ -175,6 +192,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     canUse: audible && picked != null && Boolean(options[picked]),
     rejecting: Boolean(ui.rejecting[key]),
     input: `answer-${key}`,
+    canDismiss: Boolean(card) && state !== 'done' && !String(key).startsWith('@'),
     canMessage: Boolean(session) && !['question', 'approve', 'reply'].includes(kind),
     writing: Boolean(ui.writing && ui.writing[key]),
     clear: ui.clears[key] || 0,
@@ -192,6 +210,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       target: target ? `focus:${target.id}` : '',
       send: `send:${key}`,
       copy: `copy:${key}`,
+      link: `browse:${key}`,
+      dismiss: `dismiss:${key}`,
       answer: `answer:${key}`,
       write: `write:${key}`,
       message: `message:${key}`,
@@ -199,7 +219,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       reject: `reject:${key}`,
       use: `use:${key}`,
     },
-    ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2)),
+    ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2), session),
   };
 }
 
@@ -215,7 +235,7 @@ function order(a, b) {
 /** Todas as conversas do Claude abertas, ligadas a um gerente ou não, na ordem das abas. */
 function everyone(links, sessions, live, u, now) {
   const open = sessions
-    .filter((s) => s.kind === 'claude' && !s.exited)
+    .filter((s) => s.kind === 'claude' && isOpen(s))
     .map((s, rank) => {
       const k = links.byTab(s.id);
       const managed = k && links.nodes[k].parent;
@@ -265,7 +285,7 @@ function board(links, key, sessions, ui = {}, now = Date.now()) {
     total: `${all.length} ${all.length === 1 ? 'sessão' : 'sessões'}`,
     color: whole ? FREE : hex(colorOf(manager.color).hex),
     managerTab: me ? `focus:${me.id}` : '',
-    tell: { input: `tell-${key}`, act: `tell:${key}`, clear: u.clears[`tell-${key}`] || 0 },
+    tell: { input: `tell-${key}`, act: `tell:${key}`, clear: u.clears[`tell-${key}`] || 0, focus: u.focus === key },
     canTell: Boolean(me),
     cols: COLUMNS.map((col) => {
       const list = cards.filter((c) => c.state === col.state);
