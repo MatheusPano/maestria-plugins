@@ -39,6 +39,7 @@ const state = {
   doctor: false,
   sent: new relay.Sent(),
   retitled: new Map(),
+  tinted: new Map(),
 };
 const PANEL = 'painel';
 const LEGACY_PANEL = 'painel:';
@@ -128,19 +129,23 @@ function load() {
   }
 }
 
+/** Manda a cada aba só o conserto que ainda não foi pedido ([value] diz qual); quem já está certo sai de [memo]. */
+function sendOnce(memo, wrong, value, send) {
+  for (const tabId of [...memo.keys()]) if (!wrong.some((w) => w.tabId === tabId)) memo.delete(tabId);
+  const fresh = wrong.filter((w) => memo.get(w.tabId) !== value(w));
+  for (const w of fresh) memo.set(w.tabId, value(w));
+  return Promise.all(fresh.map(send));
+}
+
 async function refresh() {
   const sessions = await listSessions();
   if (state.links.reconcile(sessions)) writeLinks();
   await flushRelays(sessions);
-  const wrong = state.links.retitles(sessions);
-  for (const tabId of [...state.retitled.keys()]) if (!wrong.some((w) => w.tabId === tabId)) state.retitled.delete(tabId);
-  await Promise.all(
-    wrong
-      .filter(({ tabId, title }) => state.retitled.get(tabId) !== title)
-      .map(({ tabId, title }) => {
-        state.retitled.set(tabId, title);
-        return mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message));
-      }),
+  await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
+    mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message)),
+  );
+  await sendOnce(state.tinted, state.links.tints(sessions), (w) => w.tint, ({ tabId, tint }) =>
+    mx.request('session.tint', { tabId, tint }).catch((e) => mx.log('tint:', e.message)),
   );
   await mx.request('sidebar.update', sidebar(state.links, sessions, state.ui));
   if (!state.probed) {
@@ -623,6 +628,7 @@ async function onAction(act, values) {
     links.remove(a);
     save();
     if (n) await mx.request('session.rename', { tabId: n.tabId, title: bare(await titleOf(n.tabId)) }).catch(() => {});
+    if (n) await mx.request('session.tint', { tabId: n.tabId, tint: null }).catch(() => {});
     return null;
   }
   if (verb === 'forget') {

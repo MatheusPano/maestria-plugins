@@ -7,17 +7,17 @@ const path = require('path');
 /** Aberta é viva ou hibernada: a hibernada tem o processo parado (exited), mas a aba e a conversa continuam. */
 const isOpen = (s) => Boolean(s) && (!s.exited || Boolean(s.hibernated));
 
-// A fonte da Maestria não tem emoji colorido: no nome da aba vai a forma da cor e [G] (gerente) ou [S] (sessão de um gerente); a cor fica na aba do plugin.
+// A fonte da Maestria não tem emoji colorido: no nome da aba vai a forma da cor e [G] (gerente) ou [S] (sessão de um gerente); a cor de verdade vai na aba pelo session.tint, a cor mais próxima das da Maestria.
 const COLORS = [
-  { id: 'red', mark: '●', hex: '#E5534B' },
-  { id: 'blue', mark: '▲', hex: '#4FA3F7' },
-  { id: 'green', mark: '◆', hex: '#6CC483' },
-  { id: 'yellow', mark: '■', hex: '#EEC05A' },
-  { id: 'purple', mark: '★', hex: '#A371F7' },
-  { id: 'orange', mark: '✚', hex: '#F0883E' },
-  { id: 'brown', mark: '◉', hex: '#A0714F' },
-  { id: 'white', mark: '▼', hex: '#D0D7DE' },
-  { id: 'black', mark: '◈', hex: '#8B949E' },
+  { id: 'red', mark: '●', hex: '#E5534B', tint: 'red' },
+  { id: 'blue', mark: '▲', hex: '#4FA3F7', tint: 'cyan' },
+  { id: 'green', mark: '◆', hex: '#6CC483', tint: 'green' },
+  { id: 'yellow', mark: '■', hex: '#EEC05A', tint: 'yellow' },
+  { id: 'purple', mark: '★', hex: '#A371F7', tint: 'violet' },
+  { id: 'orange', mark: '✚', hex: '#F0883E', tint: 'orange' },
+  { id: 'brown', mark: '◉', hex: '#A0714F', tint: 'brown' },
+  { id: 'white', mark: '▼', hex: '#D0D7DE', tint: 'grey' },
+  { id: 'black', mark: '◈', hex: '#8B949E', tint: 'petrol' },
 ];
 const BY_ID = new Map(COLORS.map((c) => [c.id, c]));
 const LEGACY = ['🟥', '🟦', '🟩', '🟨', '🟪', '🟧', '🟫', '⬜', '⬛'];
@@ -129,6 +129,17 @@ class Links {
       const generic = shown === '~' || (s.cwd && shown === path.basename(s.cwd));
       const title = tinted(generic && n.name ? n.name : s.title, n.color, n.manager);
       if (title !== s.title) out.push({ tabId: s.id, title });
+    }
+    return out;
+  }
+
+  /** As abas vivas cuja cor na Maestria não é a do nó; uma Maestria sem session.tint não manda "tint" e fica de fora. */
+  tints(sessions) {
+    const out = [];
+    for (const s of sessions.filter((x) => isOpen(x) && 'tint' in x)) {
+      const key = this.byTab(s.id);
+      const tint = key ? colorOf(this.nodes[key].color).tint : null;
+      if (key && s.tint !== tint) out.push({ tabId: s.id, tint });
     }
     return out;
   }
