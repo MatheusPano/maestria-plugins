@@ -7,9 +7,9 @@ const path = require('path');
 const mx = require('./maestria');
 const tools = require('./lib/tools');
 const { Links, tinted, bare, isOpen } = require('./lib/links');
-const { typeInto } = require('./lib/wake');
+const { awake, typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
-const { ALL, panel, detail, managerKeys, RESTING } = require('./lib/cards');
+const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
 const { deliver } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
@@ -34,7 +34,7 @@ const state = {
   probed: false,
   modal: null,
   live: {},
-  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, unfolded: {}, showOld: false, playing: null, focus: null },
+  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, playing: null, focus: null },
   title: undefined,
   doctor: false,
   sent: new relay.Sent(),
@@ -150,6 +150,11 @@ async function refresh() {
   if (state.current !== ALL && !managerKeys(state.links).includes(state.current)) state.current = ALL;
   const liveTabs = new Set(sessions.filter(isOpen).map((s) => `@${s.id}`));
   for (const bag of [state.ui.writing, state.ui.clears]) for (const k of Object.keys(bag)) if (k.startsWith('@') && !liveTabs.has(k)) delete bag[k];
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  for (const k of Object.keys(state.ui.images)) {
+    const s = byId.get(k.startsWith('@') ? k.slice(1) : state.links.nodes[k] && state.links.nodes[k].tabId);
+    if (!s || !isOpen(s) || s.hibernated || !RESTING.has(s.status)) delete state.ui.images[k];
+  }
   if (state.open) {
     const r = await mx.request('view.update', panelUpdate(sessions)).catch(() => ({ open: false }));
     if (!r || r.open === false) {
@@ -232,6 +237,9 @@ async function showPanelNow(key, how) {
 }
 
 /** Um refresh por vez: um mais velho que terminasse por último mostraria a lista de antes. */
+/** A sugestão do Claude Code aparece um pouco depois do fim do turno, sem evento: o painel olha de novo nesses tempos. */
+const SUGGESTION_WAIT = [1500, 4000];
+
 function schedule() {
   if (state.timer) return;
   state.timer = setTimeout(() => {
@@ -358,6 +366,7 @@ mx.onNotification('event', ({ type, tabId, name, payload }) => {
   if (type === 'hook' && tabId) {
     if (name === 'PreToolUse') state.live[tabId] = liveLine(payload);
     else if (name === 'Stop' || name === 'SessionEnd') delete state.live[tabId];
+    if (name === 'Stop') for (const ms of SUGGESTION_WAIT) setTimeout(schedule, ms);
     relayHook(name, tabId, payload);
   }
   if (type === 'sidebar.shown' || type === 'hook' || String(type).startsWith('session.')) schedule();
@@ -424,6 +433,7 @@ async function answer(key, text, message = false) {
   delete state.ui.picked[key];
   delete state.ui.rejecting[key];
   delete state.ui.writing[key];
+  if (via === 'terminal') delete state.ui.images[key];
   state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
   save();
   const where = via === 'terminal' ? title : 'o gerente (a aba está num prompt)';
@@ -477,19 +487,61 @@ async function tell(key, text) {
   return mx.request('window.showBanner', { text: `enviado para ${bare(m.title)}` }).catch(() => {});
 }
 
+/** A aba que recebe o que se escreve no cartão [key]: a da sessão, ou a conversa solta "@<tabId>". */
+async function tabOfCard(key) {
+  const node = state.links.nodes[key];
+  const id = String(key).startsWith('@') ? key.slice(1) : node && node.tabId;
+  const s = id && ((await mx.request('sessions.list')) || []).find((x) => x.id === id && isOpen(x));
+  if (!s) throw new Error('essa aba fechou');
+  return s;
+}
+
+/** A aba do cartão [key] acordada e fora de pergunta: pronta pra receber o que vem do cartão. */
+async function readyTabOf(key) {
+  const s = await awake(wakeIo, await tabOfCard(key));
+  if (PROMPT.has(s.status)) throw new Error(`"${bare(s.title)}" está esperando você na aba: responda lá`);
+  return s;
+}
+
+/** Cola na aba do cartão [key] a imagem da área de transferência: ela fica no prompt da aba até a mensagem ir. */
+async function pasteImage(key) {
+  const s = await readyTabOf(key);
+  await request('terminal.pasteClipboard', { tabId: s.id });
+  state.ui.images[key] = (state.ui.images[key] || 0) + 1;
+  return schedule();
+}
+
+/** Só as imagens coladas, sem texto: manda o prompt da aba como está. */
+async function sendImages(key) {
+  const s = await readyTabOf(key);
+  await request('terminal.sendText', { tabId: s.id, text: '', submit: true });
+  delete state.ui.images[key];
+  return schedule();
+}
+
+/** Manda a sugestão que o Claude Code mostra no prompt da aba do cartão [key], como se você a tivesse escrito. */
+async function useSuggestion(key) {
+  const s = await tabOfCard(key);
+  if (!s.promptSuggestion) return null;
+  if (PROMPT.has(s.status)) throw new Error(`"${bare(s.title)}" está esperando você na aba: responda lá`);
+  return String(key).startsWith('@') ? onFree('message', key, { text: s.promptSuggestion }) : answer(key, s.promptSuggestion, true);
+}
+
 /** Uma conversa sem gerente (cartão "@<tabId>" na visão de todas): só abre a caixa e manda mensagem. */
 async function onFree(verb, key, values) {
   if (verb === 'write') {
     state.ui.writing[key] = !state.ui.writing[key];
     return schedule();
   }
+  if (verb === 'paste') return pasteImage(key);
+  if (verb === 'suggest') return useSuggestion(key);
   if (verb !== 'message') return null;
   const body = String((values && values.text) || '').trim();
-  if (!body) return null;
-  const s = (await listSessions()).find((x) => x.id === key.slice(1) && isOpen(x));
-  if (!s) throw new Error('essa aba fechou');
+  if (!body) return state.ui.images[key] ? sendImages(key) : null;
+  const s = await tabOfCard(key);
   await typeInto(wakeIo, s, body);
   delete state.ui.writing[key];
+  delete state.ui.images[key];
   state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
   schedule();
   return mx.request('window.showBanner', { text: `enviado para ${bare(s.title)}` }).catch(() => {});
@@ -516,9 +568,12 @@ async function onCard(verb, key, rest, values) {
     state.ui.picked[key] = Number(rest[0]);
     return schedule();
   }
+  if (verb === 'paste') return pasteImage(key);
+  if (verb === 'suggest') return useSuggestion(key);
   if (verb === 'message') {
     const text = String((values && values.text) || '').trim();
-    return text ? answer(key, text, true) : null;
+    if (!text) return state.ui.images[key] ? sendImages(key) : null;
+    return answer(key, text, true);
   }
   if (verb === 'answer') {
     const text = String((values && values.text) || '').trim();
@@ -575,7 +630,7 @@ async function retitle(keys) {
   }
 }
 
-const CARD_VERBS = ['detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'browse', 'dismiss', 'option', 'use', 'approve', 'answer'];
+const CARD_VERBS = ['paste', 'suggest', 'detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'browse', 'dismiss', 'option', 'use', 'approve', 'answer'];
 
 async function onAction(act, values) {
   const [verb, a, b, ...more] = act.split(':');
