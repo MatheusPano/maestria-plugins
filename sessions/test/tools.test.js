@@ -132,7 +132,7 @@ test('sessions_list resume, traz gerente, cor e última atividade, e deixa de fo
   assert.deepEqual(all.map((s) => s.tabId), ['me', 'tab9']);
   assert.deepEqual(all[1], {
     tabId: 'tab9', kind: 'claude', title: 'D', cwd: '/s', branch: null, status: 'waitingAnswer', statusLabel: null,
-    needsYou: true, hibernated: false, color: 'red', parentTabId: 'me', manager: false, lastPrompt: 'faz', lastMessage: 'pergunta?',
+    needsYou: true, hibernated: false, backgroundAgents: 0, color: 'red', parentTabId: 'me', manager: false, lastPrompt: 'faz', lastMessage: 'pergunta?',
   });
   assert.equal(all[0].manager, true);
   const mine = body(await tools.handle('sessions_list', { mine: true }, ctx)).sessions;

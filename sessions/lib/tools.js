@@ -4,7 +4,7 @@
 const path = require('path');
 const { tinted, colorOf, isOpen } = require('./links');
 const { typeInto } = require('./wake');
-const { STATES, MAX_BULLETS, RESTING, PROMPT } = require('./cards');
+const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf } = require('./cards');
 const relay = require('./relay');
 const { proofOf, audioOf, ProofError } = require('./proof');
 
@@ -84,6 +84,7 @@ function summary(s, links) {
     statusLabel: s.statusLabel ?? null,
     needsYou: Boolean(s.needsYou),
     hibernated: Boolean(s.hibernated),
+    backgroundAgents: agentsOf(s),
     color: n ? colorOf(n.color).id : null,
     parentTabId: parent ? parent.tabId : null,
     manager: Boolean(n && n.manager),
@@ -207,6 +208,7 @@ async function doneChecks(s, prs, ctx) {
   const warnings = [];
   if (s.needsYou || PROMPT.has(s.status)) blockers.push(`a sessão está esperando o usuário na aba (${s.statusLabel || s.status})`);
   else if (s.status && !s.hibernated && !RESTING.has(s.status) && !['ended', 'unknown'].includes(s.status)) blockers.push(`a sessão ainda está trabalhando (${s.statusLabel || s.status})`);
+  else if (agentsOf(s)) blockers.push(`a sessão ainda tem ${agentsOf(s)} agente(s) rodando em segundo plano`);
   if (!ctx.exec) return { blockers, warnings };
   for (const url of [...new Set(prs.filter((u) => PULL.test(u)).map((u) => u.match(PULL)[0]))]) {
     const r = await ctx.exec('gh', ['pr', 'view', url, '--json', 'state', '-q', '.state']);
