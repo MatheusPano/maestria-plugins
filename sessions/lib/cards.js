@@ -36,8 +36,13 @@ function repliedOf(card, session) {
   return r && r.text && r.at > after ? r : null;
 }
 
-/** O estado que vale: a sessão esperando você ganha do que o gerente escreveu. */
+/** Quantos agentes a sessão ainda tem rodando em segundo plano, com o turno dela já parado. */
+const agentsOf = (s) => (s && !s.hibernated && !PROMPT.has(s.status) && Number(s.backgroundAgents)) || 0;
+const behind = (n) => `rodando em segundo plano (${n} ${n === 1 ? 'agente' : 'agentes'})`;
+
+/** O estado que vale: agente em segundo plano é trabalho; a sessão esperando você ganha do que o gerente escreveu. */
 function stateOf(card, session) {
+  if (agentsOf(session) && !(card && card.state === 'needs_you' && card.action)) return card && card.dismissed ? 'done' : 'working';
   if (session && session.needsYou) return 'needs_you';
   if (repliedOf(card, session)) return 'needs_you';
   const running = Boolean(session) && !session.hibernated && !STOPPED.has(session.status);
@@ -196,8 +201,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     canMessage: Boolean(session) && !['question', 'approve', 'reply'].includes(kind),
     writing: Boolean(ui.writing && ui.writing[key]),
     clear: ui.clears[key] || 0,
-    live: state === 'working' ? plain(activity.lastTool || activity.lastMessage).slice(0, 140) : '',
-    hasLive: state === 'working' && Boolean(activity.lastTool || activity.lastMessage),
+    live: state !== 'working' ? '' : agentsOf(session) ? behind(agentsOf(session)) : plain(activity.lastTool || activity.lastMessage).slice(0, 140),
+    hasLive: state === 'working' && Boolean(agentsOf(session) || activity.lastTool || activity.lastMessage),
     notes: bullets.length ? `${bullets.length} ${bullets.length === 1 ? 'nota' : 'notas'} da sessão` : '',
     hasNotes: bullets.length > 0,
     open: Boolean(ui.open[key]),
@@ -349,4 +354,4 @@ function panel(links, key, sessions, library, ui, now) {
   return { title: `painel · ${data.name}`, rfw: { library, root: 'root' }, data };
 }
 
-module.exports = { ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };
+module.exports = { agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };
