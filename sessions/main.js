@@ -237,6 +237,9 @@ async function showPanelNow(key, how) {
 }
 
 /** Um refresh por vez: um mais velho que terminasse por último mostraria a lista de antes. */
+/** A sugestão do Claude Code aparece um pouco depois do fim do turno, sem evento: o painel olha de novo nesses tempos. */
+const SUGGESTION_WAIT = [1500, 4000];
+
 function schedule() {
   if (state.timer) return;
   state.timer = setTimeout(() => {
@@ -363,6 +366,7 @@ mx.onNotification('event', ({ type, tabId, name, payload }) => {
   if (type === 'hook' && tabId) {
     if (name === 'PreToolUse') state.live[tabId] = liveLine(payload);
     else if (name === 'Stop' || name === 'SessionEnd') delete state.live[tabId];
+    if (name === 'Stop') for (const ms of SUGGESTION_WAIT) setTimeout(schedule, ms);
     relayHook(name, tabId, payload);
   }
   if (type === 'sidebar.shown' || type === 'hook' || String(type).startsWith('session.')) schedule();
@@ -515,6 +519,14 @@ async function sendImages(key) {
   return schedule();
 }
 
+/** Manda a sugestão que o Claude Code mostra no prompt da aba do cartão [key], como se você a tivesse escrito. */
+async function useSuggestion(key) {
+  const s = await tabOfCard(key);
+  if (!s.promptSuggestion) return null;
+  if (PROMPT.has(s.status)) throw new Error(`"${bare(s.title)}" está esperando você na aba: responda lá`);
+  return String(key).startsWith('@') ? onFree('message', key, { text: s.promptSuggestion }) : answer(key, s.promptSuggestion, true);
+}
+
 /** Uma conversa sem gerente (cartão "@<tabId>" na visão de todas): só abre a caixa e manda mensagem. */
 async function onFree(verb, key, values) {
   if (verb === 'write') {
@@ -522,6 +534,7 @@ async function onFree(verb, key, values) {
     return schedule();
   }
   if (verb === 'paste') return pasteImage(key);
+  if (verb === 'suggest') return useSuggestion(key);
   if (verb !== 'message') return null;
   const body = String((values && values.text) || '').trim();
   if (!body) return state.ui.images[key] ? sendImages(key) : null;
@@ -556,6 +569,7 @@ async function onCard(verb, key, rest, values) {
     return schedule();
   }
   if (verb === 'paste') return pasteImage(key);
+  if (verb === 'suggest') return useSuggestion(key);
   if (verb === 'message') {
     const text = String((values && values.text) || '').trim();
     if (!text) return state.ui.images[key] ? sendImages(key) : null;
@@ -616,7 +630,7 @@ async function retitle(keys) {
   }
 }
 
-const CARD_VERBS = ['paste', 'detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'browse', 'dismiss', 'option', 'use', 'approve', 'answer'];
+const CARD_VERBS = ['paste', 'suggest', 'detail', 'notes', 'reject', 'write', 'tell', 'message', 'play', 'pick', 'send', 'copy', 'browse', 'dismiss', 'option', 'use', 'approve', 'answer'];
 
 async function onAction(act, values) {
   const [verb, a, b, ...more] = act.split(':');
