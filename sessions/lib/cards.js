@@ -203,6 +203,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     clear: ui.clears[key] || 0,
     live: state !== 'working' ? '' : agentsOf(session) ? behind(agentsOf(session)) : plain(activity.lastTool || activity.lastMessage).slice(0, 140),
     hasLive: state === 'working' && Boolean(agentsOf(session) || activity.lastTool || activity.lastMessage),
+    images: ui.images && ui.images[key] ? `${ui.images[key]} ${ui.images[key] === 1 ? 'imagem' : 'imagens'} no prompt da aba` : '',
+    hasImages: Boolean(ui.images && ui.images[key]),
     notes: bullets.length ? `${bullets.length} ${bullets.length === 1 ? 'nota' : 'notas'} da sessão` : '',
     hasNotes: bullets.length > 0,
     open: Boolean(ui.open[key]),
@@ -223,6 +225,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       approve: `approve:${key}`,
       reject: `reject:${key}`,
       use: `use:${key}`,
+      paste: `paste:${key}`,
     },
     ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2), session),
   };

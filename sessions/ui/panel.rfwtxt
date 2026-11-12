@@ -207,7 +207,7 @@ widget Card = Box(
       default: SizedBox(),
     },
     switch args.c.canMessage {
-      true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão (vai direto para a aba)"),
+      true: MessageBox(c: args.c, hint: "mensagem para a sessão (vai direto para a aba)"),
       default: SizedBox(),
     },
     Proofs(c: args.c),
@@ -454,6 +454,29 @@ widget Answer = Gap(
   ),
 );
 
+widget MessageBox = Gap(
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      TextInput(
+        id: args.c.input,
+        placeholder: args.hint,
+        clear: args.c.clear,
+        fontSize: 12.5,
+        multiline: true,
+        maxLines: 5,
+        sendIcon: "send",
+        onSubmit: event "act" { a: args.c.acts.message },
+        onPasteImage: event "act" { a: args.c.acts.paste },
+      ),
+      switch args.c.hasImages {
+        true: Padding(padding: [2.0, 4.0, 0.0, 0.0], child: Text(text: args.c.images, style: { fontSize: 11.0, color: data.theme.dim })),
+        default: SizedBox(),
+      },
+    ],
+  ),
+);
+
 widget Prompted = switch args.c.prompt {
   true: Gap(child: Text(text: "A aba está num prompt: a resposta vai para o gerente.", style: { fontSize: 11.0, color: data.theme.yellow })),
   default: SizedBox(),
@@ -655,7 +678,7 @@ widget Done = Box(
       default: Padding(padding: [0.0, 4.0, 0.0, 0.0], child: Text(text: args.c.because, maxLines: 2, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint })),
     },
     switch args.c.writing {
-      true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão (vai direto para a aba)"),
+      true: MessageBox(c: args.c, hint: "mensagem para a sessão (vai direto para a aba)"),
       default: SizedBox(),
     },
     Proofs(c: args.c),
