@@ -1,7 +1,7 @@
 'use strict';
 // Os dados do quadro do gerente (precisa de você, trabalhando, feito hoje); o desenho é ui/panel.rfwtxt.
 
-const { colorOf, bare } = require('./links');
+const { colorOf, bare, isOpen } = require('./links');
 
 const STATES = ['working', 'needs_you', 'done'];
 const MAX_BULLETS = 3;
@@ -61,7 +61,7 @@ function ago(ms, now) {
   return `há ${Math.floor(min / 60)} h`;
 }
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
-const liveOf = (sessions) => new Map(sessions.filter((s) => !s.exited).map((s) => [s.id, s]));
+const liveOf = (sessions) => new Map(sessions.filter(isOpen).map((s) => [s.id, s]));
 const ALL = '*';
 const FREE = 0xff8b8b8b;
 const firstLine = (text) => plain(text).split('\n').map((l) => l.trim()).find(Boolean) || '';
@@ -235,7 +235,7 @@ function order(a, b) {
 /** Todas as conversas do Claude abertas, ligadas a um gerente ou não, na ordem das abas. */
 function everyone(links, sessions, live, u, now) {
   const open = sessions
-    .filter((s) => s.kind === 'claude' && !s.exited)
+    .filter((s) => s.kind === 'claude' && isOpen(s))
     .map((s, rank) => {
       const k = links.byTab(s.id);
       const managed = k && links.nodes[k].parent;

@@ -1,7 +1,7 @@
 'use strict';
 // A aba da lateral: cada gerente com as sessões dele embaixo, quem precisa de você primeiro, e as prontas dobradas.
 
-const { colorOf, bare } = require('./links');
+const { colorOf, bare, isOpen } = require('./links');
 const { stateOf, liveOf, waitOf, repliedOf, plain } = require('./cards');
 
 const STATUS_TONE = {
@@ -169,8 +169,8 @@ function looseItem(links, s) {
 
 function sidebar(links, sessions, ui = {}, now = Date.now()) {
   const linked = new Set(Object.values(links.nodes).map((n) => n.tabId));
-  const loose = sessions.filter((s) => s.kind === 'claude' && !s.exited && !s.embedded && !linked.has(s.id));
-  const waiting = sessions.filter((s) => !s.exited && s.needsYou && linked.has(s.id)).length;
+  const loose = sessions.filter((s) => s.kind === 'claude' && isOpen(s) && !s.embedded && !linked.has(s.id));
+  const waiting = sessions.filter((s) => isOpen(s) && s.needsYou && linked.has(s.id)).length;
   const blocks = [
     { type: 'header', title: 'Gerentes', actions: [{ action: 'doctor', icon: 'clean', tooltip: 'diagnóstico' }, { action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
     {

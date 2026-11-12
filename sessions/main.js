@@ -6,9 +6,10 @@ const os = require('os');
 const path = require('path');
 const mx = require('./maestria');
 const tools = require('./lib/tools');
-const { Links, tinted, bare } = require('./lib/links');
+const { Links, tinted, bare, isOpen } = require('./lib/links');
+const { typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
-const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
+const { ALL, panel, detail, managerKeys, RESTING } = require('./lib/cards');
 const { deliver } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
@@ -72,6 +73,13 @@ function withReplies(sessions) {
 }
 
 const listSessions = async () => withReplies(withLive((await mx.request('sessions.list')) || []));
+
+/** Como o plugin acorda uma aba hibernada antes de digitar nela: avisa com um banner e relê as abas até ela ficar pronta. */
+const wakeIo = {
+  request,
+  list: () => mx.request('sessions.list'),
+  notice: (s) => mx.request('window.showBanner', { text: `acordando ${bare(s.title)}; a mensagem vai quando ela estiver pronta` }).catch(() => {}),
+};
 
 const isDir = (p) => {
   try {
@@ -140,7 +148,7 @@ async function refresh() {
     await adopt(sessions);
   }
   if (state.current !== ALL && !managerKeys(state.links).includes(state.current)) state.current = ALL;
-  const liveTabs = new Set(sessions.filter((s) => !s.exited).map((s) => `@${s.id}`));
+  const liveTabs = new Set(sessions.filter(isOpen).map((s) => `@${s.id}`));
   for (const bag of [state.ui.writing, state.ui.clears]) for (const k of Object.keys(bag)) if (k.startsWith('@') && !liveTabs.has(k)) delete bag[k];
   if (state.open) {
     const r = await mx.request('view.update', panelUpdate(sessions)).catch(() => ({ open: false }));
@@ -412,7 +420,7 @@ function toggleAudio(key, kind, i) {
 
 async function answer(key, text, message = false) {
   stopAudio();
-  const { via, title } = await deliver(key, text, { links: state.links, request, sessions: await listSessions(), message });
+  const { via, title } = await deliver(key, text, { ...wakeIo, links: state.links, sessions: await listSessions(), message });
   delete state.ui.picked[key];
   delete state.ui.rejecting[key];
   delete state.ui.writing[key];
@@ -438,7 +446,7 @@ function dismiss(key) {
 async function resume(key) {
   const n = state.links.nodes[key];
   if (!n) return null;
-  const open = (await listSessions()).find((s) => s.id === n.tabId && !s.exited);
+  const open = (await listSessions()).find((s) => s.id === n.tabId && isOpen(s));
   if (open) return mx.request('session.focus', { tabId: open.id });
   if (!n.sessionId) throw new Error(`não sei qual conversa era "${n.name}": ela nunca reportou o sessionId`);
   const cwd = (n.cwd && isDir(n.cwd) && n.cwd) || cwdOf(os.homedir(), n.sessionId);
@@ -459,10 +467,9 @@ async function tell(key, text) {
   const body = String(text || '').trim();
   const node = state.links.nodes[key];
   if (!body || !node) return null;
-  const m = (await listSessions()).find((s) => s.id === node.tabId && !s.exited);
+  const m = (await listSessions()).find((s) => s.id === node.tabId && isOpen(s));
   if (!m) throw new Error('a aba do gerente está fechada');
-  if (m.hibernated || PROMPT.has(m.status)) throw new Error('o gerente está num prompt: responda na aba dele');
-  await request('terminal.sendText', { tabId: m.id, text: body, submit: true });
+  await typeInto(wakeIo, m, body);
   if (state.ui.focus === key) delete state.ui.focus;
   const clear = `tell-${key}`;
   state.ui.clears[clear] = (state.ui.clears[clear] || 0) + 1;
@@ -479,10 +486,9 @@ async function onFree(verb, key, values) {
   if (verb !== 'message') return null;
   const body = String((values && values.text) || '').trim();
   if (!body) return null;
-  const s = (await listSessions()).find((x) => x.id === key.slice(1) && !x.exited);
+  const s = (await listSessions()).find((x) => x.id === key.slice(1) && isOpen(x));
   if (!s) throw new Error('essa aba fechou');
-  if (s.hibernated || PROMPT.has(s.status)) throw new Error(`${bare(s.title)} está num prompt: responda na aba`);
-  await request('terminal.sendText', { tabId: s.id, text: body, submit: true });
+  await typeInto(wakeIo, s, body);
   delete state.ui.writing[key];
   state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
   schedule();

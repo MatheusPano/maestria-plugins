@@ -4,6 +4,9 @@
 
 const path = require('path');
 
+/** Aberta é viva ou hibernada: a hibernada tem o processo parado (exited), mas a aba e a conversa continuam. */
+const isOpen = (s) => Boolean(s) && (!s.exited || Boolean(s.hibernated));
+
 // A fonte da Maestria não tem emoji colorido: no nome da aba vai a forma, e a cor fica na aba do plugin.
 const COLORS = [
   { id: 'red', mark: '●', hex: '#E5534B' },
@@ -117,7 +120,7 @@ class Links {
 
   /** As abas vivas cujo título perdeu a marca da cor (ou a dupla, de gerente); um título que é só a pasta volta ao nome do nó. */
   retitles(sessions) {
-    const live = new Map(sessions.filter((x) => !x.exited).map((x) => [x.id, x]));
+    const live = new Map(sessions.filter(isOpen).map((x) => [x.id, x]));
     const out = [];
     for (const n of Object.values(this.nodes)) {
       const s = live.get(n.tabId);
@@ -177,4 +180,4 @@ class Links {
   }
 }
 
-module.exports = { Links, COLORS, colorOf, bare, tinted };
+module.exports = { Links, COLORS, colorOf, bare, tinted, isOpen };

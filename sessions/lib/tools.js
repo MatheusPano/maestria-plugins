@@ -2,7 +2,8 @@
 // main.js liga `tool.call` a handle(). ctx: { request, home, cwd, tabId, isDir, links, save, showPanel, log } (os testes passam um falso).
 
 const path = require('path');
-const { tinted, colorOf } = require('./links');
+const { tinted, colorOf, isOpen } = require('./links');
+const { typeInto } = require('./wake');
 const { STATES, MAX_BULLETS, RESTING, PROMPT } = require('./cards');
 const relay = require('./relay');
 const { proofOf, audioOf, ProofError } = require('./proof');
@@ -31,7 +32,7 @@ function resolveCwd(cwd, { home, cwd: base, isDir }) {
 const sessionsOf = async (ctx) => (await ctx.request('sessions.list')) || [];
 
 async function liveTab(ctx, tabId) {
-  const s = (await sessionsOf(ctx)).find((x) => x.id === tabId && !x.exited);
+  const s = (await sessionsOf(ctx)).find((x) => x.id === tabId && isOpen(x));
   if (!s) throw new ToolError(`Nenhuma sessão aberta com tabId ${tabId}; veja sessions_list.`);
   return s;
 }
@@ -95,7 +96,7 @@ function summary(s, links) {
 }
 
 async function list({ mine }, ctx) {
-  const all = (await sessionsOf(ctx)).filter((s) => !s.exited && !s.embedded);
+  const all = (await sessionsOf(ctx)).filter((s) => isOpen(s) && !s.embedded);
   if (ctx.links.reconcile(all)) ctx.save();
   let out = all.map((s) => summary(s, ctx.links));
   if (mine) {
@@ -128,12 +129,13 @@ async function send({ tabId, text }, ctx) {
   if (tabId === ctx.tabId) throw new ToolError('Não dá pra mandar mensagem pra própria sessão.');
   const s = await liveTab(ctx, tabId);
   if (s.kind !== 'claude') throw new ToolError(`A aba ${tabId} não é uma sessão do claude.`);
-  if (s.hibernated) throw new ToolError(`A sessão ${tabId} está hibernada; peça pro usuário acordá-la.`);
-  if (s.status === 'waitingPermission' || s.status === 'waitingAnswer') {
-    throw new ToolError(`A sessão ${tabId} está esperando o usuário (${s.statusLabel || s.status}); a mensagem cairia no meio da pergunta.`);
+  let ready;
+  try {
+    ready = await typeInto({ request: ctx.request, list: () => sessionsOf(ctx) }, s, body);
+  } catch (e) {
+    throw new ToolError(e.message);
   }
-  await ctx.request('terminal.sendText', { tabId, text: body, submit: true });
-  return ok({ tabId, sent: true, wasBusy: s.status === 'working' || s.status === 'tool' });
+  return ok({ tabId, sent: true, woke: Boolean(s.hibernated), wasBusy: ready.status === 'working' || ready.status === 'tool' });
 }
 
 async function rename({ tabId, name }, ctx) {

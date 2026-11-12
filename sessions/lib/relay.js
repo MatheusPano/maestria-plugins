@@ -1,7 +1,7 @@
 'use strict';
 // O que acontece nas sessões de um gerente chega a ele: turno terminado, sessão esperando você, e o que você escreveu direto nela.
 
-const { bare } = require('./links');
+const { bare, isOpen } = require('./links');
 const { PROMPT, RESTING, plain } = require('./cards');
 
 const KEEP = 30;
@@ -50,7 +50,7 @@ function queue(links, key, event, now = Date.now()) {
 
 /** Uma linha por evento, com o nome da sessão e o que ela disse por último. */
 function lines(links, events, sessions) {
-  const live = new Map(sessions.filter((s) => !s.exited).map((s) => [s.id, s]));
+  const live = new Map(sessions.filter(isOpen).map((s) => [s.id, s]));
   return events.map((e) => {
     const node = links.nodes[e.key];
     const s = node && live.get(node.tabId);

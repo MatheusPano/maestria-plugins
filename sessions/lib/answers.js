@@ -1,28 +1,33 @@
 'use strict';
 // A resposta de um cartão vai pro terminal da sessão (cópia na caixa do gerente), ou pro gerente se ela não pode receber.
 
-const { bare } = require('./links');
+const { bare, isOpen } = require('./links');
 const { PROMPT } = require('./cards');
+const { awake } = require('./wake');
 
 const INBOX = 50;
 
 /** Manda [text] pela sessão do nó [key] e passa o cartão pra "trabalhando"; uma [message] avulsa mantém o pedido do cartão. Devolve por onde foi. */
-async function deliver(key, text, { links, request, sessions, now = Date.now(), message = false }) {
+async function deliver(key, text, { links, request, list, notice, sessions, now = Date.now(), message = false, wait }) {
+  const io = { request, list, notice };
+  const typed = (s, t) => request('terminal.sendText', { tabId: s.id, text: t, submit: true });
   const node = links.nodes[key];
   if (!node) throw new Error('esse cartão não existe mais');
   const body = String(text || '').trim();
   if (!body) throw new Error('resposta vazia');
   const parent = links.node(node.parent);
-  const s = sessions.find((x) => x.id === node.tabId && !x.exited) || null;
+  let s = sessions.find((x) => x.id === node.tabId && isOpen(x)) || null;
+  if (s && s.hibernated) s = await awake(io, s, wait);
   const title = bare(s ? s.title : node.name) || node.name;
-  const toManager = !s || s.hibernated || PROMPT.has(s.status);
+  const toManager = !s || PROMPT.has(s.status);
   if (toManager) {
-    const m = parent && sessions.find((x) => x.id === parent.tabId && !x.exited);
-    if (!m || m.hibernated || PROMPT.has(m.status)) throw new Error(`${title} não pode receber agora e o gerente também não: responda na aba`);
+    let m = parent && sessions.find((x) => x.id === parent.tabId && isOpen(x));
+    if (m && m.hibernated) m = await awake(io, m, wait);
+    if (!m || PROMPT.has(m.status)) throw new Error(`${title} não pode receber agora e o gerente também não: responda na aba`);
     const why = s ? s.statusLabel || s.status : 'fechada';
-    await request('terminal.sendText', { tabId: parent.tabId, text: `[resposta do usuário no cartão de ${title} (${why})] ${body}`, submit: true });
+    await typed(m, `[resposta do usuário no cartão de ${title} (${why})] ${body}`);
   } else {
-    await request('terminal.sendText', { tabId: s.id, text: body, submit: true });
+    await typed(s, body);
     if (parent) parent.inbox = [...(parent.inbox || []), { tabId: s.id, title, text: body, at: now, via: 'terminal' }].slice(-INBOX);
   }
   if (message) {

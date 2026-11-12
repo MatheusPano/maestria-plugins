@@ -69,7 +69,7 @@
       },
       {
         "name": "sessions_send",
-        "description": "Send a message to an existing Claude session, as if typed in its terminal and submitted. Refused while that session waits for the user (permission or question) or is hibernated. If it is busy, the message is queued by Claude Code.",
+        "description": "Send a message to an existing Claude session, as if typed in its terminal and submitted. Refused while that session waits for the user (permission or question). A hibernated session is woken first and the message goes once it is ready. If it is busy, the message is queued by Claude Code.",
         "inputSchema": {
           "type": "object",
           "properties": {
