@@ -96,7 +96,7 @@ widget Tell = switch data.canTell {
     padding: [18.0, 0.0, 14.0, 12.0],
     child: TextInput(
       id: data.tell.input,
-      placeholder: "mensagem para o gerente (vai direto para a aba dele)",
+      placeholder: "mensagem para o gerente",
       clear: data.tell.clear,
       autofocus: data.tell.focus,
       fontSize: 12.5,
@@ -207,7 +207,7 @@ widget Card = Box(
       default: SizedBox(),
     },
     switch args.c.canMessage {
-      true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão (vai direto para a aba)"),
+      true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão"),
       default: SizedBox(),
     },
     Proofs(c: args.c),
@@ -436,7 +436,7 @@ widget Reply = Column(
         default: SizedBox(),
       },
     },
-    Answer(c: args.c, act: args.c.acts.answer, hint: "responda (vai direto para a aba)"),
+    Answer(c: args.c, act: args.c.acts.answer, hint: "sua resposta"),
     Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
   ],
 );
@@ -655,7 +655,7 @@ widget Done = Box(
       default: Padding(padding: [0.0, 4.0, 0.0, 0.0], child: Text(text: args.c.because, maxLines: 2, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint })),
     },
     switch args.c.writing {
-      true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão (vai direto para a aba)"),
+      true: Answer(c: args.c, act: args.c.acts.message, hint: "mensagem para a sessão"),
       default: SizedBox(),
     },
     Proofs(c: args.c),
