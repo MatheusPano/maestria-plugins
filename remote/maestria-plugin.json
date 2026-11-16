@@ -1,0 +1,23 @@
+{
+  "id": "maestria.remote",
+  "name": "Remote",
+  "version": "1.2.0",
+  "description": "As sessões da Maestria no celular, pelo app Maestria (maestria-mobile): a lista por pasta com quem espera você, a conversa de cada sessão ao vivo, mandar mensagem (com foto ou vídeo, ou ditada no celular), aprovar ou negar uma permissão, responder uma pergunta, abrir uma sessão nova numa pasta da lateral, hibernar, acordar e fechar. O celular entra com um código de 6 dígitos gerado na aba da lateral e funciona na rede de casa ou, de fora, pela Tailscale. Em Dart compilado: não precisa do node.",
+  "icon": "icons/remote.svg",
+  "author": "Matheus Pano",
+  "maestria": 1,
+  "main": ["sh", "run.sh"],
+  "permissions": ["hooks", "terminal.write", "sessions.create", "sessions.close"],
+  "contributes": {
+    "sidebar": true,
+    "commands": [
+      { "id": "parear", "title": "remote: parear um celular", "icon": "device" }
+    ],
+    "settings": [
+      { "id": "port", "type": "number", "default": 7788, "title": "porta",
+        "description": "Onde o servidor escuta. Ocupada (as duas Maestrias abertas), ele tenta as 4 seguintes." },
+      { "id": "ntfy", "type": "string", "default": "", "title": "aviso pelo ntfy",
+        "description": "Opcional: a URL de um tópico do ntfy (https://ntfy.sh/um-nome-dificil). Quando uma sessão passa a esperar você, vai um aviso com o nome dela e o motivo — nunca a conversa — e o app do ntfy no celular avisa mesmo com a Maestria fechada." }
+    ]
+  }
+}
