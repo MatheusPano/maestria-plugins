@@ -359,3 +359,20 @@ test('o cartão mostra a branch da sessão e os PRs achados no transcript, sem r
   assert.equal(c.branch, 'feature/TASK#1');
   assert.deepEqual(c.prs.map((p) => [p.label, p.act]), [['b#1', `pr:${w}:0`], ['PR #2 · c', 'url:w:1']]);
 });
+
+test('agente em segundo plano é trabalho, não "precisa de você"; numa pergunta, a pergunta ganha', () => {
+  const { stateOf, agentsOf, behind } = require('../lib/cards');
+  const s = { id: 't', status: 'ready', needsYou: true, backgroundAgents: 2, reply: { text: 'feito', at: 9 } };
+  assert.equal(agentsOf(s), 2);
+  assert.equal(stateOf({ state: 'working', at: 1 }, s), 'working');
+  assert.equal(stateOf({ state: 'working', at: 1, dismissed: true }, s), 'done');
+  assert.equal(stateOf(null, { ...s, status: 'waitingPermission' }), 'needs_you');
+  assert.equal(agentsOf({ ...s, hibernated: true }), 0);
+  assert.equal(behind(1), 'rodando em segundo plano (1 agente)');
+});
+
+test('cartão pedindo você (com ação) continua em "precisa de você" mesmo com agente em segundo plano', () => {
+  const { stateOf } = require('../lib/cards');
+  const s = { id: 't', status: 'ready', backgroundAgents: 1 };
+  assert.equal(stateOf({ state: 'needs_you', action: { kind: 'approve', text: 'ok?' } }, s), 'needs_you');
+});

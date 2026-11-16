@@ -2,7 +2,7 @@
 // A aba da lateral: cada gerente com as sessões dele embaixo, quem precisa de você primeiro, e as prontas dobradas.
 
 const { colorOf, bare, isOpen } = require('./links');
-const { stateOf, liveOf, waitOf, repliedOf, plain } = require('./cards');
+const { stateOf, liveOf, waitOf, repliedOf, plain, agentsOf, behind } = require('./cards');
 
 const STATUS_TONE = {
   working: 'accent',
@@ -41,6 +41,7 @@ function subtitleOf(st, card, session) {
   if (replied) return `Respondeu: ${plain(replied.text).split('\n').find((l) => l.trim()) || ''}`;
   if (st === 'needs_you' && card && card.state === 'needs_you') return card.headline || (card.action && card.action.text) || waitOf(session);
   if (st === 'needs_you') return waitOf(session);
+  if (st === 'working' && agentsOf(session)) return behind(agentsOf(session));
   if (st === 'working') return act.lastTool || (card && card.headline) || act.lastPrompt || (session && session.statusLabel) || '';
   return (card && card.headline) || (session && session.statusLabel) || '';
 }

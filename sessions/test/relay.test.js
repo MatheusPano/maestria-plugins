@@ -55,3 +55,9 @@ test('a fila só vai pro terminal do gerente parado, sem foco, sem pergunta, dep
   assert.equal(due({ ...node, relayedAt: 1000 + 30000 }, idle, 1000 + 61000), false);
   assert.equal(due({ events: [] }, idle, 1e9), false);
 });
+
+test('o prompt que chega com as imagens coladas ([Image #N]) ainda é reconhecido como enviado pelo plugin', () => {
+  const sent = new Sent(() => 0);
+  sent.note('t', 'olha isso');
+  assert.equal(sent.take('t', '[Image #1] [Image #2] olha isso'), true);
+});

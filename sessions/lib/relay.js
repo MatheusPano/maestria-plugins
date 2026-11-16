@@ -31,7 +31,8 @@ class Sent {
   /** Se [text] foi o plugin que mandou pra [tabId], consome e diz true. */
   take(tabId, text) {
     const list = (this.byTab.get(tabId) || []).filter((m) => this.now() - m.at < SENT_MS);
-    const i = list.findIndex((m) => m.text === norm(text));
+    const typed = norm(String(text || '').replace(/\[Image #\d+\]\s*/g, ''));
+    const i = list.findIndex((m) => m.text === typed);
     if (i >= 0) list.splice(i, 1);
     this.byTab.set(tabId, list);
     return i >= 0;
