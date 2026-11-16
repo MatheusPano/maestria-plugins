@@ -178,3 +178,19 @@ test('gerente com a aba fechada diz "fechada" e o clique retoma a conversa; sess
   assert.equal(live.action, 'focus:k');
   assert.ok(kid);
 });
+
+test('tints: a aba de um nó ganha a cor da Maestria mais próxima; Maestria sem tint e aba solta ficam de fora', () => {
+  const l = new Links({}, () => 1);
+  const g = l.add({ tabId: 'g', name: 'g', manager: true });
+  l.paint(g, 'blue');
+  l.add({ tabId: 'a', parent: g, name: 'a' });
+  const sessions = [
+    { id: 'g', title: 'g', tint: null },
+    { id: 'a', title: 'a', tint: 'cyan' },
+    { id: 'velha', title: 'x' },
+    { id: 'solta', title: 's', tint: 'pink' },
+    { id: 'z', title: 'z', exited: true, tint: null },
+  ];
+  assert.deepEqual(l.tints(sessions), [{ tabId: 'g', tint: 'cyan' }]);
+  assert.deepEqual(l.tints([{ id: 'a', title: 'a' }]), []);
+});
