@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Links } = require('../lib/links');
-const { Sent, queue, lines, digest, due } = require('../lib/relay');
+const { Sent, fromUser, queue, lines, digest, due } = require('../lib/relay');
 
 test('o que o plugin mandou pra uma aba é reconhecido uma vez (espaços não importam) e expira', () => {
   let now = 0;
@@ -60,4 +60,20 @@ test('o prompt que chega com as imagens coladas ([Image #N]) ainda é reconhecid
   const sent = new Sent(() => 0);
   sent.note('t', 'olha isso');
   assert.equal(sent.take('t', '[Image #1] [Image #2] olha isso'), true);
+});
+
+test('o texto que o plugin colou chega no prompt dentro do envelope <pasted_content> do Claude Code e ainda é reconhecido', () => {
+  const sent = new Sent(() => 0);
+  sent.note('t', 'Corrija o CI do PR #106.\nDepois me avise.');
+  assert.equal(sent.take('t', '<pasted_content id="cbef">\nCorrija o CI do PR #106.\nDepois me avise.\n</pasted_content id="cbef">'), true);
+});
+
+test('só conta como do usuário o que não veio do plugin nem é aviso de tarefa em segundo plano', () => {
+  const sent = new Sent(() => 0);
+  sent.note('t', 'pelo gerente');
+  assert.equal(fromUser(sent, 't', '<pasted_content id="1">\npelo gerente\n</pasted_content id="1">'), null);
+  assert.equal(fromUser(sent, 't', '<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n</task-notification>'), null);
+  assert.equal(fromUser(sent, 't', ''), null);
+  assert.equal(fromUser(sent, 't', 'merged, reconnected as well'), 'merged, reconnected as well');
+  assert.equal(fromUser(sent, 't', 'olha: <pasted_content id="9">\nerro 503\n</pasted_content id="9">'), 'olha: erro 503');
 });

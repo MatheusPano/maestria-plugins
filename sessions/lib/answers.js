@@ -7,7 +7,28 @@ const { awake } = require('./wake');
 
 const INBOX = 50;
 
-/** Manda [text] pela sessão do nó [key] e passa o cartão pra "trabalhando"; uma [message] avulsa mantém o pedido do cartão. Devolve por onde foi. */
+/** A cópia, na caixa do gerente [parent], do que você mandou pra aba [tabId]. */
+function copy(parent, tabId, title, text, now) {
+  parent.inbox = [...(parent.inbox || []), { tabId, title, text, at: now, via: 'terminal' }].slice(-INBOX);
+}
+
+/** Você escreveu [text] para a sessão do nó [node] (resposta do cartão, caixa de mensagem ou direto na aba): o cartão sai de "precisa de você" e a vez é dela, até o gerente postar outro. */
+function handOver(node, text, now, message, viaManager = false) {
+  const was = { ...(node.card || {}) };
+  delete was.dismissed;
+  delete was.doneBecause;
+  node.card = {
+    ...was,
+    state: 'working',
+    action: null,
+    headline: `${message ? 'Você escreveu' : 'Você respondeu'}: ${text}`,
+    since: now,
+    doneAt: null,
+    answered: { text, at: now, ...(message ? { message: true } : {}), ...(viaManager ? { via: 'manager' } : {}) },
+  };
+}
+
+/** Manda [text] pela sessão do nó [key] e passa a vez pra ela; [message] é a caixa de mensagem do cartão. Devolve por onde foi. */
 async function deliver(key, text, { links, request, list, notice, sessions, now = Date.now(), message = false, wait }) {
   const io = { request, list, notice };
   const typed = (s, t) => request('terminal.sendText', { tabId: s.id, text: t, submit: true });
@@ -28,14 +49,10 @@ async function deliver(key, text, { links, request, list, notice, sessions, now 
     await typed(m, `[resposta do usuário no cartão de ${title} (${why})] ${body}`);
   } else {
     await typed(s, body);
-    if (parent) parent.inbox = [...(parent.inbox || []), { tabId: s.id, title, text: body, at: now, via: 'terminal' }].slice(-INBOX);
+    if (parent) copy(parent, s.id, title, body, now);
   }
-  if (message) {
-    const was = node.card || {};
-    const back = !was.state || was.state === 'done' ? { state: 'working', since: now, doneAt: null } : {};
-    node.card = { ...was, ...back, answered: { text: body, at: now, message: true } };
-  } else node.card = { ...(node.card || {}), state: 'working', action: null, headline: `Você respondeu: ${body}`, since: now, answered: { text: body, at: now } };
+  handOver(node, body, now, message, toManager);
   return { via: toManager ? 'manager' : 'terminal', title };
 }
 
-module.exports = { deliver };
+module.exports = { deliver, handOver, copy };

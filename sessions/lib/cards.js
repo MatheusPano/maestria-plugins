@@ -162,7 +162,10 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     color: node.free ? FREE : hex(colorOf(node.color).hex),
     age: !card && !lastTurn ? '' : state === 'needs_you' ? ago(since, now) : state === 'working' ? `desde ${clock(since)}` : clock(c.doneAt || c.at || lastTurn || now),
     headline,
-    context: replied ? (c.answered ? `${c.answered.message ? 'Você escreveu' : 'Você respondeu'}: ${c.answered.text}` : c.headline || '') : c.headline && (kind === 'question' || kind === 'approve') ? action.text : '',
+    context: replied
+      ? c.answered ? `${c.answered.message ? 'Você escreveu' : 'Você respondeu'}: ${c.answered.text}` : c.headline || ''
+      : state === 'working' && c.answered ? `Enviada às ${clock(c.answered.at)}${c.answered.via === 'manager' ? ' para o gerente: a aba estava num prompt.' : ': a vez é da sessão.'}`
+      : c.headline && (kind === 'question' || kind === 'approve') ? action.text : '',
     reply: replied ? plain(replied.text) : '',
     replyLong: Boolean(replied) && shownLines(plain(replied.text)) > REPLY_LINES,
     hasHeadline: Boolean(headline),
