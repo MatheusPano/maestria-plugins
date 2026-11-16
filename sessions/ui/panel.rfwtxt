@@ -823,10 +823,43 @@ widget detail = SingleChildScrollView(
   ),
 );
 
-widget image = Container(
-  color: data.theme.canvas,
-  alignment: { x: 0.0, y: 0.0 },
-  child: Picture(path: data.path, width: 1200.0, height: 760.0, fit: "contain"),
+widget image = KeyListener(
+  keys: ["left"],
+  onKey: event "act" { a: data.prev },
+  child: KeyListener(
+    keys: ["right"],
+    onKey: event "act" { a: data.next },
+    child: Container(
+      color: data.theme.canvas,
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Expanded(
+            child: Container(
+              alignment: { x: 0.0, y: 0.0 },
+              child: Picture(path: data.path, width: 1200.0, height: 720.0, fit: "contain"),
+            ),
+          ),
+          switch data.many {
+            true: Padding(
+              padding: [12.0, 8.0, 12.0, 10.0],
+              child: Row(
+                mainAxisAlignment: "center",
+                children: [
+                  switch data.hasPrev { true: Btn(label: "anterior", icon: "chevron_left_rounded", act: data.prev, kind: "sec"), default: SizedBox(width: 96.0) },
+                  SizedBox(width: 14.0),
+                  Text(text: data.label, style: { fontSize: 12.0, color: data.theme.dim }),
+                  SizedBox(width: 14.0),
+                  switch data.hasNext { true: Btn(label: "próxima", icon: "chevron_right_rounded", act: data.next, kind: "sec"), default: SizedBox(width: 96.0) },
+                ],
+              ),
+            ),
+            default: SizedBox(),
+          },
+        ],
+      ),
+    ),
+  ),
 );
 
 widget Label = Padding(

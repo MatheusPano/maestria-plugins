@@ -369,3 +369,32 @@ test('se o aviso ao gerente falha, a fila volta e sai na próxima', async () => 
     Object.assign(relay.limits, was);
   }
 });
+
+test('a imagem da prova abre com anterior e próxima, e andar troca a mesma janela', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const shots = ['a.png', 'b.png'].map((n) => {
+    const f = path.join(dataDir, n);
+    fs.writeFileSync(f, Buffer.from('89504e470d0a1a0a', 'hex'));
+    return f;
+  });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'olha', proof: { images: shots } } });
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+  const views = () => calls.filter(([m, p]) => (m === 'view.open' || m === 'view.update') && String(p.viewId).startsWith('imagem:'));
+  const before = views().length;
+  queue['view.update'] = [{ open: false }];
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `image:${key}:0` } });
+  await tick();
+  const [m, first] = views().slice(before).pop();
+  assert.equal(m, 'view.open');
+  assert.equal(first.data.label, '1 / 2 · a.png');
+  assert.equal(first.data.prev, '');
+  assert.equal(first.data.next, `image:${key}:1`);
+  handlers.note['view.action']({ viewId: `imagem:${key}`, action: 'act', values: { a: first.data.next } });
+  await tick();
+  const [m2, second] = views().pop();
+  assert.equal(m2, 'view.update');
+  assert.equal(second.data.label, '2 / 2 · b.png');
+  assert.equal(second.data.hasNext, false);
+});
