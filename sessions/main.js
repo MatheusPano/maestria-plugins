@@ -38,6 +38,7 @@ const state = {
   title: undefined,
   doctor: false,
   sent: new relay.Sent(),
+  asking: new relay.Asking(),
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -360,7 +361,7 @@ async function flushRelays(sessions) {
   const now = Date.now();
   for (const node of Object.values(state.links.nodes)) {
     const manager = sessions.find((s) => s.id === node.tabId);
-    if (!relay.due(node, manager, now)) continue;
+    if (!relay.due(node, manager, now, state.asking.has(node.tabId))) continue;
     const sent = node.events;
     node.events = [];
     node.relayedAt = now;
@@ -380,6 +381,7 @@ mx.onNotification('event', ({ type, tabId, name, payload }) => {
     if (name === 'PreToolUse') state.live[tabId] = liveLine(payload);
     else if (name === 'Stop' || name === 'SessionEnd') delete state.live[tabId];
     if (name === 'Stop') for (const ms of SUGGESTION_WAIT) setTimeout(schedule, ms);
+    state.asking.hook(tabId, name, payload);
     relayHook(name, tabId, payload);
   }
   if (type === 'sidebar.shown' || type === 'hook' || String(type).startsWith('session.')) schedule();

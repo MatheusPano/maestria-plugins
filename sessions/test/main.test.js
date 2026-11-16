@@ -451,3 +451,60 @@ test('mandar só as imagens coladas pela caixa do cartão passa a vez para a ses
   const inbox = Object.values(nodes()).find((n) => n.tabId === 'g').inbox;
   assert.equal(inbox[inbox.length - 1].text, '[2 imagens]');
 });
+
+test('o aviso ao gerente espera ele sair da pergunta e vai uma vez só, com tudo o que juntou', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  const g = sessions[0];
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const toManager = (from) => calls.slice(from).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+    const hook = (tabId, name, payload = {}) => handlers.note.event({ type: 'hook', tabId, name, payload });
+    const before = calls.length;
+    Object.assign(g, { status: 'waitingAnswer', needsYou: true });
+    hook('w', 'UserPromptSubmit', { prompt: 'primeira' });
+    hook('w', 'UserPromptSubmit', { prompt: 'segunda' });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.deepEqual(toManager(before), []);
+    Object.assign(g, { status: 'idle', needsYou: false });
+    hook('g', 'Stop');
+    await new Promise((r) => setTimeout(r, 700));
+    hook('g', 'Stop');
+    await new Promise((r) => setTimeout(r, 700));
+    const got = toManager(before);
+    assert.equal(got.length, 1);
+    assert.match(got[0], /primeira[\s\S]*segunda/);
+  } finally {
+    Object.assign(g, { status: 'idle', needsYou: false });
+    Object.assign(relay.limits, was);
+  }
+});
+
+test('com a pergunta ainda aberta nos hooks, o aviso não é digitado nem quando a Maestria mostra o gerente parado', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const toManager = (from) => calls.slice(from).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').length;
+    const hook = (tabId, name, payload = {}) => handlers.note.event({ type: 'hook', tabId, name, payload });
+    const before = calls.length;
+    hook('g', 'PreToolUse', { tool_name: 'AskUserQuestion' });
+    hook('g', 'PostToolUse', { tool_name: 'Read' });
+    hook('w', 'UserPromptSubmit', { prompt: 'enquanto ele pergunta' });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(toManager(before), 0);
+    hook('g', 'PostToolUse', { tool_name: 'AskUserQuestion' });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(toManager(before), 1);
+  } finally {
+    Object.assign(relay.limits, was);
+  }
+});

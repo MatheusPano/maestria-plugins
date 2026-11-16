@@ -83,13 +83,33 @@ function digest(links, events, sessions) {
   return [HEAD, ...lines(links, events, sessions), TAIL].join('\n');
 }
 
-/** A fila do gerente [key] pode ir agora pro terminal dele: parado, sem pergunta, sem foco (você pode estar digitando) e sem ter recebido nada há pouco. */
-function due(node, manager, now = Date.now()) {
+const ASK = 'AskUserQuestion';
+const ENDS = new Set(['UserPromptSubmit', 'Stop', 'SessionEnd']);
+
+/** As abas com uma pergunta (AskUserQuestion) aberta, pelos hooks: ela só fecha quando essa ferramenta acaba, não quando acaba outra que rodava junto. */
+class Asking {
+  constructor() {
+    this.tabs = new Set();
+  }
+
+  hook(tabId, name, payload) {
+    const tool = payload && payload.tool_name;
+    if (name === 'PreToolUse' && tool === ASK) this.tabs.add(tabId);
+    else if (((name === 'PostToolUse' || name === 'PostToolUseFailure') && tool === ASK) || ENDS.has(name)) this.tabs.delete(tabId);
+  }
+
+  has(tabId) {
+    return this.tabs.has(tabId);
+  }
+}
+
+/** A fila do gerente [key] pode ir agora pro terminal dele: parado, sem pergunta (nem a que os hooks dizem que segue aberta, [asking]), sem foco (você pode estar digitando) e sem ter recebido nada há pouco. */
+function due(node, manager, now = Date.now(), asking = false) {
   const events = node.events || [];
-  if (!events.length || !manager || manager.exited || manager.kind !== 'claude') return false;
+  if (!events.length || !manager || manager.exited || manager.kind !== 'claude' || asking) return false;
   if (manager.hibernated || manager.needsYou || manager.focused || !RESTING.has(manager.status)) return false;
   if (now - events[events.length - 1].at < limits.quiet) return false;
   return now - (node.relayedAt || 0) >= limits.gap;
 }
 
-module.exports = { Sent, fromUser, queue, lines, digest, due, limits };
+module.exports = { Asking, Sent, fromUser, queue, lines, digest, due, limits };
