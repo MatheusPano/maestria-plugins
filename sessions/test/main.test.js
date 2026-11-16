@@ -508,3 +508,13 @@ test('com a pergunta ainda aberta nos hooks, o aviso não é digitado nem quando
     Object.assign(relay.limits, was);
   }
 });
+
+test('o cabeçalho do cartão tem o botão "ir para a aba", que leva direto à sessão', async () => {
+  const lib = fs.readFileSync(path.join(root, 'ui', 'panel.rfwtxt'), 'utf8');
+  const head = lib.slice(lib.indexOf('widget TitleRow'), lib.indexOf('widget Gap'));
+  assert.match(head, /switch args\.c\.acts\.focus \{\s*"": SizedBox\(\),\s*default: IconButton\(icon: "open", tooltip: "ir para a aba"[^\n]*a: args\.c\.acts\.focus/);
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: 'focus:w' } });
+  await tick();
+  assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.focus'), [['session.focus', { tabId: 'w' }]]);
+});

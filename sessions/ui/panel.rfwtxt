@@ -234,6 +234,10 @@ widget TitleRow = Row(
     SizedBox(width: 8.0),
     Text(text: args.c.age, style: { fontSize: 11.0, color: switch args.c.state { "needs_you": data.theme.red, default: data.theme.faint } }),
     SizedBox(width: 4.0),
+    switch args.c.acts.focus {
+      "": SizedBox(),
+      default: IconButton(icon: "open", tooltip: "ir para a aba", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.focus }),
+    },
     switch args.c.canDismiss {
       true: IconButton(icon: "check", tooltip: "dispensar: o cartão vai para Feito", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.dismiss }),
       default: SizedBox(),
