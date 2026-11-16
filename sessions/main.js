@@ -555,15 +555,26 @@ async function onProof(verb, key, i) {
   if (!proof) return null;
   if (verb === 'pr' && proof.prs[i]) return mx.request('window.openUrl', { url: proof.prs[i].url });
   if (verb === 'image' && proof.images[i]) {
-    return mx.request('view.open', {
-      viewId: IMAGE + key,
-      title: path.basename(proof.images[i].path),
-      modal: true,
-      rfw: { library: LIBRARY, root: 'image' },
-      data: { path: proof.images[i].rel },
-    });
+    const view = { viewId: IMAGE + key, title: path.basename(proof.images[i].path), data: imageData(key, proof.images, i) };
+    const shown = await mx.request('view.update', view).catch(() => ({ open: false }));
+    if (shown && shown.open !== false) return shown;
+    return mx.request('view.open', { ...view, modal: true, rfw: { library: LIBRARY, root: 'image' } });
   }
   return null;
+}
+
+/** A imagem [i] das provas do cartão [key], com o anterior e o próximo (as setas também andam). */
+function imageData(key, images, i) {
+  const at = (j) => (j >= 0 && j < images.length ? `image:${key}:${j}` : '');
+  return {
+    path: images[i].rel,
+    label: `${i + 1} / ${images.length} · ${path.basename(images[i].path)}`,
+    many: images.length > 1,
+    prev: at(i - 1),
+    next: at(i + 1),
+    hasPrev: i > 0,
+    hasNext: i < images.length - 1,
+  };
 }
 
 async function retitle(keys) {
