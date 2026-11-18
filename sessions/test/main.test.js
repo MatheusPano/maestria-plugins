@@ -113,7 +113,7 @@ test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~, 
   }
 });
 
-test('mensagem pela caixa de um cartão de comando chega na aba sem apagar o comando nem mudar o estado', async () => {
+test('mensagem pela caixa de um cartão de comando chega na aba e passa a vez para a sessão', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
   handlers.req.initialize({ dataDir });
   await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'rode isso', action: { kind: 'command', text: 'make deploy' } } });
@@ -124,7 +124,7 @@ test('mensagem pela caixa de um cartão de comando chega na aba sem apagar o com
   await tick();
   assert.deepEqual(calls.slice(before).filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text]), [['w', 'olha os logs antes']]);
   const card = read()[key].card;
-  assert.deepEqual([card.state, card.headline, card.action.text, card.answered.text, card.answered.message], ['needs_you', 'rode isso', 'make deploy', 'olha os logs antes', true]);
+  assert.deepEqual([card.state, card.headline, card.action, card.answered.text, card.answered.message], ['working', 'Você escreveu: olha os logs antes', null, 'olha os logs antes', true]);
 });
 
 test('cartão de comando com um link: o cartão abre o link no navegador em vez de mandar para a aba', async () => {
@@ -323,13 +323,19 @@ test('o que você digita direto numa sessão chega ao gerente parado; a mensagem
     handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `message:${key}`, text: 'pelo painel' } });
     await tick();
     hook('UserPromptSubmit', { prompt: 'pelo painel' });
+    await handlers.req['tool.call']({ tool: 'sessions_send', tabId: 'g', args: { tabId: 'w', text: 'Corrija o CI.\nDepois avise.' } });
+    hook('UserPromptSubmit', { prompt: '<pasted_content id="ab12">\nCorrija o CI.\nDepois avise.\n</pasted_content id="ab12">' });
+    hook('UserPromptSubmit', { prompt: '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>' });
+    const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes[key].card;
+    assert.equal(read().answered.text, 'pelo painel');
     hook('UserPromptSubmit', { prompt: 'usa a v2 da API' });
+    assert.deepEqual([read().state, read().headline, read().answered.text], ['working', 'Você escreveu: usa a v2 da API', 'usa a v2 da API']);
     const before = calls.length;
     await new Promise((r) => setTimeout(r, 900));
     const toManager = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
     assert.equal(toManager.length, 1);
     assert.match(toManager[0], /O usuário escreveu direto para "w": "usa a v2 da API"/);
-    assert.doesNotMatch(toManager[0], /pelo painel/);
+    assert.doesNotMatch(toManager[0], /pelo painel|Corrija o CI|task-notification/);
   } finally {
     Object.assign(relay.limits, was);
   }
@@ -397,4 +403,118 @@ test('a imagem da prova abre com anterior e próxima, e andar troca a mesma jane
   assert.equal(m2, 'view.update');
   assert.equal(second.data.label, '2 / 2 · b.png');
   assert.equal(second.data.hasNext, false);
+});
+
+test('o primeiro prompt de uma sessão aberta pelo gerente (sessions_open) não conta como digitado pelo usuário', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    queue['session.openClaude'] = [{ tabId: 'n' }];
+    await handlers.req['tool.call']({ tool: 'sessions_open', tabId: 'g', cwd: os.tmpdir(), args: { cwd: os.tmpdir(), name: 'nova', prompt: 'Investigue a queda das 07:38.' } });
+    const nodes = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+    const key = Object.keys(nodes()).find((k) => nodes()[k].tabId === 'n');
+    assert.ok(key);
+    handlers.note.event({ type: 'hook', tabId: 'n', name: 'UserPromptSubmit', payload: { prompt: 'Investigue a queda das 07:38.' } });
+    const before = calls.length;
+    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').length, 0);
+    assert.equal(nodes()[key].card, undefined);
+    handlers.note.event({ type: 'hook', tabId: 'n', name: 'UserPromptSubmit', payload: { prompt: 'valeu' } });
+    assert.equal(nodes()[key].card, undefined);
+  } finally {
+    Object.assign(relay.limits, was);
+  }
+});
+
+test('mandar só as imagens coladas pela caixa do cartão passa a vez para a sessão e deixa a cópia para o gerente', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'manda o print' } });
+  const nodes = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes()).find((k) => nodes()[k].tabId === 'w');
+  const act = (a, extra = {}) => handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a, ...extra } });
+  const before = calls.length;
+  act(`paste:${key}`);
+  await tick();
+  act(`paste:${key}`);
+  await tick();
+  act(`message:${key}`, { text: '  ' });
+  await tick();
+  const mine = calls.slice(before).filter(([m]) => m === 'terminal.pasteClipboard' || m === 'terminal.sendText').map(([m, p]) => [m, p.tabId, p.text]);
+  assert.deepEqual(mine, [['terminal.pasteClipboard', 'w', undefined], ['terminal.pasteClipboard', 'w', undefined], ['terminal.sendText', 'w', '']]);
+  const card = nodes()[key].card;
+  assert.deepEqual([card.state, card.headline], ['working', 'Você escreveu: [2 imagens]']);
+  const inbox = Object.values(nodes()).find((n) => n.tabId === 'g').inbox;
+  assert.equal(inbox[inbox.length - 1].text, '[2 imagens]');
+});
+
+test('o aviso ao gerente espera ele sair da pergunta e vai uma vez só, com tudo o que juntou', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  const g = sessions[0];
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const toManager = (from) => calls.slice(from).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+    const hook = (tabId, name, payload = {}) => handlers.note.event({ type: 'hook', tabId, name, payload });
+    const before = calls.length;
+    Object.assign(g, { status: 'waitingAnswer', needsYou: true });
+    hook('w', 'UserPromptSubmit', { prompt: 'primeira' });
+    hook('w', 'UserPromptSubmit', { prompt: 'segunda' });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.deepEqual(toManager(before), []);
+    Object.assign(g, { status: 'idle', needsYou: false });
+    hook('g', 'Stop');
+    await new Promise((r) => setTimeout(r, 700));
+    hook('g', 'Stop');
+    await new Promise((r) => setTimeout(r, 700));
+    const got = toManager(before);
+    assert.equal(got.length, 1);
+    assert.match(got[0], /primeira[\s\S]*segunda/);
+  } finally {
+    Object.assign(g, { status: 'idle', needsYou: false });
+    Object.assign(relay.limits, was);
+  }
+});
+
+test('com a pergunta ainda aberta nos hooks, o aviso não é digitado nem quando a Maestria mostra o gerente parado', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const toManager = (from) => calls.slice(from).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').length;
+    const hook = (tabId, name, payload = {}) => handlers.note.event({ type: 'hook', tabId, name, payload });
+    const before = calls.length;
+    hook('g', 'PreToolUse', { tool_name: 'AskUserQuestion' });
+    hook('g', 'PostToolUse', { tool_name: 'Read' });
+    hook('w', 'UserPromptSubmit', { prompt: 'enquanto ele pergunta' });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(toManager(before), 0);
+    hook('g', 'PostToolUse', { tool_name: 'AskUserQuestion' });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(toManager(before), 1);
+  } finally {
+    Object.assign(relay.limits, was);
+  }
+});
+
+test('o cabeçalho do cartão tem o botão "ir para a aba", que leva direto à sessão', async () => {
+  const lib = fs.readFileSync(path.join(root, 'ui', 'panel.rfwtxt'), 'utf8');
+  const head = lib.slice(lib.indexOf('widget TitleRow'), lib.indexOf('widget Gap'));
+  assert.match(head, /switch args\.c\.acts\.focus \{\s*"": SizedBox\(\),\s*default: IconButton\(icon: "open", tooltip: "ir para a aba"[^\n]*a: args\.c\.acts\.focus/);
+  const before = calls.length;
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: 'focus:w' } });
+  await tick();
+  assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.focus'), [['session.focus', { tabId: 'w' }]]);
 });

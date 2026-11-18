@@ -10,7 +10,7 @@ const { Links, tinted, bare, isOpen } = require('./lib/links');
 const { awake, typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
 const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
-const { deliver } = require('./lib/answers');
+const { deliver, handOver, copy } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
@@ -38,6 +38,7 @@ const state = {
   title: undefined,
   doctor: false,
   sent: new relay.Sent(),
+  asking: new relay.Asking(),
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -58,10 +59,12 @@ function liveLine(payload) {
   return name;
 }
 
-/** O mx.request, guardando o que o plugin escreve numa aba: isso não é você digitando direto nela. */
-function request(method, params) {
+/** O mx.request, guardando o que o plugin escreve numa aba (e o primeiro prompt de uma sessão que ele abre): isso não é você digitando direto nela. */
+async function request(method, params) {
   if (method === 'terminal.sendText' && params && params.tabId) state.sent.note(params.tabId, params.text);
-  return mx.request(method, params);
+  const r = await mx.request(method, params);
+  if (method === 'session.openClaude' && params && params.prompt && r && r.tabId) state.sent.note(r.tabId, params.prompt);
+  return r;
 }
 
 const withLive = (sessions) =>
@@ -339,8 +342,14 @@ function relayHook(name, tabId, payload) {
   if (!key || !state.links.nodes[key].parent) return;
   const p = payload || {};
   let event = null;
-  if (name === 'UserPromptSubmit' && p.prompt && !state.sent.take(tabId, p.prompt)) event = { kind: 'direct', text: String(p.prompt) };
-  else if (name === 'Stop') event = { kind: 'turn' };
+  if (name === 'UserPromptSubmit') {
+    const text = relay.fromUser(state.sent, tabId, p.prompt);
+    if (text && state.links.nodes[key].card) {
+      handOver(state.links.nodes[key], text, Date.now(), true);
+      writeLinks();
+    }
+    if (text) event = { kind: 'direct', text };
+  } else if (name === 'Stop') event = { kind: 'turn' };
   else if (name === 'Notification' && !/waiting for your input/i.test(String(p.message || ''))) event = { kind: 'waiting', text: String(p.message || '') };
   if (!event || !relay.queue(state.links, key, event)) return;
   writeLinks();
@@ -352,7 +361,7 @@ async function flushRelays(sessions) {
   const now = Date.now();
   for (const node of Object.values(state.links.nodes)) {
     const manager = sessions.find((s) => s.id === node.tabId);
-    if (!relay.due(node, manager, now)) continue;
+    if (!relay.due(node, manager, now, state.asking.has(node.tabId))) continue;
     const sent = node.events;
     node.events = [];
     node.relayedAt = now;
@@ -372,6 +381,7 @@ mx.onNotification('event', ({ type, tabId, name, payload }) => {
     if (name === 'PreToolUse') state.live[tabId] = liveLine(payload);
     else if (name === 'Stop' || name === 'SessionEnd') delete state.live[tabId];
     if (name === 'Stop') for (const ms of SUGGESTION_WAIT) setTimeout(schedule, ms);
+    state.asking.hook(tabId, name, payload);
     relayHook(name, tabId, payload);
   }
   if (type === 'sidebar.shown' || type === 'hook' || String(type).startsWith('session.')) schedule();
@@ -520,8 +530,19 @@ async function pasteImage(key) {
 async function sendImages(key) {
   const s = await readyTabOf(key);
   await request('terminal.sendText', { tabId: s.id, text: '', submit: true });
+  const node = state.links.nodes[key];
+  const parent = node && state.links.node(node.parent);
+  if (parent) {
+    const n = state.ui.images[key];
+    const text = `[${n} ${n === 1 ? 'imagem' : 'imagens'}]`;
+    const now = Date.now();
+    handOver(node, text, now, true);
+    copy(parent, s.id, bare(s.title), text, now);
+  }
   delete state.ui.images[key];
-  return schedule();
+  delete state.ui.writing[key];
+  state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
+  return save();
 }
 
 /** Manda a sugestão que o Claude Code mostra no prompt da aba do cartão [key], como se você a tivesse escrito. */

@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Links } = require('../lib/links');
-const { deliver } = require('../lib/answers');
+const { deliver, handOver } = require('../lib/answers');
 
 function setup(status, extra = {}) {
   const l = new Links({}, () => 0);
@@ -38,6 +38,7 @@ test('sessão num prompt ou fechada: a resposta vai pro gerente', async () => {
     assert.match(calls[0].p.text, /^\[resposta do usuário no cartão de .+\] Aprovado\.$/);
     assert.equal(calls[0].p.submit, true);
     assert.equal(l.nodes[g].inbox, undefined);
+    assert.equal(l.nodes[k].card.answered.via, 'manager');
   }
 });
 
@@ -68,4 +69,23 @@ test('sessão hibernada: acorda e responde a ela; se acordar numa pergunta, a re
     assert.deepEqual(calls.map((c) => c.m), ['session.wake', 'terminal.sendText']);
     assert.equal(calls[1].p.tabId, to);
   }
+});
+
+test('mensagem pela caixa do cartão passa a vez para a sessão: sai de "precisa de você" e mostra o que você escreveu', async () => {
+  const { l, k, env } = setup('ready');
+  await deliver(k, ' merged, reconnected as well ', { ...env, message: true });
+  const c = l.nodes[k].card;
+  assert.deepEqual([c.state, c.action, c.headline, c.since], ['working', null, 'Você escreveu: merged, reconnected as well', 5]);
+  assert.deepEqual(c.answered, { text: 'merged, reconnected as well', at: 5, message: true });
+  assert.deepEqual(c.bullets, ['b']);
+});
+
+test('escrever para uma sessão cujo cartão foi dispensado ou dado como feito traz ele de volta para trabalhando', () => {
+  const node = { card: { state: 'done', dismissed: true, doneBecause: 'PR #1 mergeado', doneAt: 3, headline: 'Dispensado por você.' } };
+  handOver(node, 'reabre o PR', 9, true);
+  assert.equal(node.card.state, 'working');
+  assert.equal(node.card.dismissed, undefined);
+  assert.equal(node.card.doneBecause, undefined);
+  assert.equal(node.card.doneAt, null);
+  assert.equal(node.card.headline, 'Você escreveu: reabre o PR');
 });

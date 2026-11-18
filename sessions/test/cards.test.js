@@ -376,3 +376,19 @@ test('cartão pedindo você (com ação) continua em "precisa de você" mesmo co
   const s = { id: 't', status: 'ready', backgroundAgents: 1 };
   assert.equal(stateOf({ state: 'needs_you', action: { kind: 'approve', text: 'ok?' } }, s), 'needs_you');
 });
+
+test('depois que você escreve para a sessão, o cartão fica em Trabalhando com o que você escreveu, a hora e de quem é a vez', () => {
+  const { l, g, kid } = setup();
+  kid('m', { state: 'working', headline: 'Você escreveu: merged, reconnected as well', since: min(3), answered: { text: 'merged, reconnected as well', at: min(3), message: true } });
+  const [m] = cols(board(l, g, [{ id: 'g' }, { id: 'm', title: 'm', status: 'tool' }], {}, NOW)).working;
+  assert.equal(m.headline, 'Você escreveu: merged, reconnected as well');
+  assert.equal(m.context, 'Enviada às 11:57: a vez é da sessão.');
+  assert.equal(m.age, 'desde 11:57');
+});
+
+test('a resposta que foi para o gerente (a aba estava num prompt) não diz que a vez é da sessão', () => {
+  const { l, g, kid } = setup();
+  kid('p', { state: 'working', headline: 'Você respondeu: sim', answered: { text: 'sim', at: min(2), via: 'manager' } });
+  const [p] = cols(board(l, g, [{ id: 'g' }, { id: 'p', title: 'p', status: 'tool' }], {}, NOW)).working;
+  assert.equal(p.context, 'Enviada às 11:58 para o gerente: a aba estava num prompt.');
+});

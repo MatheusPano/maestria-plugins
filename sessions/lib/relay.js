@@ -10,6 +10,10 @@ const limits = { quiet: 10 * 1000, gap: 60 * 1000 };
 const LINE = 160;
 
 const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+const unwrap = (text) => String(text || '').replace(/<\/?pasted_content(?: id="[^"]*")?>/g, ' ');
+/** O texto como você o escreveu: sem as marcas das imagens coladas nem o envelope que o Claude Code põe no texto colado. */
+const typed = (text) => norm(unwrap(text).replace(/\[Image #\d+\]\s*/g, ''));
+const MACHINE = /^\s*<task-notification>/;
 const clip = (text) => {
   const t = norm(plain(text));
   return t.length > LINE ? `${t.slice(0, LINE)}…` : t;
@@ -31,12 +35,18 @@ class Sent {
   /** Se [text] foi o plugin que mandou pra [tabId], consome e diz true. */
   take(tabId, text) {
     const list = (this.byTab.get(tabId) || []).filter((m) => this.now() - m.at < SENT_MS);
-    const typed = norm(String(text || '').replace(/\[Image #\d+\]\s*/g, ''));
-    const i = list.findIndex((m) => m.text === typed);
+    const said = typed(text);
+    const i = list.findIndex((m) => m.text === said);
     if (i >= 0) list.splice(i, 1);
     this.byTab.set(tabId, list);
     return i >= 0;
   }
+}
+
+/** O que você escreveu na aba [tabId], ou null quando o prompt não é seu: mandado pelo plugin (gerente, cartão) ou aviso de tarefa em segundo plano. */
+function fromUser(sent, tabId, prompt) {
+  if (!prompt || MACHINE.test(prompt) || sent.take(tabId, prompt)) return null;
+  return norm(unwrap(prompt)) || null;
 }
 
 /** Põe o evento [event] da sessão [key] na fila do gerente dela; devolve true se enfileirou. */
@@ -73,13 +83,33 @@ function digest(links, events, sessions) {
   return [HEAD, ...lines(links, events, sessions), TAIL].join('\n');
 }
 
-/** A fila do gerente [key] pode ir agora pro terminal dele: parado, sem pergunta, sem foco (você pode estar digitando) e sem ter recebido nada há pouco. */
-function due(node, manager, now = Date.now()) {
+const ASK = 'AskUserQuestion';
+const ENDS = new Set(['UserPromptSubmit', 'Stop', 'SessionEnd']);
+
+/** As abas com uma pergunta (AskUserQuestion) aberta, pelos hooks: ela só fecha quando essa ferramenta acaba, não quando acaba outra que rodava junto. */
+class Asking {
+  constructor() {
+    this.tabs = new Set();
+  }
+
+  hook(tabId, name, payload) {
+    const tool = payload && payload.tool_name;
+    if (name === 'PreToolUse' && tool === ASK) this.tabs.add(tabId);
+    else if (((name === 'PostToolUse' || name === 'PostToolUseFailure') && tool === ASK) || ENDS.has(name)) this.tabs.delete(tabId);
+  }
+
+  has(tabId) {
+    return this.tabs.has(tabId);
+  }
+}
+
+/** A fila do gerente [key] pode ir agora pro terminal dele: parado, sem pergunta (nem a que os hooks dizem que segue aberta, [asking]), sem foco (você pode estar digitando) e sem ter recebido nada há pouco. */
+function due(node, manager, now = Date.now(), asking = false) {
   const events = node.events || [];
-  if (!events.length || !manager || manager.exited || manager.kind !== 'claude') return false;
+  if (!events.length || !manager || manager.exited || manager.kind !== 'claude' || asking) return false;
   if (manager.hibernated || manager.needsYou || manager.focused || !RESTING.has(manager.status)) return false;
   if (now - events[events.length - 1].at < limits.quiet) return false;
   return now - (node.relayedAt || 0) >= limits.gap;
 }
 
-module.exports = { Sent, queue, lines, digest, due, limits };
+module.exports = { Asking, Sent, fromUser, queue, lines, digest, due, limits };
