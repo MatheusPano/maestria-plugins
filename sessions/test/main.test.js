@@ -669,3 +669,62 @@ test('a aba fechada vai para o histórico: na própria aba, pelo painel (sem rep
     for (const id of ['z', 'k', 'q']) if (sessions.some((s) => s.id === id)) drop(id);
   }
 });
+
+test('o cartão feito fecha a aba sozinho quando ela para, uma notificação por rodada; keepOpen e a aba retomada ficam', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8'));
+  const changed = async () => {
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const tabs = ['c1', 'c2', 'c3'].map((id) => ({ id, kind: 'claude', title: `TASK#${id.slice(1)} ${id}`, status: 'working', sessionId: `s-${id}` }));
+  sessions.push(...tabs);
+  try {
+    const done = (tabId, extra = {}) => handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId, state: 'done', doneBecause: 'PR mergeado', ...extra } });
+    for (const t of tabs) await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: t.id, state: 'working', headline: 'rodando' } });
+    for (const t of tabs) t.status = 'idle';
+    const r = await done('c1');
+    assert.match(r.content[0].text, /fecha sozinha/);
+    await done('c2');
+    await done('c3', { keepOpen: true });
+    const mark = calls.length;
+    await changed();
+    const after = calls.slice(mark);
+    assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['c1', 'c2']);
+    assert.deepEqual(after.filter(([m]) => m === 'window.notify').map(([, p]) => p.title), ['2 sessões terminadas fechadas']);
+    assert.deepEqual(read().history.map((h) => [h.tabId, h.by, h.why]), [['c2', 'gerente g', 'PR mergeado'], ['c1', 'gerente g', 'PR mergeado']]);
+
+    const again = calls.length;
+    await changed();
+    assert.equal(calls.slice(again).some(([m]) => m === 'session.close'), false, 'a aba já fechada uma vez não é fechada de novo');
+
+    const nodes = read().nodes;
+    const c3 = Object.keys(nodes).find((k) => nodes[k].tabId === 'c3');
+    assert.deepEqual([nodes[c3].card.keepOpen, nodes[c3].card.closeFor], [true, null]);
+    assert.equal(nodes[Object.keys(nodes).find((k) => nodes[k].tabId === 'c1')].card.closeFor, null, 'fechou e desarmou');
+
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-cwd-'));
+    const c4 = { id: 'c4', kind: 'claude', title: 'c4', status: 'idle', sessionId: 's-c4', cwd, focused: true };
+    sessions.push(c4);
+    tabs.push(c4);
+    await done('c4');
+    await changed();
+    assert.equal(calls.slice(again).some(([m, p]) => m === 'session.close' && p.tabId === 'c4'), false, 'a aba na sua frente espera você sair dela');
+    tabs.pop();
+    sessions.splice(sessions.indexOf(c4), 1);
+    const k4 = Object.keys(read().nodes).find((k) => read().nodes[k].tabId === 'c4');
+    queue['session.openClaude'] = [{ tabId: 'c5', resumed: true }];
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `resume:${k4}` } });
+    await new Promise((r) => setTimeout(r, 100));
+    const c5 = { id: 'c5', kind: 'claude', title: 'c4', status: 'idle', sessionId: 's-c4', cwd };
+    sessions.push(c5);
+    tabs.push(c5);
+    const before = calls.length;
+    await changed();
+    assert.equal(calls.slice(before).some(([m]) => m === 'session.close'), false, 'a conversa retomada não fecha de novo');
+    assert.equal(read().nodes[k4].card.closeFor, null);
+  } finally {
+    for (const t of tabs) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
+  }
+});

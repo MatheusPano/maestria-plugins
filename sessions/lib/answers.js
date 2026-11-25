@@ -17,6 +17,7 @@ function handOver(node, text, now, message, viaManager = false) {
   const was = { ...(node.card || {}) };
   delete was.dismissed;
   delete was.doneBecause;
+  delete was.closeFor;
   node.card = {
     ...was,
     state: 'working',

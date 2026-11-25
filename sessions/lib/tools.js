@@ -4,6 +4,7 @@
 const path = require('path');
 const { tinted, colorOf, isOpen, bare } = require('./links');
 const history = require('./history');
+const closer = require('./closer');
 const { typeInto } = require('./wake');
 const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf } = require('./cards');
 const relay = require('./relay');
@@ -137,6 +138,11 @@ async function send({ tabId, text }, ctx) {
   } catch (e) {
     throw new ToolError(e.message);
   }
+  const key = ctx.links.byTab(tabId);
+  if (key && closer.armed(ctx.links.nodes[key].card)) {
+    closer.disarm(ctx.links, key);
+    ctx.save();
+  }
   return ok({ tabId, sent: true, woke: Boolean(s.hibernated), wasBusy: ready.status === 'working' || ready.status === 'tool' });
 }
 
@@ -243,7 +249,7 @@ async function doneChecks(s, prs, ctx) {
   return { blockers, warnings };
 }
 
-async function card({ tabId, state, headline, bullets, action, proof, doneBecause }, ctx) {
+async function card({ tabId, state, headline, bullets, action, proof, doneBecause, keepOpen }, ctx) {
   if (!STATES.includes(state)) throw new ToolError(`state precisa ser um de: ${STATES.join(', ')}.`);
   const because = String(doneBecause || '').trim();
   if (state === 'done' && !because) {
@@ -298,10 +304,13 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     doneBecause: state === 'done' ? because : null,
     busy: Boolean(links.nodes[key].busy),
     onPrompt: PROMPT.has(s.status),
+    keepOpen: state === 'done' && keepOpen === true,
+    ...(state === 'done' ? { closeFor: keepOpen === true ? null : s.sessionId || null } : {}),
   };
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));
-  return ok({ tabId, state, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
+  const closing = state === 'done' && keepOpen !== true ? { closes: 'a aba fecha sozinha quando a sessão parar e vai para o histórico; depois disso só você a retoma pelo painel (keepOpen: true mantém aberta)' } : {};
+  return ok({ tabId, state, ...closing, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
 }
 
 const HANDLERS = { sessions_open: open, sessions_list: list, sessions_send: send, sessions_rename: rename, sessions_card: card, sessions_close: close };

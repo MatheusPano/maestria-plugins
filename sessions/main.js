@@ -15,12 +15,13 @@ const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
 const history = require('./lib/history');
+const closer = require('./lib/closer');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
   '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe avisos [sessions] Novidades (e events nos resultados das ferramentas) quando uma sessão termina o turno, espera o usuário, ou quando o usuário escreve direto nela: confira, atualize o cartão e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe avisos [sessions] Novidades (e events nos resultados das ferramentas) quando uma sessão termina o turno, espera o usuário, ou quando o usuário escreve direto nela: confira, atualize o cartão e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -44,6 +45,7 @@ const state = {
   pre: new Map(),
   lastSessions: [],
   missing: new Map(),
+  closeFailed: new Map(),
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -156,12 +158,39 @@ function closedByYou(sessions) {
   return confirmed;
 }
 
+/** Fecha as abas dos cartões feitos que já pararam; uma notificação só por rodada. Uma aba que não fechou espera um tempo e avisa. */
+const RETRY_MS = 10 * 60 * 1000;
+async function closeDone(sessions) {
+  const closed = [];
+  const now = Date.now();
+  for (const { key, session, by } of closer.due(state.links, sessions)) {
+    if (now - (state.closeFailed.get(session.id) || 0) < RETRY_MS) continue;
+    const h = history.record(state.links, { key, session: { ...session, reply: session.reply || (session.sessionId ? readReply(session.sessionId, session.cwd) : null) }, by });
+    try {
+      await mx.request('session.close', { tabId: session.id });
+    } catch (e) {
+      history.forget(state.links, h.id);
+      const n = state.links.nodes[key];
+      if (n && n.card && n.card.state === 'done') n.card = { ...n.card, closeFor: session.sessionId };
+      state.closeFailed.set(session.id, now);
+      mx.request('window.showBanner', { text: `sessions: não fechou ${h.name} (${e.message}); tento de novo em 10 min` }).catch(() => {});
+      continue;
+    }
+    closed.push({ name: h.name, what: history.whatOf(h) });
+  }
+  if (closed.length) await mx.request('window.notify', closer.notice(closed)).catch(() => mx.request('window.showBanner', { text: closer.notice(closed).title }).catch(() => {}));
+  return closed.length > 0;
+}
+
 async function refresh() {
   const sessions = await listSessions();
   const gone = closedByYou(sessions);
   state.lastSessions = sessions;
   const settled = settleTurns(sessions);
-  if (state.links.reconcile(sessions) || gone.length || settled) writeLinks();
+  const reconciled = state.links.reconcile(sessions);
+  const migrated = closer.migrate(state.links, sessions);
+  const auto = await closeDone(sessions);
+  if (reconciled || migrated || gone.length || settled || auto) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
     mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message)),
@@ -549,6 +578,7 @@ async function resume(key) {
   if (!n) return null;
   const open = (await listSessions()).find((s) => s.id === n.tabId && isOpen(s));
   if (open) return mx.request('session.focus', { tabId: open.id });
+  closer.disarm(state.links, key);
   const r = await reopenConversation(n);
   n.tabId = r.tabId;
   n.cwd = r.cwd;

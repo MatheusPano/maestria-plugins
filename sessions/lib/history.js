@@ -3,6 +3,7 @@
 
 const { bare } = require('./links');
 const { taskOf, plain, split, ALL } = require('./cards');
+const { disarm } = require('./closer');
 
 const REPLY_CHARS = 200;
 const MAX_ROWS = 50;
@@ -88,7 +89,9 @@ function whatOf(h) {
 
 /** Grava a aba [session] (ou o nó [key]) no histórico. */
 function record(links, { key = null, session = null, by, now = Date.now() }) {
-  return links.remember(entryOf({ links, key, session, by, now }));
+  const entry = links.remember(entryOf({ links, key, session, by, now }));
+  disarm(links, key);
+  return entry;
 }
 
 /** Desfaz um registro (o fechamento falhou). */

@@ -185,7 +185,7 @@ test('sessions_card guarda o cartão, liga a sessão ao gerente e abre o painel'
   assert.equal(w.parent, me);
   assert.deepEqual({ ...w.card, at: 0, since: 0 }, {
     state: 'needs_you', headline: null, bullets: ['a', 'b'], action: { kind: 'question', text: 'posso?', where: null, tabId: null, options: [] },
-    proof: null, at: 0, since: 0, doneAt: null, doneBecause: null, busy: false, onPrompt: false,
+    proof: null, at: 0, since: 0, doneAt: null, doneBecause: null, busy: false, onPrompt: false, keepOpen: false,
   });
   assert.deepEqual(shown, [me]);
   assert.ok(ctx.calls.some((c) => c.method === 'session.rename' && c.params.tabId === 'w' && c.params.title === '● [S] TASK#5 worker'));
@@ -378,4 +378,19 @@ test('sessions_list traz o estado do cartão de cada sessão e as novidades da f
   assert.deepEqual([first.sessions[0].cardState, first.sessions[0].cardHeadline], ['needs_you', 'merge o PR']);
   assert.deepEqual(first.events, ['- O usuário escreveu direto para "w": "para"']);
   assert.equal(body(await tools.handle('sessions_list', { mine: true }, ctx)).events, undefined);
+});
+
+test('o done arma o fechamento da conversa da aba; keepOpen só com true; sessions_send desarma', async () => {
+  const sessions = [{ id: 'me', kind: 'claude', title: 'g' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle', sessionId: 's-w' }];
+  const ctx = makeCtx({ sessions });
+  const me = ctx.links.add({ tabId: 'me', name: 'g', manager: true });
+  const w = ctx.links.add({ tabId: 'w', parent: me, name: 'w' });
+  const done = (extra) => tools.handle('sessions_card', { tabId: 'w', state: 'done', doneBecause: 'PR mergeado', ...extra }, ctx);
+  assert.match(body(await done({ keepOpen: 'false' })).closes, /fecha sozinha/);
+  assert.deepEqual([ctx.links.nodes[w].card.keepOpen, ctx.links.nodes[w].card.closeFor], [false, 's-w']);
+  assert.equal(body(await done({ keepOpen: true })).closes, undefined);
+  assert.equal(ctx.links.nodes[w].card.closeFor, null);
+  await done();
+  await tools.handle('sessions_send', { tabId: 'w', text: 'corrige mais isso' }, ctx);
+  assert.deepEqual([ctx.links.nodes[w].card.state, ctx.links.nodes[w].card.closeFor], ['done', null]);
 });
