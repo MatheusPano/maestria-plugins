@@ -308,7 +308,7 @@ test('um link maestria:// clicado abre o painel do gerente e o cartão da sessã
   assert.match(calls.slice(mark).find(([m]) => m === 'window.showBanner')[1].text, /não está mais na árvore/);
 });
 
-test('o que você digita direto numa sessão chega ao gerente parado; a mensagem mandada pelo painel não conta como digitada', async () => {
+test('o que você digita direto numa sessão não acorda o gerente: vai no próximo sessions_list; a mensagem mandada pelo painel não conta como digitada', async () => {
   const relay = require('../lib/relay');
   const was = { ...relay.limits };
   relay.limits.quiet = 0;
@@ -333,9 +333,9 @@ test('o que você digita direto numa sessão chega ao gerente parado; a mensagem
     const before = calls.length;
     await new Promise((r) => setTimeout(r, 900));
     const toManager = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
-    assert.equal(toManager.length, 1);
-    assert.match(toManager[0], /O usuário escreveu direto para "w": "usa a v2 da API"/);
-    assert.doesNotMatch(toManager[0], /pelo painel|Corrija o CI|task-notification/);
+    assert.deepEqual(toManager, []);
+    const listed = JSON.parse((await handlers.req['tool.call']({ tool: 'sessions_list', tabId: 'g', args: {} })).content[0].text).events;
+    assert.deepEqual(listed, ['- O usuário escreveu direto para "w": "usa a v2 da API"']);
   } finally {
     Object.assign(relay.limits, was);
   }
@@ -360,7 +360,7 @@ test('se o aviso ao gerente falha, a fila volta e sai na próxima', async () => 
       return realRequest(m, p);
     };
     try {
-      handlers.note.event({ type: 'hook', tabId: 'w', name: 'UserPromptSubmit', payload: { prompt: 'segunda tentativa' } });
+      handlers.note.event({ type: 'hook', tabId: 'w', name: 'StopFailure', payload: { error: 'segunda tentativa' } });
       const before = calls.length;
       await new Promise((r) => setTimeout(r, 900));
       handlers.note.event({ type: 'hook', tabId: 'g', name: 'Stop', payload: {} });
@@ -466,8 +466,8 @@ test('o aviso ao gerente espera ele sair da pergunta e vai uma vez só, com tudo
     const hook = (tabId, name, payload = {}) => handlers.note.event({ type: 'hook', tabId, name, payload });
     const before = calls.length;
     Object.assign(g, { status: 'waitingAnswer', needsYou: true });
-    hook('w', 'UserPromptSubmit', { prompt: 'primeira' });
-    hook('w', 'UserPromptSubmit', { prompt: 'segunda' });
+    hook('w', 'StopFailure', { error: 'primeira' });
+    hook('w', 'StopFailure', { error: 'segunda' });
     await new Promise((r) => setTimeout(r, 700));
     assert.deepEqual(toManager(before), []);
     Object.assign(g, { status: 'idle', needsYou: false });
@@ -498,7 +498,7 @@ test('com a pergunta ainda aberta nos hooks, o aviso não é digitado nem quando
     const before = calls.length;
     hook('g', 'PreToolUse', { tool_name: 'AskUserQuestion' });
     hook('g', 'PostToolUse', { tool_name: 'Read' });
-    hook('w', 'UserPromptSubmit', { prompt: 'enquanto ele pergunta' });
+    hook('w', 'StopFailure', { error: 'enquanto ele pergunta' });
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(toManager(before), 0);
     hook('g', 'PostToolUse', { tool_name: 'AskUserQuestion' });
@@ -517,4 +517,340 @@ test('o cabeçalho do cartão tem o botão "ir para a aba", que leva direto à s
   handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: 'focus:w' } });
   await tick();
   assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.focus'), [['session.focus', { tabId: 'w' }]]);
+});
+
+test('responder a pergunta ou a permissão na própria aba tira da coluna na hora o cartão que só apontava pra aba; o que pede outra coisa fica', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const card = (args) => handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', ...args } });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const w = sessions.find((s) => s.id === 'w');
+  const hook = (name, payload) => handlers.note.event({ type: 'hook', tabId: 'w', name, payload });
+  await card({ headline: 'PR #12 aberto, falta o merge' });
+  const key = Object.keys(read()).find((k) => read()[k].tabId === 'w');
+  hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q0' });
+  hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q0' });
+  assert.equal(read()[key].card.headline, 'PR #12 aberto, falta o merge', 'o cartão postado com a aba parada não é sobre a pergunta');
+  w.status = 'waitingAnswer';
+  try {
+    await card({ headline: 'responda na aba' });
+    hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'r1' });
+    assert.equal(read()[key].card.state, 'needs_you');
+    hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q1' });
+    hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q1' });
+    assert.deepEqual([read()[key].card.state, read()[key].card.headline], ['working', 'Você respondeu na aba.']);
+
+    await card({ headline: 'libera o push' });
+    hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'b1' });
+    hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b1' });
+    hook('Notification', { notification_type: 'permission_prompt', message: 'atrasada' });
+    hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'r2' });
+    assert.equal(read()[key].card.state, 'needs_you', 'a notificação que chega depois da ferramenta não vale para a próxima');
+    hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'b2' });
+    hook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
+    hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b2' });
+    assert.equal(read()[key].card.state, 'working');
+
+    await card({ action: { kind: 'approve', text: 'mergear o PR #12?' } });
+    hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q2' });
+    hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q2' });
+    assert.deepEqual([read()[key].card.state, read()[key].card.action.kind], ['needs_you', 'approve']);
+  } finally {
+    w.status = 'idle';
+  }
+});
+
+test('o turno da sessão fica gravado no nó e no cartão: a aba que some no meio dele vira interrompida', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working', headline: 'build' } });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(read()).find((k) => read()[k].tabId === 'w');
+  const hook = (name, payload = {}) => handlers.note.event({ type: 'hook', tabId: 'w', name, payload });
+  hook('UserPromptSubmit', { prompt: 'roda o build' });
+  assert.deepEqual([read()[key].busy, read()[key].card.busy], [true, true]);
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working', headline: 'build 2' } });
+  assert.equal(read()[key].card.busy, true);
+  hook('Stop');
+  assert.deepEqual([read()[key].busy, read()[key].card.busy], [false, false]);
+
+  hook('UserPromptSubmit', { prompt: 'de novo' });
+  hook('PostToolUseFailure', { tool_name: 'Bash', is_interrupt: true });
+  assert.equal(read()[key].busy, false, 'Esc no meio da ferramenta encerra o turno');
+  hook('UserPromptSubmit', { prompt: 'de novo' });
+  hook('SessionEnd', { reason: 'other' });
+  assert.equal(read()[key].busy, true, 'a sessão morta por sinal continua no meio do turno');
+  hook('SessionEnd', { reason: 'clear' });
+  assert.equal(read()[key].busy, false);
+  hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'c1' });
+  assert.equal(read()[key].busy, true, 'ferramenta rodando volta o turno (depois de um auto-compact, por exemplo)');
+
+  hook('UserPromptSubmit', { prompt: 'pensa' });
+  const real = Date.now;
+  const w = sessions.find((s) => s.id === 'w');
+  const later = async () => {
+    Date.now = () => real() + 31 * 1000;
+    try {
+      handlers.note.event({ type: 'session.changed' });
+      await new Promise((r) => setTimeout(r, 400));
+    } finally {
+      Date.now = real;
+    }
+  };
+  w.status = 'ready';
+  try {
+    await later();
+  } finally {
+    w.status = 'idle';
+  }
+  assert.equal(read()[key].busy, true, '"ready" no meio do turno (auto-compact) não encerra o turno');
+  await later();
+  assert.deepEqual([read()[key].busy, read()[key].card.busy], [false, false], 'parada há mais de 30 s depois do pedido (Esc pensando) não está no turno');
+});
+
+test('a aba fechada vai para o histórico: na própria aba, pelo painel (sem repetir) e volta com retomar', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const file = path.join(dataDir, 'links.json');
+  const hist = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).history || [] : []);
+  const changed = async () => {
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const act = async (a) => {
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a } });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const drop = (id) => sessions.splice(sessions.findIndex((s) => s.id === id), 1);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-cwd-'));
+  sessions.push({ id: 'z', kind: 'claude', title: 'TASK#5 solta', status: 'idle', sessionId: 's-z', cwd });
+  sessions.push({ id: 'k', kind: 'claude', title: 'pronta', status: 'idle', sessionId: 's-k', cwd });
+  try {
+    await changed();
+    drop('z');
+    await changed();
+    assert.deepEqual(hist(), [], 'só entra se continuar sumida na leitura seguinte');
+    await changed();
+    assert.deepEqual(hist().map((h) => [h.tabId, h.by, h.task]), [['z', 'você, na aba', 'TASK#5']]);
+
+    sessions.push({ id: 'q', kind: 'claude', title: 'piscou', status: 'idle', sessionId: 's-q', cwd });
+    await changed();
+    const q = sessions.splice(sessions.findIndex((s) => s.id === 'q'), 1)[0];
+    await changed();
+    sessions.push(q);
+    await changed();
+    drop('q');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(hist().some((h) => h.tabId === 'q'), false, 'uma leitura que perdeu a aba e a achou de novo não registra');
+    sessions.push(q);
+    await changed();
+
+    const before = calls.length;
+    await act('close:@k');
+    assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.close'), [['session.close', { tabId: 'k' }]]);
+    drop('k');
+    await changed();
+    assert.deepEqual(hist().map((h) => [h.tabId, h.by]), [['k', 'você, no painel'], ['z', 'você, na aba']]);
+
+    const panelData = () => calls.filter(([m, p]) => (m === 'view.update' || m === 'view.open') && p.viewId === 'painel').pop()[1].data;
+    await act('history');
+    assert.equal(panelData().history.open, true);
+    assert.equal(panelData().history.rows.length, 2);
+    await act('history:week');
+    assert.deepEqual(panelData().history.ranges.map((r) => r.active), [false, false, true, false]);
+    await act('history');
+    assert.equal(panelData().history.open, false);
+
+    queue['session.openClaude'] = [{ tabId: 'z2', resumed: true }];
+    const mark = calls.length;
+    await act(`reopen:${hist().find((h) => h.tabId === 'z').id}`);
+    assert.deepEqual(calls.slice(mark).filter(([m]) => m === 'session.openClaude').map(([, p]) => p), [{ cwd, label: 'TASK#5 solta', resume: 's-z' }]);
+  } finally {
+    for (const id of ['z', 'k', 'q']) if (sessions.some((s) => s.id === id)) drop(id);
+  }
+});
+
+test('o cartão feito fecha a aba sozinho quando ela para, uma notificação por rodada; keepOpen e a aba retomada ficam', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8'));
+  const changed = async () => {
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const tabs = ['c1', 'c2', 'c3'].map((id) => ({ id, kind: 'claude', title: `TASK#${id.slice(1)} ${id}`, status: 'working', sessionId: `s-${id}` }));
+  sessions.push(...tabs);
+  try {
+    const done = (tabId, extra = {}) => handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId, state: 'done', doneBecause: 'PR mergeado', ...extra } });
+    for (const t of tabs) await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: t.id, state: 'working', headline: 'rodando' } });
+    for (const t of tabs) t.status = 'idle';
+    const r = await done('c1');
+    assert.match(r.content[0].text, /fecha sozinha/);
+    await done('c2');
+    await done('c3', { keepOpen: true });
+    const mark = calls.length;
+    await changed();
+    const after = calls.slice(mark);
+    assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['c1', 'c2']);
+    assert.deepEqual(after.filter(([m]) => m === 'window.notify').map(([, p]) => p.title), ['2 sessões terminadas fechadas']);
+    assert.deepEqual(read().history.map((h) => [h.tabId, h.by, h.why]), [['c2', 'gerente g', 'PR mergeado'], ['c1', 'gerente g', 'PR mergeado']]);
+
+    const again = calls.length;
+    await changed();
+    assert.equal(calls.slice(again).some(([m]) => m === 'session.close'), false, 'a aba já fechada uma vez não é fechada de novo');
+
+    const nodes = read().nodes;
+    const c3 = Object.keys(nodes).find((k) => nodes[k].tabId === 'c3');
+    assert.deepEqual([nodes[c3].card.keepOpen, nodes[c3].card.closeFor], [true, null]);
+    assert.equal(nodes[Object.keys(nodes).find((k) => nodes[k].tabId === 'c1')].card.closeFor, null, 'fechou e desarmou');
+
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-cwd-'));
+    const c4 = { id: 'c4', kind: 'claude', title: 'c4', status: 'idle', sessionId: 's-c4', cwd, focused: true };
+    sessions.push(c4);
+    tabs.push(c4);
+    await done('c4');
+    await changed();
+    assert.equal(calls.slice(again).some(([m, p]) => m === 'session.close' && p.tabId === 'c4'), false, 'a aba na sua frente espera você sair dela');
+    tabs.pop();
+    sessions.splice(sessions.indexOf(c4), 1);
+    const k4 = Object.keys(read().nodes).find((k) => read().nodes[k].tabId === 'c4');
+    queue['session.openClaude'] = [{ tabId: 'c5', resumed: true }];
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `resume:${k4}` } });
+    await new Promise((r) => setTimeout(r, 100));
+    const c5 = { id: 'c5', kind: 'claude', title: 'c4', status: 'idle', sessionId: 's-c4', cwd };
+    sessions.push(c5);
+    tabs.push(c5);
+    const before = calls.length;
+    await changed();
+    assert.equal(calls.slice(before).some(([m]) => m === 'session.close'), false, 'a conversa retomada não fecha de novo');
+    assert.equal(read().nodes[k4].card.closeFor, null);
+  } finally {
+    for (const t of tabs) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
+  }
+});
+
+test('a limpeza abre com os grupos padrão marcados, troca o tempo, desmarca e fecha as marcadas para o histórico', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+  const tabs = ['p1', 'p2', 'p3'].map((id) => ({ id, kind: 'claude', title: `TASK#9${id.slice(1)} ${id}`, status: 'idle', hibernated: true, sessionId: `s-${id}`, startedAt: old }));
+  const recent = { id: 'p4', kind: 'claude', title: 'recente', status: 'idle', hibernated: true, sessionId: 's-p4', startedAt: new Date(Date.now() - 8 * 3600 * 1000).toISOString() };
+  sessions.push(...tabs, recent);
+  const act = async (viewId, a) => {
+    handlers.note['view.action']({ viewId, action: 'act', values: { a } });
+    await new Promise((r) => setTimeout(r, 100));
+  };
+  const last = (viewId) => calls.filter(([m, p]) => (m === 'view.open' || m === 'view.update') && p.viewId === viewId).pop()[1].data;
+  try {
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'p3', state: 'needs_you', headline: 'PR #40 esperando revisão' } });
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 400));
+    const side = calls.filter(([m]) => m === 'sidebar.update').pop()[1];
+    assert.ok(side.blocks.some((b) => b.items && b.items.some((i) => i.action === 'cleanup' && i.title === '3 paradas há mais de 1 dia')));
+
+    await act('sidebar', 'cleanup');
+    const open = calls.filter(([m, p]) => m === 'view.open' && p.viewId === 'limpeza').pop()[1];
+    assert.deepEqual([open.modal, open.rfw.root], [true, 'cleanup']);
+    assert.equal(last('limpeza').summary, '2 marcadas · fica 1 aberta');
+    await act('limpeza', 'clean-idle:6h');
+    assert.equal(last('limpeza').summary, '3 marcadas · fica 1 aberta', 'com 6 h entra a de 8 h');
+    await act('limpeza', 'clean-pick:p4');
+    await act('limpeza', 'clean-group:open');
+    assert.equal(last('limpeza').summary, '3 marcadas · fica 1 aberta');
+    await act('limpeza', 'clean-group:open');
+    await act('limpeza', 'clean-pick:p1');
+    assert.equal(last('limpeza').summary, '1 marcada · ficam 3 abertas');
+
+    const mark = calls.length;
+    await act('limpeza', 'clean-run');
+    const after = calls.slice(mark);
+    assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['p2']);
+    assert.ok(after.some(([m, p]) => m === 'view.close' && p.viewId === 'limpeza'));
+    assert.ok(after.some(([m, p]) => m === 'window.showBanner' && p.text === '1 aba fechada e guardada no histórico'));
+    const hist = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).history;
+    assert.deepEqual(hist.filter((h) => h.tabId.startsWith('p')).map((h) => [h.tabId, h.by]), [['p2', 'você, na limpeza']]);
+
+    sessions.splice(sessions.indexOf(tabs[1]), 1);
+    await act('sidebar', 'cleanup');
+    assert.equal(last('limpeza').summary, '1 marcada · fica 1 aberta');
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'p1', state: 'needs_you', headline: 'olha isso' } });
+    const again = calls.length;
+    await act('limpeza', 'clean-run');
+    assert.equal(calls.slice(again).some(([m]) => m === 'session.close'), false, 'a que mudou de grupo depois que você viu não fecha');
+    assert.ok(calls.slice(again).some(([m, p]) => m === 'window.showBanner' && /nada foi fechado/.test(p.text)));
+  } finally {
+    for (const t of [...tabs, recent]) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
+  }
+});
+
+test('responder o cartão com a aba num prompt guarda a resposta e manda quando ela sai do prompt', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const tab = { id: 'pp', kind: 'claude', title: 'pp', status: 'idle', sessionId: 's-pp' };
+  sessions.push(tab);
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  try {
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'pp', state: 'needs_you', action: { kind: 'question', text: 'sigo?' } } });
+    const key = Object.keys(read()).find((k) => read()[k].tabId === 'pp');
+    tab.status = 'waitingPermission';
+    const mark = calls.length;
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `answer:${key}`, text: 'sim, segue' } });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(calls.slice(mark).some(([m, p]) => m === 'window.showBanner' && p.text === 'resposta guardada: vai para pp quando ela sair do prompt'));
+    assert.equal(calls.slice(mark).some(([m]) => m === 'terminal.sendText'), false);
+    assert.deepEqual(read()[key].pending.map((x) => x.text), ['sim, segue']);
+
+    tab.status = 'idle';
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(calls.slice(mark).filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text]), [['pp', 'sim, segue']]);
+    assert.equal(read()[key].pending, undefined);
+    assert.ok(calls.slice(mark).some(([m, p]) => m === 'window.showBanner' && p.text === 'resposta guardada enviada para pp'));
+
+    tab.status = 'waitingAnswer';
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `message:${key}`, text: 'velha' } });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(read()[key].pending.length, 1);
+    handlers.note.event({ type: 'hook', tabId: 'pp', name: 'UserPromptSubmit', payload: { prompt: 'não, faz B' } });
+    assert.equal(read()[key].pending, undefined, 'você escreveu direto na aba: a guardada deixou de valer');
+  } finally {
+    sessions.splice(sessions.indexOf(tab), 1);
+  }
+});
+
+test('fim de turno só acorda o gerente quando a sessão parou de vez; a aba fechada por você também acorda; a fechada pelo plugin, não', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  const tab = { id: 'st', kind: 'claude', title: 'st', status: 'idle', sessionId: 's-st' };
+  sessions.push(tab);
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'st', state: 'working', headline: 'rodando' } });
+    const toManager = (from) => calls.slice(from).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+    const changed = async () => {
+      handlers.note.event({ type: 'session.changed' });
+      await new Promise((r) => setTimeout(r, 400));
+    };
+    const before = calls.length;
+    handlers.note.event({ type: 'hook', tabId: 'st', name: 'Stop', payload: {} });
+    await changed();
+    assert.deepEqual(toManager(before), [], 'parou agora: pode voltar a rodar');
+    relay.limits.settle = 0;
+    await changed();
+    const got = toManager(before);
+    assert.equal(got.length, 1);
+    assert.match(got[0], /^\[sessions\] 1 sessão pede você[\s\S]*"st" parou há 1 min[\s\S]*cartão: working "rodando" → atualize/);
+
+    const mark = calls.length;
+    sessions.splice(sessions.indexOf(tab), 1);
+    await changed();
+    await changed();
+    assert.match(toManager(mark).join('\n'), /"st" foi fechada pelo usuário\./);
+  } finally {
+    if (sessions.includes(tab)) sessions.splice(sessions.indexOf(tab), 1);
+    Object.assign(relay.limits, was);
+  }
 });

@@ -24,6 +24,8 @@ const LEGACY = ['🟥', '🟦', '🟩', '🟨', '🟪', '🟧', '🟫', '⬜', '
 const PREFIX = new RegExp(`^(?:(?:${[...COLORS.map((c) => c.mark), ...LEGACY].join('|')})\\s*)+(?:\\[[GS]\\]\\s*)?`, 'u');
 const FORGET_MS = 3 * 24 * 3600 * 1000;
 const SEEN_MS = 3600 * 1000;
+const HISTORY_MS = 30 * 24 * 3600 * 1000;
+const HISTORY_MAX = 500;
 
 const colorOf = (id) => BY_ID.get(id) || COLORS[0];
 const bare = (name) => String(name || '').replace(PREFIX, '').trim();
@@ -34,10 +36,11 @@ class Links {
     this.now = now;
     this.nodes = { ...(data.nodes || {}) };
     this.seq = Number(data.seq) || 0;
+    this.history = Array.isArray(data.history) ? data.history : [];
   }
 
   toJSON() {
-    return { nodes: this.nodes, seq: this.seq };
+    return { nodes: this.nodes, seq: this.seq, history: this.history };
   }
 
   byTab(tabId) {
@@ -115,7 +118,19 @@ class Links {
         changed = true;
       }
     }
+    const kept = this.history.filter((h) => this.now() - (h.at || 0) <= HISTORY_MS);
+    if (kept.length !== this.history.length) {
+      this.history = kept;
+      changed = true;
+    }
     return changed;
+  }
+
+  /** Guarda no histórico uma aba que fechou; a mais antiga sai quando passa do limite. */
+  remember(entry) {
+    this.history.unshift({ id: `h${++this.seq}`, ...entry });
+    this.history.length = Math.min(this.history.length, HISTORY_MAX);
+    return this.history[0];
   }
 
   /** As abas vivas cujo título perdeu a marca da cor (ou a dupla, de gerente); um título que é só a pasta volta ao nome do nó. */
@@ -191,4 +206,4 @@ class Links {
   }
 }
 
-module.exports = { Links, COLORS, colorOf, bare, tinted, isOpen };
+module.exports = { Links, HISTORY_MS, COLORS, colorOf, bare, tinted, isOpen };

@@ -2,7 +2,9 @@
 // A aba da lateral: cada gerente com as sessões dele embaixo, quem precisa de você primeiro, e as prontas dobradas.
 
 const { colorOf, bare, isOpen } = require('./links');
-const { stateOf, liveOf, waitOf, repliedOf, plain, agentsOf, behind } = require('./cards');
+const history = require('./history');
+const cleanup = require('./cleanup');
+const { stateOf, flagOf, liveOf, waitOf, repliedOf, plain, agentsOf, behind } = require('./cards');
 
 const STATUS_TONE = {
   working: 'accent',
@@ -14,7 +16,7 @@ const STATUS_TONE = {
   idle: 'green',
   ready: 'green',
 };
-const STATE_TONE = { needs_you: 'red', working: 'yellow', done: 'green' };
+const STATE_TONE = { needs_you: 'red', working: 'accent', done: 'green', stalled: 'yellow', interrupted: 'red' };
 const RANK = { needs_you: 0, working: 1, done: 2 };
 
 function ago(ms, now) {
@@ -39,6 +41,9 @@ function subtitleOf(st, card, session) {
   const act = (session && session.activity) || {};
   const replied = repliedOf(card, session);
   if (replied) return `Respondeu: ${plain(replied.text).split('\n').find((l) => l.trim()) || ''}`;
+  const flag = flagOf(card, session);
+  if (flag === 'stalled') return `parou? ${(card && card.headline) || 'o cartão dizia trabalhando'}`;
+  if (flag === 'interrupted') return `interrompida: ${(card && card.headline) || 'parou no meio do trabalho'}`;
   if (st === 'needs_you' && card && card.state === 'needs_you') return card.headline || (card.action && card.action.text) || waitOf(session);
   if (st === 'needs_you') return waitOf(session);
   if (st === 'working' && agentsOf(session)) return behind(agentsOf(session));
@@ -60,7 +65,7 @@ function managerItem(links, key, live, depth) {
   const session = live.get(node.tabId) || null;
   const color = colorOf(node.color);
   const n = counts(links, key, live);
-  const parts = [n.needs_you && `${n.needs_you} precisa${n.needs_you > 1 ? 'm' : ''} de você`, n.working && `${n.working} trabalhando`, n.done && `${n.done} pronta${n.done > 1 ? 's' : ''}`].filter(Boolean);
+  const parts = [n.needs_you && `${n.needs_you} precisa${n.needs_you > 1 ? 'm' : ''} de você`, n.working && `${n.working} rodando`, n.done && `${n.done} pronta${n.done > 1 ? 's' : ''}`].filter(Boolean);
   const menu = [
     ...(session ? [] : [{ action: `resume:${key}`, label: 'retomar a conversa', icon: 'play' }]),
     { action: `panel:${key}`, label: 'abrir painel', icon: 'stack' },
@@ -91,14 +96,15 @@ function sessionItem(links, key, live, depth, now) {
   const name = bare(session ? session.title : node.name) || node.name;
   const replied = repliedOf(card, session);
   const since = replied ? replied.at : card && (st === 'done' ? card.doneAt : card.since);
+  const flag = replied ? null : flagOf(card, session);
   if (!session) {
     return {
       title: name,
-      subtitle: 'fechada · clique para retomar',
-      dim: true,
+      subtitle: flag === 'interrupted' ? 'interrompida · clique para retomar' : 'fechada · clique para retomar',
+      dim: !flag,
       indent: depth,
       icon: 'dot',
-      tone: 'faint',
+      tone: flag ? 'red' : 'faint',
       action: `resume:${key}`,
       menu: [
         { action: `resume:${key}`, label: 'retomar a conversa', icon: 'play' },
@@ -110,7 +116,7 @@ function sessionItem(links, key, live, depth, now) {
     title: name,
     subtitle: subtitleOf(st, card, session),
     subtitleTone: st === 'needs_you' ? undefined : 'faint',
-    avatar: { plain: true, icon: 'dot', color: STATE_TONE[st], size: 16 },
+    avatar: { plain: true, icon: 'dot', color: STATE_TONE[flag || st], size: 16 },
     indent: depth,
     meta: since ? ago(since, now) : undefined,
     metaTone: st === 'needs_you' ? 'red' : undefined,
@@ -171,7 +177,11 @@ function looseItem(links, s) {
 function sidebar(links, sessions, ui = {}, now = Date.now()) {
   const linked = new Set(Object.values(links.nodes).map((n) => n.tabId));
   const loose = sessions.filter((s) => s.kind === 'claude' && isOpen(s) && !s.embedded && !linked.has(s.id));
-  const waiting = sessions.filter((s) => isOpen(s) && s.needsYou && linked.has(s.id)).length;
+  const live = liveOf(sessions);
+  const waiting = Object.values(links.nodes).filter((n) => {
+    const s = live.get(n.tabId) || null;
+    return n.parent ? stateOf(n.card || null, s, now) === 'needs_you' : Boolean(s && s.needsYou);
+  }).length;
   const blocks = [
     { type: 'header', title: 'Gerentes', actions: [{ action: 'doctor', icon: 'clean', tooltip: 'diagnóstico' }, { action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
     {
@@ -184,6 +194,14 @@ function sidebar(links, sessions, ui = {}, now = Date.now()) {
   if (loose.length) {
     blocks.push({ type: 'section', text: 'outras sessões', count: loose.length });
     blocks.push({ type: 'list', flat: true, items: loose.map((s) => looseItem(links, s)) });
+  }
+  if (ui.parked) {
+    blocks.push({ type: 'section', text: 'paradas' });
+    blocks.push({ type: 'list', flat: true, items: [{ title: cleanup.sidebarLine(ui.parked), subtitle: 'fechar e guardar no histórico', icon: 'clean', tone: 'faint', action: 'cleanup' }] });
+  }
+  if (links.history.length) {
+    blocks.push({ type: 'section', text: 'histórico' });
+    blocks.push({ type: 'list', flat: true, items: [{ title: history.summary(links, now), icon: 'clock', tone: 'faint', action: 'history:today:show' }] });
   }
   return { blocks, badge: waiting ? String(waiting) : '' };
 }

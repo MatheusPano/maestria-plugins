@@ -68,3 +68,14 @@ test('os PRs da sessão: pr-link do Claude Code e links do GitHub na última res
     { url: 'https://github.com/cefis/atrium-ai/compare/main...feature/TASK%2389476?expand=1', label: 'abrir PR · atrium-ai' },
   ]);
 });
+
+test('touched diz quando a conversa mexeu no transcript, ou null', () => {
+  const h = home(slug('/r'), 's9', [said('m', '2026-11-09T10:00:00Z', 'ok')]);
+  const file = path.join(h, '.claude', 'projects', slug('/r'), 's9.jsonl');
+  const when = new Date('2026-11-20T08:00:00Z');
+  fs.utimesSync(file, when, when);
+  const read = replies(h);
+  assert.equal(read.touched('s9', '/r'), when.getTime());
+  assert.equal(read.touched('nenhuma', '/r'), null);
+  assert.equal(read.touched(null, '/r'), null);
+});

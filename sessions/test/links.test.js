@@ -76,13 +76,14 @@ test('a lateral põe quem precisa de você primeiro, com o pedido do cartão, e 
   let { blocks, badge } = sidebar(l, sessions, {}, now);
   let items = blocks[1].items;
   assert.deepEqual(items.map((i) => [i.title, i.indent]), [['gerente', 0], ['TASK#2 pergunta', 1], ['trabalha', 1], ['1 pronta', 1]]);
-  assert.equal(items[0].subtitle, '1 precisa de você · 1 trabalhando · 1 pronta');
+  assert.equal(items[0].subtitle, '1 precisa de você · 1 rodando · 1 pronta');
   assert.equal(items[0].avatar.color, '#E5534B');
   assert.deepEqual([items[1].subtitle, items[1].avatar.color, items[1].meta, items[1].metaTone], ['Aprova as telas?', 'red', '6 min', 'red']);
-  assert.deepEqual([items[2].subtitle, items[2].avatar.color], ['npm test', 'yellow']);
+  assert.deepEqual([items[2].subtitle, items[2].avatar.color], ['npm test', 'accent']);
   assert.equal(items[1].action, 'focus:t2');
   assert.equal(items[3].action, `fold:${root}`);
   assert.equal(badge, '1');
+  assert.equal(sidebar(l, [{ ...sessions[0], status: 'waitingPermission', needsYou: true }, ...sessions.slice(1)], {}, now).badge, '2', 'o gerente esperando você também conta');
   sessions[2] = { ...sessions[2], status: 'waitingAnswer', needsYou: true };
   assert.equal(sidebar(l, sessions, {}, now).blocks[1].items.find((i) => i.title === 'trabalha').subtitle, 'Pergunta na aba.');
   l.nodes[work].card = { state: 'working', since: 0, answered: { text: 'x', at: 60000 } };
@@ -173,7 +174,7 @@ test('gerente com a aba fechada diz "fechada" e o clique retoma a conversa; sess
   l.nodes[gone].card = { state: 'needs_you', headline: 'merge o PR' };
   const items = sidebar(l, [{ id: 'k', title: 'filha', status: 'tool' }]).blocks[1].items;
   const [boss, closed, live] = items;
-  assert.deepEqual([boss.title, boss.subtitle, boss.action, boss.menu[0].action], ['tarefas', 'fechada · 1 precisa de você · 1 trabalhando', `resume:${r}`, `resume:${r}`]);
+  assert.deepEqual([boss.title, boss.subtitle, boss.action, boss.menu[0].action], ['tarefas', 'fechada · 1 precisa de você · 1 rodando', `resume:${r}`, `resume:${r}`]);
   assert.deepEqual([closed.title, closed.action, closed.menu.map((m) => m.action)], ['fechou', `resume:${gone}`, [`resume:${gone}`, `forget:${gone}`]]);
   assert.equal(live.action, 'focus:k');
   assert.ok(kid);

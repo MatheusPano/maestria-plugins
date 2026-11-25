@@ -9,17 +9,20 @@ const tools = require('./lib/tools');
 const { Links, tinted, bare, isOpen } = require('./lib/links');
 const { awake, typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
-const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
-const { deliver, handOver, copy } = require('./lib/answers');
+const { ALL, panel, detail, managerKeys, RESTING, PROMPT, agentsOf, closable } = require('./lib/cards');
+const { deliver, flushPending, dropPending, handOver, answeredInTab, copy, PENDING_MS } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
+const history = require('./lib/history');
+const closer = require('./lib/closer');
+const cleanup = require('./lib/cleanup');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
   '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe avisos [sessions] Novidades (e events nos resultados das ferramentas) quando uma sessão termina o turno, espera o usuário, ou quando o usuário escreve direto nela: confira, atualize o cartão e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe um aviso [sessions] só quando uma sessão pede ação (parou de vez, citou um PR novo, deu erro ou o usuário fechou a aba), no máximo um a cada 5 min e já com estado, cartão, resposta e PRs: não abra o transcript para isso. O que não pede ação (o usuário escreveu direto, sessão esperando na aba) vem nos events do próximo sessions_list. Atualize os cartões e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -34,11 +37,19 @@ const state = {
   probed: false,
   modal: null,
   live: {},
-  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, playing: null, focus: null },
+  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, history: null, playing: null, focus: null },
   title: undefined,
   doctor: false,
   sent: new relay.Sent(),
   asking: new relay.Asking(),
+  permitting: new Map(),
+  pre: new Map(),
+  lastSessions: [],
+  missing: new Map(),
+  closeFailed: new Map(),
+  cleanup: null,
+  flushing: false,
+  flushAfter: 0,
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -47,6 +58,9 @@ const LEGACY_PANEL = 'painel:';
 const CARD = 'cartao:';
 const IMAGE = 'imagem:';
 const DOCTOR = 'diagnostico';
+const CLEANUP = 'limpeza';
+/** Esta subida do plugin: uma resposta pendente de antes do reinício vai pro gerente, não pra aba. */
+const BOOT = `${process.pid}-${Date.now()}`;
 const LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'panel.rfwtxt'), 'utf8');
 
 /** O que a sessão está fazendo agora, a partir do último PreToolUse. */
@@ -62,8 +76,9 @@ function liveLine(payload) {
 /** O mx.request, guardando o que o plugin escreve numa aba (e o primeiro prompt de uma sessão que ele abre): isso não é você digitando direto nela. */
 async function request(method, params) {
   if (method === 'terminal.sendText' && params && params.tabId) state.sent.note(params.tabId, params.text);
+  if (method === 'session.openClaude' && params && params.prompt) state.sent.expect(params.prompt);
   const r = await mx.request(method, params);
-  if (method === 'session.openClaude' && params && params.prompt && r && r.tabId) state.sent.note(r.tabId, params.prompt);
+  if (method === 'session.openClaude' && params && params.prompt && r && r.tabId) state.sent.claim(r.tabId, params.prompt);
   return r;
 }
 
@@ -73,7 +88,7 @@ const readReply = replies(os.homedir());
 
 /** Junta a última resposta do Claude às conversas paradas (o cartão compara com ela, e a visão de todas a mostra). */
 function withReplies(sessions) {
-  return sessions.map((s) => (s.kind === 'claude' && s.sessionId && !s.needsYou && RESTING.has(s.status) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
+  return sessions.map((s) => (s.kind === 'claude' && s.sessionId && !s.needsYou && (RESTING.has(s.status) || s.hibernated) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
 }
 
 const listSessions = async () => withReplies(withLive((await mx.request('sessions.list')) || []));
@@ -140,9 +155,160 @@ function sendOnce(memo, wrong, value, send) {
   return Promise.all(fresh.map(send));
 }
 
+/** Uma aba que sumiu só entra no histórico se continuar sumida na leitura seguinte: lista falha ou a Maestria saindo não contam. */
+const CONFIRM_MS = 2000;
+function closedByYou(sessions) {
+  const ids = new Set(sessions.map((s) => s.id));
+  const confirmed = [...state.missing.values()].filter((s) => !ids.has(s.id));
+  state.missing = new Map(history.vanished(state.links, state.lastSessions, sessions).map((s) => [s.id, s]));
+  if (state.missing.size) setTimeout(schedule, CONFIRM_MS);
+  for (const s of confirmed) {
+    const key = state.links.byTab(s.id);
+    history.record(state.links, { key, session: { ...s, reply: s.reply || (s.sessionId ? readReply(s.sessionId, s.cwd) : null) }, by: 'você, na aba' });
+    if (key) relay.queue(state.links, key, { kind: 'closed' });
+  }
+  return confirmed;
+}
+
+/** Fecha as abas dos cartões feitos que já pararam; uma notificação só por rodada. Uma aba que não fechou espera um tempo e avisa. */
+const RETRY_MS = 10 * 60 * 1000;
+async function closeDone(sessions) {
+  const closed = [];
+  const now = Date.now();
+  for (const { key, session, by } of closer.due(state.links, sessions)) {
+    if (now - (state.closeFailed.get(session.id) || 0) < RETRY_MS) continue;
+    const h = history.record(state.links, { key, session: { ...session, reply: session.reply || (session.sessionId ? readReply(session.sessionId, session.cwd) : null) }, by });
+    try {
+      await mx.request('session.close', { tabId: session.id });
+    } catch (e) {
+      history.forget(state.links, h.id);
+      const n = state.links.nodes[key];
+      if (n && n.card && n.card.state === 'done') n.card = { ...n.card, closeFor: session.sessionId };
+      state.closeFailed.set(session.id, now);
+      mx.request('window.showBanner', { text: `sessions: não fechou ${h.name} (${e.message}); tento de novo em 10 min` }).catch(() => {});
+      continue;
+    }
+    relay.forget(state.links, key);
+    closed.push({ name: h.name, what: history.whatOf(h) });
+  }
+  if (closed.length) await mx.request('window.notify', closer.notice(closed)).catch(() => mx.request('window.showBanner', { text: closer.notice(closed).title }).catch(() => {}));
+  return closed.length > 0;
+}
+
+/** As abas paradas há mais de [idle], com a última resposta e a hora em que a conversa mexeu por último. */
+function parkedOf(sessions, idle = cleanup.DEFAULT_IDLE) {
+  const withReply = sessions.map((s) => (cleanup.parked(s) && !s.reply && s.sessionId ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
+  return cleanup.candidates(state.links, withReply, { idle, touched: (s) => readReply.touched(s.sessionId, s.cwd) });
+}
+
+const cleanupData = () => cleanup.view(state.cleanup.list, state.cleanup.picked, state.cleanup.idle);
+
+/** Abre "Fechar abas paradas" com as de 1 dia e os grupos padrão marcados. */
+async function openCleanup() {
+  const list = parkedOf(await listSessions());
+  state.cleanup = { idle: cleanup.DEFAULT_IDLE, list, picked: cleanup.defaults(list) };
+  return mx.request('view.open', { viewId: CLEANUP, title: 'fechar abas paradas', modal: true, width: 760, height: 640, rfw: { library: LIBRARY, root: 'cleanup' }, data: cleanupData() });
+}
+
+async function onCleanup(verb, arg) {
+  const c = state.cleanup;
+  if (!c) return null;
+  if (verb === 'cancel') {
+    state.cleanup = null;
+    return mx.request('view.close', { viewId: CLEANUP }).catch(() => {});
+  }
+  if (verb === 'idle') {
+    c.idle = arg;
+    const list = parkedOf(await listSessions(), arg);
+    if (state.cleanup !== c || c.idle !== arg) return null;
+    c.list = list;
+    c.picked = cleanup.defaults(c.list);
+  } else if (verb === 'pick') {
+    if (!c.list.some((x) => x.tabId === arg)) return null;
+    if (c.picked.has(arg)) c.picked.delete(arg);
+    else c.picked.add(arg);
+  } else if (verb === 'group') {
+    const ids = c.list.filter((x) => x.group === arg).map((x) => x.tabId);
+    const all = ids.every((id) => c.picked.has(id));
+    for (const id of ids) all ? c.picked.delete(id) : c.picked.add(id);
+  } else if (verb === 'run') return runCleanup();
+  return mx.request('view.update', { viewId: CLEANUP, data: cleanupData() }).catch(() => {});
+}
+
+/** Fecha as marcadas que continuam paradas e no grupo que você viu, cada uma para o histórico, e conta numa linha. */
+async function runCleanup() {
+  const { picked, idle, list: seen } = state.cleanup;
+  state.cleanup = null;
+  await mx.request('view.close', { viewId: CLEANUP }).catch(() => {});
+  const sessions = await listSessions();
+  const groupSeen = new Map(seen.map((x) => [x.tabId, x.group]));
+  const still = new Set(parkedOf(sessions, idle).filter((x) => picked.has(x.tabId) && groupSeen.get(x.tabId) === x.group).map((x) => x.tabId));
+  let closed = 0;
+  let failed = 0;
+  for (const s of sessions.filter((x) => still.has(x.id))) {
+    const key = state.links.byTab(s.id);
+    const was = key && state.links.nodes[key].card;
+    const reply = s.reply || readReply(s.sessionId, s.cwd);
+    const h = history.record(state.links, { key, session: { ...s, reply }, by: 'você, na limpeza' });
+    try {
+      await mx.request('session.close', { tabId: s.id });
+      if (key) relay.queue(state.links, key, { kind: 'closed', text: 'na limpeza' });
+      closed++;
+    } catch (e) {
+      history.forget(state.links, h.id);
+      const n = key && state.links.nodes[key];
+      if (n && was && was.closeFor && n.card) n.card = { ...n.card, closeFor: was.closeFor };
+      failed++;
+      mx.log('limpeza não fechou', s.id, e.message);
+    }
+  }
+  save();
+  const skipped = picked.size - still.size;
+  const text = !closed && !failed
+    ? 'nada foi fechado: as marcadas acordaram, mudaram ou já fecharam'
+    : `${closed} ${closed === 1 ? 'aba fechada e guardada' : 'abas fechadas e guardadas'} no histórico${failed ? `; ${failed} não fecharam` : ''}${skipped ? `; ${skipped} mudaram e ficaram` : ''}`;
+  return mx.request('window.showBanner', { text }).catch(() => {});
+}
+
+/** Entrega as respostas guardadas fora do refresh (acordar uma aba leva até 1 min); uma rodada por vez, e espera 2 min depois de um erro. */
+const PENDING_RETRY_MS = 2 * 60 * 1000;
+function deliverPending(sessions) {
+  if (state.flushing || Date.now() < state.flushAfter) return;
+  if (!Object.values(state.links.nodes).some((n) => n.pending && n.pending.length)) return;
+  state.flushing = true;
+  const closed = (tabId) => state.links.history.some((h) => h.tabId === tabId);
+  flushPending({ ...wakeIo, links: state.links, sessions, boot: BOOT, closed })
+    .then(async (out) => {
+      if (!out.length) return;
+      save();
+      for (const f of out) {
+        const text =
+          f.via === 'terminal' ? `resposta guardada enviada para ${f.title}`
+          : f.via === 'manager' ? `resposta guardada de ${f.title} enviada para o gerente`
+          : `resposta guardada de ${f.title} descartada: nem a aba nem o gerente podem receber; responda na aba`;
+        await mx.request('window.showBanner', { text }).catch(() => {});
+      }
+    })
+    .catch((e) => {
+      state.flushAfter = Date.now() + PENDING_RETRY_MS;
+      mx.log('respostas guardadas:', e.message);
+    })
+    .finally(() => {
+      state.flushing = false;
+    });
+}
+
 async function refresh() {
   const sessions = await listSessions();
-  if (state.links.reconcile(sessions)) writeLinks();
+  const gone = closedByYou(sessions);
+  state.lastSessions = sessions;
+  state.ui.parked = cleanup.candidates(state.links, sessions, { touched: (s) => readReply.touched(s.sessionId, s.cwd) }).length;
+  const settled = settleTurns(sessions);
+  const reconciled = state.links.reconcile(sessions);
+  const migrated = closer.migrate(state.links, sessions);
+  const auto = await closeDone(sessions);
+  deliverPending(sessions);
+  if (reconciled || migrated || gone.length || settled || auto) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
     mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message)),
@@ -182,8 +348,14 @@ async function refresh() {
 }
 
 /** O template só vai na primeira vez por processo: reenviá-lo reconstrói a janela e zera a rolagem. */
-function panelUpdate(sessions) {
+function panelOf(sessions) {
   const p = panel(state.links, state.current, sessions, LIBRARY, state.ui);
+  p.data.history = history.view(state.links, state.current, state.ui.history);
+  return p;
+}
+
+function panelUpdate(sessions) {
+  const p = panelOf(sessions);
   const was = state.title;
   state.title = p.title;
   if (was === undefined) return { viewId: PANEL, ...p };
@@ -234,7 +406,7 @@ async function showPanelNow(key, how) {
   if (how !== 'card') state.current = key;
   else if (state.current !== key) state.current = ALL;
   state.open = true;
-  const p = panel(state.links, state.current, sessions, LIBRARY, state.ui);
+  const p = panelOf(sessions);
   state.title = p.title;
   await mx.request('view.open', { viewId: PANEL, ...p }).catch((e) => {
     state.open = false;
@@ -311,6 +483,7 @@ const ctx = ({ tabId, cwd }) => ({
   request,
   exec,
   prsOf,
+  replyOf: (s) => (s && s.sessionId ? readReply(s.sessionId, s.cwd) : null),
   home: os.homedir(),
   cwd,
   tabId,
@@ -336,20 +509,72 @@ mx.onRequest('command.invoke', ({ command, context }) => {
   return null;
 });
 
+/** SessionEnd por sinal (aba fechada, queda) não encerra o turno: é o que mostra que a sessão parou no meio. */
+const CLEAN_END = new Set(['clear', 'resume', 'logout', 'prompt_input_exit']);
+/** Ferramenta rodando é turno rodando: volta o busy que o settle tirou (o auto-compact põe a aba em "ready" no meio do turno). */
+const IN_TURN = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse']);
+const turnEnded = (name, p) =>
+  name === 'Stop' || name === 'StopFailure' || (name === 'PostToolUseFailure' && Boolean(p.is_interrupt)) || (name === 'SessionEnd' && CLEAN_END.has(p.reason));
+
+function setBusy(node, busy) {
+  if (Boolean(node.busy) === busy) return false;
+  node.busy = busy;
+  if (node.card) node.card = { ...node.card, busy };
+  return true;
+}
+
+/** Esc no meio do pensamento não manda hook: a aba vista parada um tempo depois do último pedido não está mais no turno. */
+const BUSY_GRACE = 30 * 1000;
+function settleTurns(sessions, now = Date.now()) {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  let changed = false;
+  for (const n of Object.values(state.links.nodes)) {
+    const s = n.busy && byId.get(n.tabId);
+    if (s && isOpen(s) && !s.hibernated && s.status === 'idle' && now - (n.busyAt || 0) > BUSY_GRACE && setBusy(n, false)) changed = true;
+  }
+  return changed;
+}
+
+/**
+ * O turno da sessão pelos hooks: [node.busy] (gravado, sobrevive ao restart) diz se ela estava no meio de um turno quando a aba sumiu,
+ * e a pergunta ou a permissão respondida na aba passa a vez na hora. A permissão vale só pra ferramenta que a pediu ([tool_use_id]).
+ */
+function trackTurn(node, name, tabId, p) {
+  let changed = false;
+  const busy = IN_TURN.has(name) ? true : turnEnded(name, p) ? false : null;
+  if (busy) node.busyAt = Date.now();
+  if (busy !== null && setBusy(node, busy)) changed = true;
+  const id = p.tool_use_id;
+  if (name === 'PreToolUse') state.pre.set(tabId, { id, done: false });
+  if ((name === 'PostToolUse' || name === 'PostToolUseFailure') && state.pre.get(tabId) && state.pre.get(tabId).id === id) state.pre.get(tabId).done = true;
+  if (name === 'Notification' && p.notification_type === 'permission_prompt') {
+    const pre = state.pre.get(tabId);
+    if (pre && !pre.done && pre.id) state.permitting.set(tabId, pre.id);
+  }
+  const permitted = name === 'PostToolUse' && id && state.permitting.get(tabId) === id;
+  if (permitted || ((name === 'PostToolUseFailure' || name === 'PostToolUse') && state.permitting.get(tabId) === id) || busy !== null) state.permitting.delete(tabId);
+  if (name === 'PostToolUse' && (p.tool_name === 'AskUserQuestion' || permitted) && answeredInTab(node, Date.now())) changed = true;
+  return changed;
+}
+
 /** Um hook de uma sessão com gerente vira evento na fila dele: turno terminado, esperando você, ou o que você digitou direto nela. */
 function relayHook(name, tabId, payload) {
   const key = state.links.byTab(tabId);
   if (!key || !state.links.nodes[key].parent) return;
   const p = payload || {};
+  const node = state.links.nodes[key];
+  if (trackTurn(node, name, tabId, p)) writeLinks();
   let event = null;
   if (name === 'UserPromptSubmit') {
     const text = relay.fromUser(state.sent, tabId, p.prompt);
+    if (text) dropPending(state.links.nodes[key]);
     if (text && state.links.nodes[key].card) {
       handOver(state.links.nodes[key], text, Date.now(), true);
       writeLinks();
     }
     if (text) event = { kind: 'direct', text };
   } else if (name === 'Stop') event = { kind: 'turn' };
+  else if (name === 'StopFailure') event = { kind: 'error', text: String(p.error || p.message || '') };
   else if (name === 'Notification' && !/waiting for your input/i.test(String(p.message || ''))) event = { kind: 'waiting', text: String(p.message || '') };
   if (!event || !relay.queue(state.links, key, event)) return;
   writeLinks();
@@ -362,14 +587,22 @@ async function flushRelays(sessions) {
   for (const node of Object.values(state.links.nodes)) {
     const manager = sessions.find((s) => s.id === node.tabId);
     if (!relay.due(node, manager, now, state.asking.has(node.tabId))) continue;
-    const sent = node.events;
-    node.events = [];
+    const { wake, keep, passive, waiting } = relay.sort(state.links, node.events, sessions, now);
+    if (!wake.length) {
+      if (keep.length !== node.events.length) {
+        node.events = keep;
+        writeLinks();
+      }
+      continue;
+    }
+    node.events = keep;
     node.relayedAt = now;
     try {
-      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, sent, sessions), submit: true });
+      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, wake, sessions, now, passive, waiting), submit: true });
+      relay.markSeen(state.links, wake, sessions);
     } catch (e) {
       mx.log('aviso ao gerente:', e.message);
-      node.events = [...sent, ...(node.events || [])];
+      node.events = [...wake, ...(node.events || [])];
       node.relayedAt = 0;
     }
     writeLinks();
@@ -444,23 +677,29 @@ function toggleAudio(key, kind, i) {
 
 async function answer(key, text, message = false) {
   stopAudio();
-  const { via, title } = await deliver(key, text, { ...wakeIo, links: state.links, sessions: await listSessions(), message });
+  const { via, title } = await deliver(key, text, { ...wakeIo, links: state.links, sessions: await listSessions(), message, boot: BOOT });
   delete state.ui.picked[key];
   delete state.ui.rejecting[key];
   delete state.ui.writing[key];
   if (via === 'terminal') delete state.ui.images[key];
   state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
   save();
-  const where = via === 'terminal' ? title : 'o gerente (a aba está num prompt)';
+  if (via === 'pending') {
+    schedule();
+    setTimeout(schedule, PENDING_MS + 1000).unref();
+    return mx.request('window.showBanner', { text: `resposta guardada: vai para ${title} quando ela sair do prompt` }).catch(() => {});
+  }
+  const where = via === 'terminal' ? title : 'o gerente (a aba fechou)';
   return mx.request('window.showBanner', { text: `enviado para ${where}` }).catch(() => {});
 }
 
-/** Tira o cartão [key] de "precisa de você"/"trabalhando": vai para Feito, até o gerente postar outro. */
+/** Tira o cartão [key] de "esperam você"/"rodando agora": vai para "terminaram hoje", até o gerente postar outro. */
 function dismiss(key) {
   const node = state.links.nodes[key];
   if (!node || !node.card) return null;
   const now = Date.now();
   node.card = { ...node.card, state: 'done', dismissed: true, action: null, answered: null, headline: 'Dispensado por você.', at: now, doneAt: now };
+  dropPending(node);
   delete state.ui.writing[key];
   delete state.ui.rejecting[key];
   save();
@@ -473,18 +712,56 @@ async function resume(key) {
   if (!n) return null;
   const open = (await listSessions()).find((s) => s.id === n.tabId && isOpen(s));
   if (open) return mx.request('session.focus', { tabId: open.id });
-  if (!n.sessionId) throw new Error(`não sei qual conversa era "${n.name}": ela nunca reportou o sessionId`);
-  const cwd = (n.cwd && isDir(n.cwd) && n.cwd) || cwdOf(os.homedir(), n.sessionId);
-  if (!cwd || !isDir(cwd)) throw new Error(`não achei a pasta da conversa "${n.name}"`);
-  const r = await mx.request('session.openClaude', { cwd, label: tinted(n.name, n.color, n.manager), resume: n.sessionId });
+  closer.disarm(state.links, key);
+  const r = await reopenConversation(n);
+  n.tabId = r.tabId;
+  n.cwd = r.cwd;
+  save();
+  return null;
+}
+
+/** Abre de novo a conversa [sessionId] (com --resume) numa aba nova, na pasta e com o nome dela. */
+async function reopenConversation({ name, color, manager, sessionId, cwd: was }) {
+  if (!sessionId) throw new Error(`não sei qual conversa era "${name}": ela nunca reportou o sessionId`);
+  const cwd = (was && isDir(was) && was) || cwdOf(os.homedir(), sessionId);
+  if (!cwd || !isDir(cwd)) throw new Error(`não achei a pasta da conversa "${name}"`);
+  const label = color ? tinted(name, color, manager) : name;
+  const r = await mx.request('session.openClaude', { cwd, label, resume: sessionId });
   if (!r || !r.resumed) {
     if (r && r.tabId) await mx.request('session.close', { tabId: r.tabId }).catch(() => {});
     throw new Error('esta Maestria ainda não retoma conversas por plugin; atualize a Maestria');
   }
-  n.tabId = r.tabId;
-  n.cwd = cwd;
-  save();
+  return { tabId: r.tabId, cwd };
+}
+
+/** Retomar uma linha do histórico: pelo nó, se ele ainda é dessa conversa; senão, uma aba solta. */
+async function reopen(id) {
+  const h = state.links.history.find((x) => x.id === id);
+  if (!h) return null;
+  const n = h.key && state.links.nodes[h.key];
+  if (n && n.sessionId === h.sessionId) return resume(h.key);
+  const open = (await listSessions()).find((s) => s.sessionId === h.sessionId && isOpen(s));
+  if (open) return mx.request('session.focus', { tabId: open.id });
+  await reopenConversation({ ...h, color: null });
   return null;
+}
+
+/** "Fechar a aba" num cartão feito: guarda no histórico e fecha. */
+async function closeTab(key) {
+  const tabId = key.startsWith('@') ? key.slice(1) : state.links.nodes[key] && state.links.nodes[key].tabId;
+  const s = tabId && (await listSessions()).find((x) => x.id === tabId && isOpen(x));
+  if (!s) return null;
+  if (!closable(s)) throw new Error(`"${bare(s.title)}" está ${agentsOf(s) ? 'com agentes rodando em segundo plano' : s.statusLabel || s.status}; espere o turno acabar`);
+  const h = history.record(state.links, { key: state.links.byTab(s.id), session: { ...s, reply: s.reply || readReply(s.sessionId, s.cwd) }, by: 'você, no painel' });
+  try {
+    await mx.request('session.close', { tabId: s.id });
+  } catch (e) {
+    history.forget(state.links, h.id);
+    throw e;
+  }
+  if (h.key) relay.queue(state.links, h.key, { kind: 'closed', text: 'no painel' });
+  save();
+  return mx.request('window.showBanner', { text: `fechada e guardada no histórico: ${h.name}` }).catch(() => {});
 }
 
 /** Manda [text] direto pro gerente do painel [key]. */
@@ -679,7 +956,21 @@ async function onAction(act, values) {
   if (verb === 'novo') return createManager();
   if (verb === 'focus') return mx.request('session.focus', { tabId: a });
   if (verb === 'resume') return resume(a);
+  if (verb === 'reopen') return reopen(a);
+  if (verb === 'close') return closeTab(a);
+  if (verb === 'hpr') {
+    const h = links.history.find((x) => x.id === a);
+    const pr = h && h.prs[Number(b)];
+    return pr ? mx.request('window.openUrl', { url: pr.url }) : null;
+  }
+  if (verb === 'history') {
+    state.ui.history = a || (state.ui.history ? null : 'today');
+    if (b === 'show') return showPanel(ALL, 'raise');
+    return schedule();
+  }
   if (verb === 'doctor') return openDoctor();
+  if (verb === 'cleanup') return openCleanup();
+  if (verb.startsWith('clean-')) return onCleanup(verb.slice(6), a);
   if (verb === 'doctor-all') return fixAll();
   if (verb === 'sweep') {
     doctor.sweep(a, links, state.dataDir);
@@ -712,6 +1003,7 @@ async function onAction(act, values) {
   }
   if (verb === 'unlink') {
     const n = links.nodes[a];
+    relay.forget(links, a);
     links.remove(a);
     save();
     if (n) await mx.request('session.rename', { tabId: n.tabId, title: bare(await titleOf(n.tabId)) }).catch(() => {});
@@ -719,6 +1011,7 @@ async function onAction(act, values) {
     return null;
   }
   if (verb === 'forget') {
+    relay.forget(links, a);
     links.remove(a);
     save();
   }
@@ -743,7 +1036,7 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
     onLink(action).catch((e) => mx.log('link', action, e.message));
     return;
   }
-  if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
+  if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && id !== CLEANUP && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
   const act = String(action === 'act' ? values && values.a : action || (values && values.action) || '');
   onAction(act, values).catch((e) => {
     mx.log('ação', act, e.message);
@@ -751,8 +1044,11 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
   });
 });
 
+/** Cartão "working" de aba aberta e parada pode virar "parou?" sem nenhum evento: o painel olha de novo. */
+const watched = (n) => n.card && n.card.state === 'working' && state.lastSessions.some((s) => s.id === n.tabId && isOpen(s) && !s.hibernated);
+
 setInterval(() => {
-  if (Object.values(state.links.nodes).some((n) => n.events && n.events.length)) schedule();
-}, relay.limits.gap / 2).unref();
+  if (Object.values(state.links.nodes).some((n) => (n.events || []).some((e) => !relay.isPassive(e)) || watched(n))) schedule();
+}, 30 * 1000).unref();
 
 mx.start();

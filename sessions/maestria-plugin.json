@@ -1,8 +1,8 @@
 {
   "id": "maestria.sessions",
   "name": "Sessions",
-  "version": "1.4.0",
-  "description": "Gerentes de sessões na Maestria: um claude gerente abre e conduz outras sessões como ferramenta, e as sessões dele herdam a cor do gerente no nome da aba, com [G] no gerente e [S] nas sessões dele (\"▲ [G] tarefas\", \"▲ [S] LMS banner\"). A aba da lateral mostra a árvore de gerentes e quem espera você. O painel mostra todas as conversas do Claude em três colunas (precisa de você, trabalhando, feito hoje), com filtro por gerente, os cartões que o gerente preenche (sessions_card) e uma caixa para mandar mensagem (texto e imagens coladas) a qualquer sessão. Uma sessão ou gerente de aba fechada volta com retomar, e o diagnóstico da lateral aponta gerente fechado com sessões abertas, cartão parado, conversa sem hooks e arquivos soltos.",
+  "version": "1.5.0",
+  "description": "Gerentes de sessões na Maestria: um claude gerente abre e conduz outras sessões como ferramenta, e as sessões dele herdam a cor do gerente no nome da aba, com [G] no gerente e [S] nas sessões dele (\"▲ [G] tarefas\", \"▲ [S] LMS banner\"). A aba da lateral mostra a árvore de gerentes e quem espera você. O painel mostra todas as conversas do Claude em três colunas (esperam você, rodando agora, terminaram hoje), com filtro por gerente, os cartões que o gerente preenche (sessions_card) e uma caixa para mandar mensagem (texto e imagens coladas) a qualquer sessão. Uma sessão ou gerente de aba fechada volta com retomar, e toda aba fechada fica 30 dias no histórico do painel; a linha \"paradas\" da lateral fecha num clique as abas hibernadas ou encerradas há muito tempo, e o diagnóstico da lateral aponta gerente fechado com sessões abertas, cartão parado, conversa sem hooks e arquivos soltos.",
   "icon": "icons/sessions.svg",
   "author": "William",
   "maestria": 1,
@@ -23,7 +23,8 @@
     "sessions.create",
     "terminal.write",
     "hooks",
-    "sessions.close"
+    "sessions.close",
+    "notifications"
   ],
   "contributes": {
     "tools": [
@@ -55,7 +56,7 @@
       },
       {
         "name": "sessions_list",
-        "description": "List the open Maestria sessions: tabId, title, folder, branch, status, whether it waits for the user, its manager (parentTabId) and color, and its last prompt and last reply. Pass mine: true for only the sessions you opened. When you are a manager, `answers` carries what the user answered on your cards since your last call.",
+        "description": "List the open Maestria sessions: tabId, title, folder, branch, status, whether it waits for the user, its manager (parentTabId) and color, and its last prompt and last reply. Pass mine: true for only the sessions you opened. When you are a manager, `answers` carries what the user answered on your cards since your last call. When you are a manager, events carries what happened in your sessions that did not need you right away (the user typed straight into one, a session waits on the user).",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -112,7 +113,7 @@
       },
       {
         "name": "sessions_close",
-        "description": "Close the tab of a session in your manager tree (one you opened or linked), for example once its card is done. Refused while it is working or waiting for the user, and for your own tab.",
+        "description": "Close the tab of a session in your manager tree (one you opened or linked), for example once its card is done. Refused while it is working or waiting for the user, and for your own tab. The closed tab goes to the panel history (when, who closed it, the card or last reply, PRs, and a resume button), and the user gets a system notification.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -129,7 +130,7 @@
       },
       {
         "name": "sessions_card",
-        "description": "Set or replace the card of a session you manage, in your manager panel (a Maestria board: needs-you, working, done today). Use it instead of writing status reports in chat. Only for a session in your own tree (one you opened or linked), never your own tab. The result has link (this card) and panel (your panel): to point the user at a card or the panel, paste that maestria:// link bare on its own line, not inside markdown; clicking it in Maestria opens it there. state: working, needs_you or done. done means nothing is left for the session or the user: the PR merged or deployed, the task closed. Pushed but waiting for a PR to be opened, reviewed or merged, or for any decision, is needs_you (put the PR in proof); still running is working. done needs doneBecause and is refused while the session runs or waits on the user, while a PR in proof or in its transcript is open, or with commits not pushed. The result (and sessions_list) also carries events: what happened in your sessions since you last looked (a turn ended, a session waits on the user, the user typed straight into one); act on them. headline: one sentence, what the user has to do (or what is happening). Up to 3 short bullets (the session's notes, folded on the card). action: a command for the user to run (kind \"command\", tabId = the tab it belongs to: the card types it there), a question (kind \"question\", optional options A/B/C, each with an optional audio file to listen to) or an approval (kind \"approve\": approve / reject with a reason). Answers go straight into the session's terminal (to you instead while it sits in a permission prompt), and you get a copy in the `answers` of your next sessions_list or sessions_card. proof: images (absolute paths, shown as thumbnails), prs (url, ci), audio (absolute paths) and log (the last lines of a run). A session not yet in your tree is linked to you.",
+        "description": "Set or replace the card of a session you manage, in your manager panel (a Maestria board: needs-you, working, done today). Use it instead of writing status reports in chat. Only for a session in your own tree (one you opened or linked), never your own tab. The result has link (this card) and panel (your panel): to point the user at a card or the panel, paste that maestria:// link bare on its own line, not inside markdown; clicking it in Maestria opens it there. state: working, needs_you or done. done means nothing is left for the session or the user: the PR merged or deployed, the task closed. Pushed but waiting for a PR to be opened, reviewed or merged, or for any decision, is needs_you (put the PR in proof); still running is working. done needs doneBecause and is refused while the session runs or waits on the user, while a PR in proof or in its transcript is open, or with commits not pushed. A done card closes the session's tab by itself once it is at rest (it goes to the panel history with resume, and the user is notified); after that you can no longer reach the session, only the user can resume it. sessions_send to a done session cancels the closing until the next done. Pass keepOpen: true only when the user still needs the tab. The result (and sessions_list) also carries events: what happened in your sessions since you last looked that did not need you right away (the user typed straight into one, a session waits on the user); sessions that stop for good, cite a new PR, fail or are closed by the user wake you with a [sessions] notice instead, at most one every 5 minutes, already with state, card, reply and PRs. headline: one sentence, what the user has to do (or what is happening). Up to 3 short bullets (the session's notes, folded on the card). action: a command for the user to run (kind \"command\", tabId = the tab it belongs to: the card types it there), a question (kind \"question\", optional options A/B/C, each with an optional audio file to listen to) or an approval (kind \"approve\": approve / reject with a reason). Answers go straight into the session's terminal (while it sits in a permission prompt they are held and typed once it leaves it; held for over an hour, from before a restart, or with the tab closed, they go to you instead), and you get a copy in the `answers` of your next sessions_list or sessions_card. proof: images (absolute paths, shown as thumbnails), prs (url, ci), audio (absolute paths) and log (the last lines of a run). A session not yet in your tree is linked to you.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -148,6 +149,10 @@
             "headline": {
               "type": "string",
               "description": "One sentence: what the user has to do, or what the session is doing."
+            },
+            "keepOpen": {
+              "type": "boolean",
+              "description": "Only with state done: keep the tab open instead of closing it by itself. Use only when the user still needs the tab."
             },
             "doneBecause": {
               "type": "string",

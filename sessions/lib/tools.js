@@ -2,7 +2,9 @@
 // main.js liga `tool.call` a handle(). ctx: { request, home, cwd, tabId, isDir, links, save, showPanel, log } (os testes passam um falso).
 
 const path = require('path');
-const { tinted, colorOf, isOpen } = require('./links');
+const { tinted, colorOf, isOpen, bare } = require('./links');
+const history = require('./history');
+const closer = require('./closer');
 const { typeInto } = require('./wake');
 const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf } = require('./cards');
 const relay = require('./relay');
@@ -136,6 +138,11 @@ async function send({ tabId, text }, ctx) {
   } catch (e) {
     throw new ToolError(e.message);
   }
+  const key = ctx.links.byTab(tabId);
+  if (key && closer.armed(ctx.links.nodes[key].card)) {
+    closer.disarm(ctx.links, key);
+    ctx.save();
+  }
   return ok({ tabId, sent: true, woke: Boolean(s.hibernated), wasBusy: ready.status === 'working' || ready.status === 'tool' });
 }
 
@@ -162,10 +169,22 @@ async function close({ tabId }, ctx) {
   if (!me || !key || !links.subtree(me).includes(key)) throw new ToolError(`A aba ${tabId} não está na sua árvore; só fecha quem você abriu ou ligou.`);
   const s = await liveTab(ctx, tabId);
   if (s.kind !== 'claude') throw new ToolError(`A aba ${tabId} não é uma sessão do claude.`);
-  if (!s.hibernated && !RESTING.has(s.status)) {
+  if (!s.hibernated && !RESTING.has(s.status) && s.status !== 'ended') {
     throw new ToolError(`A sessão ${tabId} está ${s.statusLabel || s.status}; só fecha quando ela termina o turno e não está esperando o usuário.`);
   }
-  await ctx.request('session.close', { tabId });
+  if (agentsOf(s)) throw new ToolError(`A sessão ${tabId} ainda tem ${agentsOf(s)} agente(s) rodando em segundo plano; espere eles terminarem.`);
+  const reply = s.reply || (ctx.replyOf ? ctx.replyOf(s) : null);
+  const entry = history.record(links, { key, session: { ...s, reply }, by: `gerente ${bare(links.nodes[me].name)}` });
+  try {
+    await ctx.request('session.close', { tabId });
+  } catch (e) {
+    history.forget(links, entry.id);
+    throw e;
+  }
+  relay.forget(links, key);
+  ctx.save();
+  const body = `${entry.name}: ${history.whatOf(entry)}`;
+  await ctx.request('window.notify', { title: 'Sessão fechada pelo gerente', body }).catch(() => ctx.request('window.showBanner', { text: `fechada: ${body}` }).catch(() => {}));
   return ok({ tabId, closed: true });
 }
 
@@ -231,7 +250,7 @@ async function doneChecks(s, prs, ctx) {
   return { blockers, warnings };
 }
 
-async function card({ tabId, state, headline, bullets, action, proof, doneBecause }, ctx) {
+async function card({ tabId, state, headline, bullets, action, proof, doneBecause, keepOpen }, ctx) {
   if (!STATES.includes(state)) throw new ToolError(`state precisa ser um de: ${STATES.join(', ')}.`);
   const because = String(doneBecause || '').trim();
   if (state === 'done' && !because) {
@@ -273,6 +292,7 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     await ctx.request('session.rename', { tabId, title: tinted(s.title, links.nodes[key].color, links.nodes[key].manager) }).catch(() => {});
   }
   const prev = links.nodes[key].card || {};
+  delete links.nodes[key].pending;
   const now = Date.now();
   links.nodes[key].card = {
     state,
@@ -284,10 +304,15 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     since: prev.state === state && prev.since ? prev.since : now,
     doneAt: state === 'done' ? (prev.state === 'done' && prev.doneAt) || now : null,
     doneBecause: state === 'done' ? because : null,
+    busy: Boolean(links.nodes[key].busy),
+    onPrompt: PROMPT.has(s.status),
+    keepOpen: state === 'done' && keepOpen === true,
+    ...(state === 'done' ? { closeFor: keepOpen === true ? null : s.sessionId || null } : {}),
   };
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));
-  return ok({ tabId, state, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
+  const closing = state === 'done' && keepOpen !== true ? { closes: 'a aba fecha sozinha quando a sessão parar e vai para o histórico; depois disso só você a retoma pelo painel (keepOpen: true mantém aberta)' } : {};
+  return ok({ tabId, state, ...closing, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
 }
 
 const HANDLERS = { sessions_open: open, sessions_list: list, sessions_send: send, sessions_rename: rename, sessions_card: card, sessions_close: close };

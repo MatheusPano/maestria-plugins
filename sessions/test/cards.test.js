@@ -23,17 +23,20 @@ const cols = (b) => Object.fromEntries(b.cols.map((c) => [c.state, c.cards]));
 
 test('quem espera você ganha do cartão; sem cartão, o status ao vivo decide', () => {
   assert.equal(stateOf({ state: 'done' }, { needsYou: true }), 'needs_you');
-  assert.equal(stateOf({ state: 'working' }, { status: 'idle' }), 'working');
+  assert.equal(stateOf({ state: 'working', at: NOW }, { status: 'idle' }, NOW), 'working');
   assert.equal(stateOf(null, { status: 'tool' }), 'working');
   assert.equal(stateOf(null, { status: 'idle' }), 'done');
   assert.equal(taskOf({ title: 'faz a task#88832', branch: '' }), 'TASK#88832');
 });
 
-test('sessão hibernada, encerrada ou fechada não está trabalhando; dispensado fica em Feito mesmo rodando', () => {
+test('sessão hibernada, encerrada ou fechada não está trabalhando; cartão "working" dela vira interrompida; dispensado fica em Feito mesmo rodando', () => {
   assert.equal(stateOf(null, { status: 'ended', hibernated: true }), 'done');
   assert.equal(stateOf({ state: 'done' }, { status: 'ended', hibernated: true }), 'done');
   assert.equal(stateOf({ state: 'done' }, { status: 'tool', hibernated: true }), 'done');
-  assert.equal(stateOf({ state: 'working' }, { status: 'ended' }), 'done');
+  assert.equal(stateOf({ state: 'working', busy: true }, { status: 'ended' }), 'needs_you');
+  assert.equal(stateOf({ state: 'working', busy: true }, null), 'needs_you');
+  assert.equal(stateOf({ state: 'working', busy: true }, { status: 'idle', hibernated: true }), 'needs_you');
+  assert.equal(stateOf({ state: 'working' }, { status: 'idle', hibernated: true }), 'done');
   assert.equal(stateOf({ state: 'working' }, null), 'done');
   assert.equal(stateOf({ state: 'needs_you' }, null), 'needs_you');
   assert.equal(stateOf({ state: 'done' }, { status: 'tool' }), 'working');
@@ -44,8 +47,8 @@ test('o quadro separa as três colunas na ordem de entrada na árvore (precisa d
   const { l, g, kid } = setup();
   kid('a', { state: 'needs_you', since: min(5) });
   kid('b', { state: 'needs_you', since: min(90) });
-  kid('c', { state: 'working', since: min(30) });
-  kid('d', { state: 'working', since: min(3) });
+  kid('c', { state: 'working', since: min(30), at: min(1) });
+  kid('d', { state: 'working', since: min(3), at: min(1) });
   kid('e', { state: 'done', doneAt: min(10) });
   kid('f', { state: 'done', doneAt: NOW - 30 * 3600000 });
   const sessions = ['g', 'a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id, title: `TASK#${id.charCodeAt(0)} ${id}`, status: 'ready', cwd: '/home/w/r' }));
@@ -195,7 +198,7 @@ test('a sessão que respondeu à sua resposta volta pra Precisa de você, com a 
   const { l, g, kid } = setup();
   kid('r', { state: 'working', headline: 'Você respondeu: A', answered: { text: 'A: sim', at: 100 } });
   kid('w', { state: 'working', headline: 'Você respondeu: B', answered: { text: 'B', at: 100 } });
-  kid('o', { state: 'working', headline: 'Você respondeu: C', answered: { text: 'C', at: 100 } });
+  kid('o', { state: 'working', headline: 'Você respondeu: C', answered: { text: 'C', at: min(1) } });
   const sessions = [
     { id: 'g' },
     { id: 'r', title: 'r', status: 'idle', reply: { text: '## Feito.\n**Detalhes** em `a.ts`', at: 200 } },
@@ -255,14 +258,14 @@ test('resposta longa: o cartão mostra o começo e oferece a inteira no cartão 
 test('cartão "trabalhando" cuja sessão parou depois dele vai pra Precisa de você; o que o gerente escreveu depois fica', () => {
   const { l, g, kid } = setup();
   kid('s', { state: 'working', headline: 'rodando a suíte', at: 100 });
-  kid('p', { state: 'working', headline: 'pausada: esperando a NinePay', at: 300 });
+  kid('p', { state: 'working', headline: 'pausada: esperando a NinePay', at: min(2) });
   const sessions = [
     { id: 'g' },
     { id: 's', title: 's', status: 'idle', reply: { text: 'suíte verde', at: 200 } },
     { id: 'p', title: 'p', status: 'idle', reply: { text: 'parei', at: 200 } },
   ];
   const c = cols(board(l, g, sessions, {}, NOW));
-  assert.deepEqual(c.needs_you.map((x) => [x.title, x.kind, x.headline, x.context, x.reply]), [['s', 'reply', 'Parou, esperando você.', 'rodando a suíte', 'suíte verde']]);
+  assert.deepEqual(c.needs_you.map((x) => [x.title, x.kind, x.headline, x.context, x.reply, x.badge]), [['s', 'reply', 'Parou, esperando você.', 'rodando a suíte', 'suíte verde', 'respondeu']]);
   assert.deepEqual(c.working.map((x) => x.title), ['p']);
 });
 
@@ -278,6 +281,12 @@ test('todo cartão com sessão viva tem caixa de mensagem; o feito só abre a ca
   const all = Object.fromEntries(b.cols.flatMap((c) => c.cards).map((c) => [c.title, c]));
   assert.deepEqual(['w', 'q', 'd', 'x'].map((t) => all[t].canMessage), [true, false, true, false]);
   assert.deepEqual([all.w.writing, all.d.writing], [false, true]);
+  const closeOf = (s) => board(l, g, [sessions[0], { id: 'd', title: 'd', ...s }], {}, NOW).cols.flatMap((c) => c.cards).find((c) => c.title === 'd').canClose;
+  assert.deepEqual(
+    [{ status: 'idle' }, { status: 'unknown' }, { status: 'idle', backgroundAgents: 1 }, { status: 'working', hibernated: true }].map(closeOf),
+    [true, false, false, true],
+    'fechar a aba só aparece quando o fechamento vai passar',
+  );
   assert.equal(all.w.acts.write, `write:${w}`);
   assert.deepEqual([b.canTell, b.tell.input, b.tell.act], [true, `tell-${g}`, `tell:${g}`]);
   assert.equal(board(l, g, sessions.slice(1), {}, NOW).canTell, false);
@@ -391,4 +400,73 @@ test('a resposta que foi para o gerente (a aba estava num prompt) não diz que a
   kid('p', { state: 'working', headline: 'Você respondeu: sim', answered: { text: 'sim', at: min(2), via: 'manager' } });
   const [p] = cols(board(l, g, [{ id: 'g' }, { id: 'p', title: 'p', status: 'tool' }], {}, NOW)).working;
   assert.equal(p.context, 'Enviada às 11:58 para o gerente: a aba estava num prompt.');
+});
+
+test('cartão "working" com a aba parada há mais de 3 min vira "parou?", com a última resposta e o cartão como contexto', () => {
+  const { l, g, kid } = setup();
+  kid('p', { state: 'working', headline: 'pausada: esperando a NinePay', at: min(10) });
+  kid('q', { state: 'working', headline: 'quase', at: min(2) });
+  const sessions = [
+    { id: 'g' },
+    { id: 'p', title: 'p', status: 'idle', reply: { text: 'preciso do acesso ao DNS', at: min(12) } },
+    { id: 'q', title: 'q', status: 'idle', reply: { text: 'x', at: min(12) } },
+  ];
+  const c = cols(board(l, g, sessions, {}, NOW));
+  assert.deepEqual(c.needs_you.map((x) => [x.title, x.badge, x.kind, x.headline, x.context, x.reply]), [
+    ['p', 'parou?', 'reply', 'Parada há 10 min, mas o cartão dizia que estava trabalhando.', 'No cartão: pausada: esperando a NinePay', 'preciso do acesso ao DNS'],
+  ]);
+  assert.deepEqual(c.working.map((x) => [x.title, x.badge]), [['q', '']]);
+});
+
+test('cartão "working" de aba que hibernou, encerrou ou fechou no meio de um turno vira "interrompida", com retomar; fora de um turno vai para Feito', () => {
+  const { l, g, kid } = setup();
+  const h = kid('h', { state: 'working', headline: 'gerando capas', at: min(1), busy: true });
+  const f = kid('f', { state: 'working', headline: 'rodando build', at: min(1), busy: true });
+  kid('e', { state: 'working', at: min(1), busy: true });
+  kid('q', { state: 'working', at: min(1), busy: false });
+  const sessions = [
+    { id: 'g' },
+    { id: 'h', title: 'h', status: 'idle', hibernated: true, exited: true },
+    { id: 'e', title: 'e', status: 'ended' },
+    { id: 'q', title: 'q', status: 'idle', hibernated: true, exited: true },
+  ];
+  const c = cols(board(l, g, sessions, {}, NOW));
+  const by = Object.fromEntries(c.needs_you.map((x) => [x.title, x]));
+  assert.deepEqual([by.h.badge, by.h.kind, by.h.headline, by.h.context, by.h.acts.resume], ['interrompida', 'resume', 'A aba hibernou no meio do trabalho.', 'No cartão: gerando capas', 'focus:h']);
+  assert.deepEqual([by.f.headline, by.f.acts.resume], ['A aba fechou no meio do trabalho.', `resume:${f}`]);
+  assert.equal(by.e.headline, 'A sessão encerrou no meio do trabalho.');
+  assert.deepEqual(c.done.map((x) => x.title), ['q']);
+  assert.ok(h);
+});
+
+test('o selo diz por que o cartão está na coluna: rodando, agentes, na aba, decisão', () => {
+  const { l, g, kid } = setup();
+  kid('r', { state: 'working', at: NOW });
+  kid('a', { state: 'working', at: NOW });
+  kid('d', { state: 'needs_you', action: { kind: 'approve', text: 'merge?' }, at: NOW });
+  kid('n', null);
+  const sessions = [
+    { id: 'g' },
+    { id: 'r', title: 'r', status: 'tool' },
+    { id: 'a', title: 'a', status: 'idle', backgroundAgents: 2 },
+    { id: 'd', title: 'd', status: 'idle' },
+    { id: 'n', title: 'n', status: 'waitingPermission', needsYou: true },
+  ];
+  const all = Object.fromEntries(board(l, g, sessions, {}, NOW).cols.flatMap((c) => c.cards).map((c) => [c.title, [c.badge, c.badgeTone]]));
+  assert.deepEqual(all, { r: ['rodando', 'accent'], a: ['agentes', 'accent'], d: ['decisão', 'red'], n: ['na aba', 'red'] });
+});
+
+test('a resposta guardada aparece no cartão, também com a aba no prompt, até ir para a aba', () => {
+  const { l, g, kid } = setup();
+  const w = kid('w', { state: 'working', headline: 'Você respondeu: A: sim', at: NOW - 60000, answered: { text: 'A: sim', at: NOW - 60000 } });
+  const at = new Date(NOW - 60000);
+  l.nodes[w].pending = [{ text: 'A: sim', at: at.getTime(), boot: 'b' }, { text: 'e roda os testes', at: NOW, boot: 'b' }];
+  const sessions = [{ id: 'g', title: 'g' }, { id: 'w', title: 'w', status: 'waitingPermission', needsYou: true }];
+  const card = () => board(l, g, sessions, {}, NOW).cols.flatMap((c) => c.cards).find((c) => c.title === 'w');
+  const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  assert.equal(card().state, 'needs_you');
+  assert.equal(card().context, `Resposta guardada (2) às ${hm}: “e roda os testes”. Vai para a aba quando ela sair do prompt.`);
+  delete l.nodes[w].pending;
+  sessions[1] = { id: 'w', title: 'w', status: 'tool' };
+  assert.match(card().context, /^Enviada às \d\d:\d\d: a vez é da sessão\.$/);
 });
