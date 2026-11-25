@@ -10,7 +10,7 @@ const { Links, tinted, bare, isOpen } = require('./lib/links');
 const { awake, typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
 const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
-const { deliver, handOver, copy } = require('./lib/answers');
+const { deliver, handOver, answeredInTab, copy } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
@@ -39,6 +39,9 @@ const state = {
   doctor: false,
   sent: new relay.Sent(),
   asking: new relay.Asking(),
+  permitting: new Map(),
+  pre: new Map(),
+  lastSessions: [],
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -142,6 +145,7 @@ function sendOnce(memo, wrong, value, send) {
 
 async function refresh() {
   const sessions = await listSessions();
+  state.lastSessions = sessions;
   if (state.links.reconcile(sessions)) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
@@ -336,11 +340,38 @@ mx.onRequest('command.invoke', ({ command, context }) => {
   return null;
 });
 
+/**
+ * O turno da sessão pelos hooks: [node.busy] (gravado, sobrevive ao restart) diz se ela estava no meio de um turno quando a aba sumiu,
+ * e a pergunta ou a permissão respondida na aba passa a vez na hora. A permissão vale só pra ferramenta que a pediu ([tool_use_id]).
+ */
+function trackTurn(node, name, tabId, p) {
+  let changed = false;
+  const busy = name === 'UserPromptSubmit' ? true : ['Stop', 'StopFailure', 'SessionEnd'].includes(name) ? false : null;
+  if (busy !== null && Boolean(node.busy) !== busy) {
+    node.busy = busy;
+    if (node.card) node.card = { ...node.card, busy };
+    changed = true;
+  }
+  const id = p.tool_use_id;
+  if (name === 'PreToolUse') state.pre.set(tabId, { id, done: false });
+  if ((name === 'PostToolUse' || name === 'PostToolUseFailure') && state.pre.get(tabId) && state.pre.get(tabId).id === id) state.pre.get(tabId).done = true;
+  if (name === 'Notification' && p.notification_type === 'permission_prompt') {
+    const pre = state.pre.get(tabId);
+    if (pre && !pre.done && pre.id) state.permitting.set(tabId, pre.id);
+  }
+  const permitted = name === 'PostToolUse' && id && state.permitting.get(tabId) === id;
+  if (permitted || ((name === 'PostToolUseFailure' || name === 'PostToolUse') && state.permitting.get(tabId) === id) || busy !== null) state.permitting.delete(tabId);
+  if (name === 'PostToolUse' && (p.tool_name === 'AskUserQuestion' || permitted) && answeredInTab(node, Date.now())) changed = true;
+  return changed;
+}
+
 /** Um hook de uma sessão com gerente vira evento na fila dele: turno terminado, esperando você, ou o que você digitou direto nela. */
 function relayHook(name, tabId, payload) {
   const key = state.links.byTab(tabId);
   if (!key || !state.links.nodes[key].parent) return;
   const p = payload || {};
+  const node = state.links.nodes[key];
+  if (trackTurn(node, name, tabId, p)) writeLinks();
   let event = null;
   if (name === 'UserPromptSubmit') {
     const text = relay.fromUser(state.sent, tabId, p.prompt);
@@ -751,8 +782,11 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
   });
 });
 
+/** Cartão "working" de aba aberta e parada pode virar "parou?" sem nenhum evento: o painel olha de novo. */
+const watched = (n) => n.card && n.card.state === 'working' && state.lastSessions.some((s) => s.id === n.tabId && isOpen(s) && !s.hibernated);
+
 setInterval(() => {
-  if (Object.values(state.links.nodes).some((n) => n.events && n.events.length)) schedule();
+  if (Object.values(state.links.nodes).some((n) => (n.events && n.events.length) || watched(n))) schedule();
 }, relay.limits.gap / 2).unref();
 
 mx.start();

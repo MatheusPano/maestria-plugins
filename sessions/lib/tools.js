@@ -284,6 +284,7 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     since: prev.state === state && prev.since ? prev.since : now,
     doneAt: state === 'done' ? (prev.state === 'done' && prev.doneAt) || now : null,
     doneBecause: state === 'done' ? because : null,
+    busy: Boolean(links.nodes[key].busy),
   };
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));

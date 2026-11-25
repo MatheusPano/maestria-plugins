@@ -185,7 +185,7 @@ test('sessions_card guarda o cartão, liga a sessão ao gerente e abre o painel'
   assert.equal(w.parent, me);
   assert.deepEqual({ ...w.card, at: 0, since: 0 }, {
     state: 'needs_you', headline: null, bullets: ['a', 'b'], action: { kind: 'question', text: 'posso?', where: null, tabId: null, options: [] },
-    proof: null, at: 0, since: 0, doneAt: null, doneBecause: null,
+    proof: null, at: 0, since: 0, doneAt: null, doneBecause: null, busy: false,
   });
   assert.deepEqual(shown, [me]);
   assert.ok(ctx.calls.some((c) => c.method === 'session.rename' && c.params.tabId === 'w' && c.params.title === '● [S] TASK#5 worker'));

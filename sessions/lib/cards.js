@@ -7,9 +7,9 @@ const STATES = ['working', 'needs_you', 'done'];
 const MAX_BULLETS = 3;
 const PROMPT = new Set(['waitingPermission', 'waitingAnswer']);
 const COLUMNS = [
-  { state: 'needs_you', title: 'Precisa de você', tone: 'red', empty: 'Ninguém esperando você.' },
-  { state: 'working', title: 'Trabalhando', tone: 'yellow', empty: 'Nenhuma sessão trabalhando.' },
-  { state: 'done', title: 'Feito hoje', tone: 'green', empty: 'Nada pronto hoje ainda.' },
+  { state: 'needs_you', title: 'Esperam você', tone: 'red', empty: 'Ninguém esperando você.' },
+  { state: 'working', title: 'Rodando agora', tone: 'accent', empty: 'Nenhuma sessão rodando.' },
+  { state: 'done', title: 'Terminaram hoje', tone: 'green', empty: 'Nada terminado hoje ainda.' },
 ];
 
 const taskOf = (s) => {
@@ -40,17 +40,31 @@ function repliedOf(card, session) {
 const agentsOf = (s) => (s && !s.hibernated && !PROMPT.has(s.status) && Number(s.backgroundAgents)) || 0;
 const behind = (n) => `rodando em segundo plano (${n} ${n === 1 ? 'agente' : 'agentes'})`;
 
-/** O estado que vale: agente em segundo plano é trabalho; a sessão esperando você ganha do que o gerente escreveu. */
-function stateOf(card, session) {
+/** Quanto tempo a sessão fica parada com o cartão dizendo "working" até virar "parou?". */
+const STALL_MS = 3 * 60 * 1000;
+const running = (s) => Boolean(s) && !s.hibernated && !STOPPED.has(s.status);
+const gone = (s) => !s || s.hibernated || s.status === 'ended';
+const idleSince = (card, s) => Math.max(card.at || 0, (card.answered && card.answered.at) || 0, (s && s.reply && s.reply.at) || 0);
+
+/** O que o cartão "working" esconde: a aba fechou ou hibernou no meio de um turno ('interrupted', [card.busy] vem dos hooks), ou está parada há mais de STALL_MS ('stalled'). */
+function flagOf(card, session, now = Date.now()) {
+  if (!card || card.state !== 'working' || card.dismissed || agentsOf(session)) return null;
+  if (session && (session.needsYou || PROMPT.has(session.status))) return null;
+  if (gone(session)) return card.busy ? 'interrupted' : null;
+  if (running(session)) return null;
+  return now - idleSince(card, session) > STALL_MS ? 'stalled' : null;
+}
+
+/** O estado que vale: o que a aba diz agora ganha do que o gerente escreveu por último. */
+function stateOf(card, session, now = Date.now()) {
   if (agentsOf(session) && !(card && card.state === 'needs_you' && card.action)) return card && card.dismissed ? 'done' : 'working';
   if (session && session.needsYou) return 'needs_you';
   if (repliedOf(card, session)) return 'needs_you';
-  const running = Boolean(session) && !session.hibernated && !STOPPED.has(session.status);
-  const gone = !session || session.hibernated || session.status === 'ended';
-  if (card && card.state === 'done') return running && !card.dismissed ? 'working' : 'done';
-  if (card && card.state === 'working' && gone) return 'done';
+  if (flagOf(card, session, now)) return 'needs_you';
+  if (card && card.state === 'done') return running(session) && !card.dismissed ? 'working' : 'done';
+  if (card && card.state === 'working' && gone(session)) return 'done';
   if (card && card.state) return card.state;
-  return running ? 'working' : 'done';
+  return running(session) ? 'working' : 'done';
 }
 
 const hex = (h) => 0xff000000 + parseInt(String(h).replace('#', ''), 16);
@@ -125,8 +139,27 @@ function howTo(text, canSend) {
 const WAITS = { waitingAnswer: 'Pergunta na aba.', waitingPermission: 'Permissão na aba.' };
 const waitOf = (session) => WAITS[session && session.status] || `Esperando você na aba (${(session && session.statusLabel) || 'pergunta'}).`;
 
+const BADGES = {
+  stalled: ['parou?', 'yellow'],
+  interrupted: ['interrompida', 'red'],
+  wait: ['na aba', 'red'],
+  question: ['decisão', 'red'],
+  approve: ['decisão', 'red'],
+  command: ['comando', 'red'],
+  reply: ['respondeu', 'red'],
+};
+
+/** O selo do cartão: o porquê de ele estar na coluna, quando a coluna sozinha não diz. */
+function badgeOf(state, kind, flag, session) {
+  let b = null;
+  if (state === 'needs_you') b = BADGES[flag] || BADGES[kind] || null;
+  else if (state === 'working' && running(session)) b = ['rodando', 'accent'];
+  else if (state === 'working' && agentsOf(session)) b = ['agentes', 'accent'];
+  return { badge: b ? b[0] : '', badgeTone: b ? b[1] : '' };
+}
+
 function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
-  const state = stateOf(card, session);
+  const state = stateOf(card, session, now);
   const task = session ? taskOf(session) : null;
   const title = split(session ? session.title : node.name, task) || node.name;
   const c = card || {};
@@ -136,14 +169,19 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
   const prompt = Boolean(session && PROMPT.has(session.status));
   const tabAsks = Boolean(session && session.needsYou) && c.state !== 'needs_you';
   const replied = repliedOf(c, session);
+  const flag = replied ? null : flagOf(card, session, now);
   let kind = action && !tabAsks ? action.kind : 'none';
   if (tabAsks || (state === 'needs_you' && !action)) kind = 'wait';
-  if (replied) kind = 'reply';
+  if (replied || (flag === 'stalled' && session.reply && session.reply.text)) kind = 'reply';
+  if (flag === 'interrupted') kind = 'resume';
+  const shownReply = replied || (kind === 'reply' ? session.reply : null);
   const options = action && action.options && !tabAsks ? action.options : [];
   const audible = options.some((o) => o.audio);
   const picked = ui.picked[key];
   const playing = ui.playing && ui.playing.key === key ? ui.playing.id : null;
   const headline =
+    (flag === 'stalled' && `Parada há ${Math.max(3, Math.round((now - idleSince(c, session)) / 60000))} min, mas o cartão dizia que estava trabalhando.`) ||
+    (flag === 'interrupted' && (!session ? 'A aba fechou no meio do trabalho.' : session.hibernated ? 'A aba hibernou no meio do trabalho.' : 'A sessão encerrou no meio do trabalho.')) ||
     (tabAsks && waitOf(session)) ||
     (replied && (c.answered ? 'Respondeu, esperando você.' : 'Parou, esperando você.')) ||
     c.headline ||
@@ -162,12 +200,15 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     color: node.free ? FREE : hex(colorOf(node.color).hex),
     age: !card && !lastTurn ? '' : state === 'needs_you' ? ago(since, now) : state === 'working' ? `desde ${clock(since)}` : clock(c.doneAt || c.at || lastTurn || now),
     headline,
-    context: replied
+    context: flag
+      ? c.headline ? `No cartão: ${c.headline}` : ''
+      : replied
       ? c.answered ? `${c.answered.message ? 'Você escreveu' : 'Você respondeu'}: ${c.answered.text}` : c.headline || ''
       : state === 'working' && c.answered ? `Enviada às ${clock(c.answered.at)}${c.answered.via === 'manager' ? ' para o gerente: a aba estava num prompt.' : ': a vez é da sessão.'}`
       : c.headline && (kind === 'question' || kind === 'approve') ? action.text : '',
-    reply: replied ? plain(replied.text) : '',
-    replyLong: Boolean(replied) && shownLines(plain(replied.text)) > REPLY_LINES,
+    reply: shownReply ? plain(shownReply.text) : '',
+    replyLong: Boolean(shownReply) && shownLines(plain(shownReply.text)) > REPLY_LINES,
+    ...badgeOf(state, kind, flag, session),
     hasHeadline: Boolean(headline),
     because: state === 'done' && c.doneBecause ? `feito porque: ${c.doneBecause}` : '',
     kind,
@@ -232,6 +273,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       use: `use:${key}`,
       suggest: `suggest:${key}`,
       paste: `paste:${key}`,
+      resume: session ? `focus:${session.id}` : `resume:${key}`,
     },
     ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2), session),
   };
@@ -363,4 +405,4 @@ function panel(links, key, sessions, library, ui, now) {
   return { title: `painel · ${data.name}`, rfw: { library, root: 'root' }, data };
 }
 
-module.exports = { agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };
+module.exports = { flagOf, STALL_MS, agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };

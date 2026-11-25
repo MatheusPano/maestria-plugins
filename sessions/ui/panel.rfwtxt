@@ -118,7 +118,7 @@ widget Lane = Padding(
         padding: [4.0, 0.0, 4.0, 10.0],
         child: Row(
           children: [
-            Dot(color: switch args.col.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.faint }, size: 8.0),
+            Dot(color: switch args.col.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, "accent": data.theme.accent, default: data.theme.faint }, size: 8.0),
             SizedBox(width: 8.0),
             Text(text: args.col.title, style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg }),
             SizedBox(width: 8.0),
@@ -204,6 +204,7 @@ widget Card = Box(
       "approve": Approve(c: args.c),
       "wait": Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
       "reply": Reply(c: args.c),
+      "resume": Gap(child: Row(children: [Btn(label: "retomar a conversa", icon: "play", act: args.c.acts.resume, kind: "pri")])),
       default: SizedBox(),
     },
     switch args.c.canMessage {
@@ -232,6 +233,10 @@ widget TitleRow = Row(
       ),
     ),
     SizedBox(width: 8.0),
+    switch args.c.badge {
+      "": SizedBox(),
+      default: Padding(padding: [0.0, 0.0, 8.0, 0.0], child: Pill(text: args.c.badge, tone: args.c.badgeTone)),
+    },
     Text(text: args.c.age, style: { fontSize: 11.0, color: switch args.c.state { "needs_you": data.theme.red, default: data.theme.faint } }),
     SizedBox(width: 4.0),
     switch args.c.acts.focus {
@@ -750,7 +755,7 @@ widget IconBtn = Padding(
 widget Pill = Container(
   padding: [7.0, 1.0, 7.0, 1.0],
   decoration: { type: "box", color: data.theme.hover, borderRadius: [{ x: 9.0 }] },
-  child: Text(text: args.text, style: { fontSize: 11.0, fontWeight: "w600", color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, default: data.theme.faint } }),
+  child: Text(text: args.text, style: { fontSize: 11.0, fontWeight: "w600", color: switch args.tone { "red": data.theme.red, "yellow": data.theme.yellow, "green": data.theme.green, "accent": data.theme.accent, default: data.theme.faint } }),
 );
 
 widget Dot = Container(width: args.size, height: args.size, decoration: { type: "box", color: args.color, shape: "circle" });
@@ -805,6 +810,7 @@ widget detail = SingleChildScrollView(
                   "question": Question(c: data.card),
                   "approve": Approve(c: data.card),
                   "reply": Reply(c: data.card, full: true),
+                  "resume": Gap(child: Row(children: [Btn(label: "retomar a conversa", icon: "play", act: data.card.acts.resume, kind: "pri")])),
                   default: SizedBox(),
                 },
                 switch data.card.hasNotes {

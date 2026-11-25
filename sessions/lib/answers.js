@@ -28,6 +28,13 @@ function handOver(node, text, now, message, viaManager = false) {
   };
 }
 
+/** Você respondeu a pergunta ou a permissão na própria aba: o cartão "precisa de você" sem ação (que só apontava pra aba) passa a vez pra sessão na hora. */
+function answeredInTab(node, now) {
+  if (!node.card || node.card.state !== 'needs_you' || node.card.action) return false;
+  node.card = { ...node.card, state: 'working', action: null, headline: 'Você respondeu na aba.', since: now, doneAt: null, answered: { text: 'na aba', at: now } };
+  return true;
+}
+
 /** Manda [text] pela sessão do nó [key] e passa a vez pra ela; [message] é a caixa de mensagem do cartão. Devolve por onde foi. */
 async function deliver(key, text, { links, request, list, notice, sessions, now = Date.now(), message = false, wait }) {
   const io = { request, list, notice };
@@ -55,4 +62,4 @@ async function deliver(key, text, { links, request, list, notice, sessions, now 
   return { via: toManager ? 'manager' : 'terminal', title };
 }
 
-module.exports = { deliver, handOver, copy };
+module.exports = { deliver, handOver, answeredInTab, copy };
