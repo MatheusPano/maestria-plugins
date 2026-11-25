@@ -394,3 +394,23 @@ test('o done arma o fechamento da conversa da aba; keepOpen só com true; sessio
   await tools.handle('sessions_send', { tabId: 'w', text: 'corrige mais isso' }, ctx);
   assert.deepEqual([ctx.links.nodes[w].card.state, ctx.links.nodes[w].card.closeFor], ['done', null]);
 });
+
+test('sessions_close tira da fila do gerente o que a sessão tinha só quando a aba fecha', async () => {
+  const relay = require('../lib/relay');
+  const sessions = [{ id: 'me', kind: 'claude', title: 'g' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle' }];
+  const ctx = makeCtx({ sessions });
+  const me = ctx.links.add({ tabId: 'me', name: 'g', manager: true });
+  const w = ctx.links.add({ tabId: 'w', parent: me, name: 'w' });
+  relay.queue(ctx.links, w, { kind: 'error', text: 'rate_limit' });
+  relay.queue(ctx.links, w, { kind: 'direct', text: 'x' });
+  const request = ctx.request;
+  ctx.request = async (method, params) => {
+    if (method === 'session.close') throw new Error('não fechou');
+    return request(method, params);
+  };
+  assert.equal((await tools.handle('sessions_close', { tabId: 'w' }, ctx)).isError, true);
+  assert.equal(ctx.links.nodes[me].events.length, 2, 'a aba continua aberta: os avisos ficam');
+  ctx.request = request;
+  await tools.handle('sessions_close', { tabId: 'w' }, ctx);
+  assert.deepEqual(ctx.links.nodes[me].events, []);
+});

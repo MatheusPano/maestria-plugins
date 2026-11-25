@@ -22,7 +22,7 @@ const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
   '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe avisos [sessions] Novidades (e events nos resultados das ferramentas) quando uma sessão termina o turno, espera o usuário, ou quando o usuário escreve direto nela: confira, atualize o cartão e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe um aviso [sessions] só quando uma sessão pede ação (parou de vez, citou um PR novo, deu erro ou o usuário fechou a aba), no máximo um a cada 5 min e já com estado, cartão, resposta e PRs: não abra o transcript para isso. O que não pede ação (o usuário escreveu direto, sessão esperando na aba) vem nos events do próximo sessions_list. Atualize os cartões e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -76,8 +76,9 @@ function liveLine(payload) {
 /** O mx.request, guardando o que o plugin escreve numa aba (e o primeiro prompt de uma sessão que ele abre): isso não é você digitando direto nela. */
 async function request(method, params) {
   if (method === 'terminal.sendText' && params && params.tabId) state.sent.note(params.tabId, params.text);
+  if (method === 'session.openClaude' && params && params.prompt) state.sent.expect(params.prompt);
   const r = await mx.request(method, params);
-  if (method === 'session.openClaude' && params && params.prompt && r && r.tabId) state.sent.note(r.tabId, params.prompt);
+  if (method === 'session.openClaude' && params && params.prompt && r && r.tabId) state.sent.claim(r.tabId, params.prompt);
   return r;
 }
 
@@ -87,7 +88,7 @@ const readReply = replies(os.homedir());
 
 /** Junta a última resposta do Claude às conversas paradas (o cartão compara com ela, e a visão de todas a mostra). */
 function withReplies(sessions) {
-  return sessions.map((s) => (s.kind === 'claude' && s.sessionId && !s.needsYou && RESTING.has(s.status) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
+  return sessions.map((s) => (s.kind === 'claude' && s.sessionId && !s.needsYou && (RESTING.has(s.status) || s.hibernated) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
 }
 
 const listSessions = async () => withReplies(withLive((await mx.request('sessions.list')) || []));
@@ -161,7 +162,11 @@ function closedByYou(sessions) {
   const confirmed = [...state.missing.values()].filter((s) => !ids.has(s.id));
   state.missing = new Map(history.vanished(state.links, state.lastSessions, sessions).map((s) => [s.id, s]));
   if (state.missing.size) setTimeout(schedule, CONFIRM_MS);
-  for (const s of confirmed) history.record(state.links, { key: state.links.byTab(s.id), session: { ...s, reply: s.reply || (s.sessionId ? readReply(s.sessionId, s.cwd) : null) }, by: 'você, na aba' });
+  for (const s of confirmed) {
+    const key = state.links.byTab(s.id);
+    history.record(state.links, { key, session: { ...s, reply: s.reply || (s.sessionId ? readReply(s.sessionId, s.cwd) : null) }, by: 'você, na aba' });
+    if (key) relay.queue(state.links, key, { kind: 'closed' });
+  }
   return confirmed;
 }
 
@@ -183,6 +188,7 @@ async function closeDone(sessions) {
       mx.request('window.showBanner', { text: `sessions: não fechou ${h.name} (${e.message}); tento de novo em 10 min` }).catch(() => {});
       continue;
     }
+    relay.forget(state.links, key);
     closed.push({ name: h.name, what: history.whatOf(h) });
   }
   if (closed.length) await mx.request('window.notify', closer.notice(closed)).catch(() => mx.request('window.showBanner', { text: closer.notice(closed).title }).catch(() => {}));
@@ -246,6 +252,7 @@ async function runCleanup() {
     const h = history.record(state.links, { key, session: { ...s, reply }, by: 'você, na limpeza' });
     try {
       await mx.request('session.close', { tabId: s.id });
+      if (key) relay.queue(state.links, key, { kind: 'closed', text: 'na limpeza' });
       closed++;
     } catch (e) {
       history.forget(state.links, h.id);
@@ -567,6 +574,7 @@ function relayHook(name, tabId, payload) {
     }
     if (text) event = { kind: 'direct', text };
   } else if (name === 'Stop') event = { kind: 'turn' };
+  else if (name === 'StopFailure') event = { kind: 'error', text: String(p.error || p.message || '') };
   else if (name === 'Notification' && !/waiting for your input/i.test(String(p.message || ''))) event = { kind: 'waiting', text: String(p.message || '') };
   if (!event || !relay.queue(state.links, key, event)) return;
   writeLinks();
@@ -579,14 +587,22 @@ async function flushRelays(sessions) {
   for (const node of Object.values(state.links.nodes)) {
     const manager = sessions.find((s) => s.id === node.tabId);
     if (!relay.due(node, manager, now, state.asking.has(node.tabId))) continue;
-    const sent = node.events;
-    node.events = [];
+    const { wake, keep, passive, waiting } = relay.sort(state.links, node.events, sessions, now);
+    if (!wake.length) {
+      if (keep.length !== node.events.length) {
+        node.events = keep;
+        writeLinks();
+      }
+      continue;
+    }
+    node.events = keep;
     node.relayedAt = now;
     try {
-      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, sent, sessions), submit: true });
+      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, wake, sessions, now, passive, waiting), submit: true });
+      relay.markSeen(state.links, wake, sessions);
     } catch (e) {
       mx.log('aviso ao gerente:', e.message);
-      node.events = [...sent, ...(node.events || [])];
+      node.events = [...wake, ...(node.events || [])];
       node.relayedAt = 0;
     }
     writeLinks();
@@ -743,6 +759,7 @@ async function closeTab(key) {
     history.forget(state.links, h.id);
     throw e;
   }
+  if (h.key) relay.queue(state.links, h.key, { kind: 'closed', text: 'no painel' });
   save();
   return mx.request('window.showBanner', { text: `fechada e guardada no histórico: ${h.name}` }).catch(() => {});
 }
@@ -986,6 +1003,7 @@ async function onAction(act, values) {
   }
   if (verb === 'unlink') {
     const n = links.nodes[a];
+    relay.forget(links, a);
     links.remove(a);
     save();
     if (n) await mx.request('session.rename', { tabId: n.tabId, title: bare(await titleOf(n.tabId)) }).catch(() => {});
@@ -993,6 +1011,7 @@ async function onAction(act, values) {
     return null;
   }
   if (verb === 'forget') {
+    relay.forget(links, a);
     links.remove(a);
     save();
   }
@@ -1029,7 +1048,7 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
 const watched = (n) => n.card && n.card.state === 'working' && state.lastSessions.some((s) => s.id === n.tabId && isOpen(s) && !s.hibernated);
 
 setInterval(() => {
-  if (Object.values(state.links.nodes).some((n) => (n.events && n.events.length) || watched(n))) schedule();
-}, relay.limits.gap / 2).unref();
+  if (Object.values(state.links.nodes).some((n) => (n.events || []).some((e) => !relay.isPassive(e)) || watched(n))) schedule();
+}, 30 * 1000).unref();
 
 mx.start();

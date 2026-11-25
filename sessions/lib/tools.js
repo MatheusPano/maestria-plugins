@@ -181,6 +181,7 @@ async function close({ tabId }, ctx) {
     history.forget(links, entry.id);
     throw e;
   }
+  relay.forget(links, key);
   ctx.save();
   const body = `${entry.name}: ${history.whatOf(entry)}`;
   await ctx.request('window.notify', { title: 'Sessão fechada pelo gerente', body }).catch(() => ctx.request('window.showBanner', { text: `fechada: ${body}` }).catch(() => {}));

@@ -308,7 +308,7 @@ test('um link maestria:// clicado abre o painel do gerente e o cartão da sessã
   assert.match(calls.slice(mark).find(([m]) => m === 'window.showBanner')[1].text, /não está mais na árvore/);
 });
 
-test('o que você digita direto numa sessão chega ao gerente parado; a mensagem mandada pelo painel não conta como digitada', async () => {
+test('o que você digita direto numa sessão não acorda o gerente: vai no próximo sessions_list; a mensagem mandada pelo painel não conta como digitada', async () => {
   const relay = require('../lib/relay');
   const was = { ...relay.limits };
   relay.limits.quiet = 0;
@@ -333,9 +333,9 @@ test('o que você digita direto numa sessão chega ao gerente parado; a mensagem
     const before = calls.length;
     await new Promise((r) => setTimeout(r, 900));
     const toManager = calls.slice(before).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
-    assert.equal(toManager.length, 1);
-    assert.match(toManager[0], /O usuário escreveu direto para "w": "usa a v2 da API"/);
-    assert.doesNotMatch(toManager[0], /pelo painel|Corrija o CI|task-notification/);
+    assert.deepEqual(toManager, []);
+    const listed = JSON.parse((await handlers.req['tool.call']({ tool: 'sessions_list', tabId: 'g', args: {} })).content[0].text).events;
+    assert.deepEqual(listed, ['- O usuário escreveu direto para "w": "usa a v2 da API"']);
   } finally {
     Object.assign(relay.limits, was);
   }
@@ -360,7 +360,7 @@ test('se o aviso ao gerente falha, a fila volta e sai na próxima', async () => 
       return realRequest(m, p);
     };
     try {
-      handlers.note.event({ type: 'hook', tabId: 'w', name: 'UserPromptSubmit', payload: { prompt: 'segunda tentativa' } });
+      handlers.note.event({ type: 'hook', tabId: 'w', name: 'StopFailure', payload: { error: 'segunda tentativa' } });
       const before = calls.length;
       await new Promise((r) => setTimeout(r, 900));
       handlers.note.event({ type: 'hook', tabId: 'g', name: 'Stop', payload: {} });
@@ -466,8 +466,8 @@ test('o aviso ao gerente espera ele sair da pergunta e vai uma vez só, com tudo
     const hook = (tabId, name, payload = {}) => handlers.note.event({ type: 'hook', tabId, name, payload });
     const before = calls.length;
     Object.assign(g, { status: 'waitingAnswer', needsYou: true });
-    hook('w', 'UserPromptSubmit', { prompt: 'primeira' });
-    hook('w', 'UserPromptSubmit', { prompt: 'segunda' });
+    hook('w', 'StopFailure', { error: 'primeira' });
+    hook('w', 'StopFailure', { error: 'segunda' });
     await new Promise((r) => setTimeout(r, 700));
     assert.deepEqual(toManager(before), []);
     Object.assign(g, { status: 'idle', needsYou: false });
@@ -498,7 +498,7 @@ test('com a pergunta ainda aberta nos hooks, o aviso não é digitado nem quando
     const before = calls.length;
     hook('g', 'PreToolUse', { tool_name: 'AskUserQuestion' });
     hook('g', 'PostToolUse', { tool_name: 'Read' });
-    hook('w', 'UserPromptSubmit', { prompt: 'enquanto ele pergunta' });
+    hook('w', 'StopFailure', { error: 'enquanto ele pergunta' });
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(toManager(before), 0);
     hook('g', 'PostToolUse', { tool_name: 'AskUserQuestion' });
@@ -815,5 +815,42 @@ test('responder o cartão com a aba num prompt guarda a resposta e manda quando 
     assert.equal(read()[key].pending, undefined, 'você escreveu direto na aba: a guardada deixou de valer');
   } finally {
     sessions.splice(sessions.indexOf(tab), 1);
+  }
+});
+
+test('fim de turno só acorda o gerente quando a sessão parou de vez; a aba fechada por você também acorda; a fechada pelo plugin, não', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  const tab = { id: 'st', kind: 'claude', title: 'st', status: 'idle', sessionId: 's-st' };
+  sessions.push(tab);
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'st', state: 'working', headline: 'rodando' } });
+    const toManager = (from) => calls.slice(from).filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g').map(([, p]) => p.text);
+    const changed = async () => {
+      handlers.note.event({ type: 'session.changed' });
+      await new Promise((r) => setTimeout(r, 400));
+    };
+    const before = calls.length;
+    handlers.note.event({ type: 'hook', tabId: 'st', name: 'Stop', payload: {} });
+    await changed();
+    assert.deepEqual(toManager(before), [], 'parou agora: pode voltar a rodar');
+    relay.limits.settle = 0;
+    await changed();
+    const got = toManager(before);
+    assert.equal(got.length, 1);
+    assert.match(got[0], /^\[sessions\] 1 sessão pede você[\s\S]*"st" parou há 1 min[\s\S]*cartão: working "rodando" → atualize/);
+
+    const mark = calls.length;
+    sessions.splice(sessions.indexOf(tab), 1);
+    await changed();
+    await changed();
+    assert.match(toManager(mark).join('\n'), /"st" foi fechada pelo usuário\./);
+  } finally {
+    if (sessions.includes(tab)) sessions.splice(sessions.indexOf(tab), 1);
+    Object.assign(relay.limits, was);
   }
 });

@@ -122,3 +122,4 @@ test('a resposta mais nova que o cartão "trabalhando" é o que fica como feito;
   assert.equal(history.view(links, ALL, 'today', NOW).rows[0].title, 'CI do Drive', 'o registro guarda o nome da hora');
   assert.equal(history.view({ history: [{ ...links.history[0], name: 'task#7 minúsculo', task: 'TASK#7' }] }, ALL, 'today', NOW).rows[0].title, 'minúsculo');
 });
+
