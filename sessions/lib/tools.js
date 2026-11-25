@@ -291,6 +291,7 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     await ctx.request('session.rename', { tabId, title: tinted(s.title, links.nodes[key].color, links.nodes[key].manager) }).catch(() => {});
   }
   const prev = links.nodes[key].card || {};
+  delete links.nodes[key].pending;
   const now = Date.now();
   links.nodes[key].card = {
     state,

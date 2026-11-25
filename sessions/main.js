@@ -10,7 +10,7 @@ const { Links, tinted, bare, isOpen } = require('./lib/links');
 const { awake, typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
 const { ALL, panel, detail, managerKeys, RESTING, PROMPT, agentsOf, closable } = require('./lib/cards');
-const { deliver, handOver, answeredInTab, copy } = require('./lib/answers');
+const { deliver, flushPending, dropPending, handOver, answeredInTab, copy, PENDING_MS } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
@@ -48,6 +48,8 @@ const state = {
   missing: new Map(),
   closeFailed: new Map(),
   cleanup: null,
+  flushing: false,
+  flushAfter: 0,
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -57,6 +59,8 @@ const CARD = 'cartao:';
 const IMAGE = 'imagem:';
 const DOCTOR = 'diagnostico';
 const CLEANUP = 'limpeza';
+/** Esta subida do plugin: uma resposta pendente de antes do reinício vai pro gerente, não pra aba. */
+const BOOT = `${process.pid}-${Date.now()}`;
 const LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'panel.rfwtxt'), 'utf8');
 
 /** O que a sessão está fazendo agora, a partir do último PreToolUse. */
@@ -259,6 +263,34 @@ async function runCleanup() {
   return mx.request('window.showBanner', { text }).catch(() => {});
 }
 
+/** Entrega as respostas guardadas fora do refresh (acordar uma aba leva até 1 min); uma rodada por vez, e espera 2 min depois de um erro. */
+const PENDING_RETRY_MS = 2 * 60 * 1000;
+function deliverPending(sessions) {
+  if (state.flushing || Date.now() < state.flushAfter) return;
+  if (!Object.values(state.links.nodes).some((n) => n.pending && n.pending.length)) return;
+  state.flushing = true;
+  const closed = (tabId) => state.links.history.some((h) => h.tabId === tabId);
+  flushPending({ ...wakeIo, links: state.links, sessions, boot: BOOT, closed })
+    .then(async (out) => {
+      if (!out.length) return;
+      save();
+      for (const f of out) {
+        const text =
+          f.via === 'terminal' ? `resposta guardada enviada para ${f.title}`
+          : f.via === 'manager' ? `resposta guardada de ${f.title} enviada para o gerente`
+          : `resposta guardada de ${f.title} descartada: nem a aba nem o gerente podem receber; responda na aba`;
+        await mx.request('window.showBanner', { text }).catch(() => {});
+      }
+    })
+    .catch((e) => {
+      state.flushAfter = Date.now() + PENDING_RETRY_MS;
+      mx.log('respostas guardadas:', e.message);
+    })
+    .finally(() => {
+      state.flushing = false;
+    });
+}
+
 async function refresh() {
   const sessions = await listSessions();
   const gone = closedByYou(sessions);
@@ -268,6 +300,7 @@ async function refresh() {
   const reconciled = state.links.reconcile(sessions);
   const migrated = closer.migrate(state.links, sessions);
   const auto = await closeDone(sessions);
+  deliverPending(sessions);
   if (reconciled || migrated || gone.length || settled || auto) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
@@ -527,6 +560,7 @@ function relayHook(name, tabId, payload) {
   let event = null;
   if (name === 'UserPromptSubmit') {
     const text = relay.fromUser(state.sent, tabId, p.prompt);
+    if (text) dropPending(state.links.nodes[key]);
     if (text && state.links.nodes[key].card) {
       handOver(state.links.nodes[key], text, Date.now(), true);
       writeLinks();
@@ -627,14 +661,19 @@ function toggleAudio(key, kind, i) {
 
 async function answer(key, text, message = false) {
   stopAudio();
-  const { via, title } = await deliver(key, text, { ...wakeIo, links: state.links, sessions: await listSessions(), message });
+  const { via, title } = await deliver(key, text, { ...wakeIo, links: state.links, sessions: await listSessions(), message, boot: BOOT });
   delete state.ui.picked[key];
   delete state.ui.rejecting[key];
   delete state.ui.writing[key];
   if (via === 'terminal') delete state.ui.images[key];
   state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
   save();
-  const where = via === 'terminal' ? title : 'o gerente (a aba está num prompt)';
+  if (via === 'pending') {
+    schedule();
+    setTimeout(schedule, PENDING_MS + 1000).unref();
+    return mx.request('window.showBanner', { text: `resposta guardada: vai para ${title} quando ela sair do prompt` }).catch(() => {});
+  }
+  const where = via === 'terminal' ? title : 'o gerente (a aba fechou)';
   return mx.request('window.showBanner', { text: `enviado para ${where}` }).catch(() => {});
 }
 
@@ -644,6 +683,7 @@ function dismiss(key) {
   if (!node || !node.card) return null;
   const now = Date.now();
   node.card = { ...node.card, state: 'done', dismissed: true, action: null, answered: null, headline: 'Dispensado por você.', at: now, doneAt: now };
+  dropPending(node);
   delete state.ui.writing[key];
   delete state.ui.rejecting[key];
   save();

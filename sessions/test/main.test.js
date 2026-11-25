@@ -782,3 +782,38 @@ test('a limpeza abre com os grupos padrão marcados, troca o tempo, desmarca e f
     for (const t of [...tabs, recent]) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
   }
 });
+
+test('responder o cartão com a aba num prompt guarda a resposta e manda quando ela sai do prompt', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const tab = { id: 'pp', kind: 'claude', title: 'pp', status: 'idle', sessionId: 's-pp' };
+  sessions.push(tab);
+  const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  try {
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'pp', state: 'needs_you', action: { kind: 'question', text: 'sigo?' } } });
+    const key = Object.keys(read()).find((k) => read()[k].tabId === 'pp');
+    tab.status = 'waitingPermission';
+    const mark = calls.length;
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `answer:${key}`, text: 'sim, segue' } });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(calls.slice(mark).some(([m, p]) => m === 'window.showBanner' && p.text === 'resposta guardada: vai para pp quando ela sair do prompt'));
+    assert.equal(calls.slice(mark).some(([m]) => m === 'terminal.sendText'), false);
+    assert.deepEqual(read()[key].pending.map((x) => x.text), ['sim, segue']);
+
+    tab.status = 'idle';
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 500));
+    assert.deepEqual(calls.slice(mark).filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text]), [['pp', 'sim, segue']]);
+    assert.equal(read()[key].pending, undefined);
+    assert.ok(calls.slice(mark).some(([m, p]) => m === 'window.showBanner' && p.text === 'resposta guardada enviada para pp'));
+
+    tab.status = 'waitingAnswer';
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `message:${key}`, text: 'velha' } });
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(read()[key].pending.length, 1);
+    handlers.note.event({ type: 'hook', tabId: 'pp', name: 'UserPromptSubmit', payload: { prompt: 'não, faz B' } });
+    assert.equal(read()[key].pending, undefined, 'você escreveu direto na aba: a guardada deixou de valer');
+  } finally {
+    sessions.splice(sessions.indexOf(tab), 1);
+  }
+});

@@ -455,3 +455,18 @@ test('o selo diz por que o cartão está na coluna: rodando, agentes, na aba, de
   const all = Object.fromEntries(board(l, g, sessions, {}, NOW).cols.flatMap((c) => c.cards).map((c) => [c.title, [c.badge, c.badgeTone]]));
   assert.deepEqual(all, { r: ['rodando', 'accent'], a: ['agentes', 'accent'], d: ['decisão', 'red'], n: ['na aba', 'red'] });
 });
+
+test('a resposta guardada aparece no cartão, também com a aba no prompt, até ir para a aba', () => {
+  const { l, g, kid } = setup();
+  const w = kid('w', { state: 'working', headline: 'Você respondeu: A: sim', at: NOW - 60000, answered: { text: 'A: sim', at: NOW - 60000 } });
+  const at = new Date(NOW - 60000);
+  l.nodes[w].pending = [{ text: 'A: sim', at: at.getTime(), boot: 'b' }, { text: 'e roda os testes', at: NOW, boot: 'b' }];
+  const sessions = [{ id: 'g', title: 'g' }, { id: 'w', title: 'w', status: 'waitingPermission', needsYou: true }];
+  const card = () => board(l, g, sessions, {}, NOW).cols.flatMap((c) => c.cards).find((c) => c.title === 'w');
+  const hm = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  assert.equal(card().state, 'needs_you');
+  assert.equal(card().context, `Resposta guardada (2) às ${hm}: “e roda os testes”. Vai para a aba quando ela sair do prompt.`);
+  delete l.nodes[w].pending;
+  sessions[1] = { id: 'w', title: 'w', status: 'tool' };
+  assert.match(card().context, /^Enviada às \d\d:\d\d: a vez é da sessão\.$/);
+});

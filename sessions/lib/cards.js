@@ -202,7 +202,9 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     color: node.free ? FREE : hex(colorOf(node.color).hex),
     age: !card && !lastTurn ? '' : state === 'needs_you' ? ago(since, now) : state === 'working' ? `desde ${clock(since)}` : clock(c.doneAt || c.at || lastTurn || now),
     headline,
-    context: flag
+    context: node.pending && node.pending.length
+      ? `Resposta guardada${node.pending.length > 1 ? ` (${node.pending.length})` : ''} às ${clock(node.pending[0].at)}: “${node.pending[node.pending.length - 1].text}”. Vai para a aba quando ela sair do prompt.`
+      : flag
       ? c.headline ? `No cartão: ${c.headline}` : ''
       : replied
       ? c.answered ? `${c.answered.message ? 'Você escreveu' : 'Você respondeu'}: ${c.answered.text}` : c.headline || ''

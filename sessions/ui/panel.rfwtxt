@@ -515,7 +515,7 @@ widget Suggestion = Padding(
 );
 
 widget Prompted = switch args.c.prompt {
-  true: Gap(child: Text(text: "A aba está num prompt: a resposta vai para o gerente.", style: { fontSize: 11.0, color: data.theme.yellow })),
+  true: Gap(child: Text(text: "A aba está num prompt: a resposta fica guardada e vai quando ela sair dele (depois de 1 h, para o gerente).", style: { fontSize: 11.0, color: data.theme.yellow })),
   default: SizedBox(),
 };
 
