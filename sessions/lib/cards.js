@@ -1,5 +1,5 @@
 'use strict';
-// Os dados do quadro do gerente (precisa de você, trabalhando, feito hoje); o desenho é ui/panel.rfwtxt.
+// Os dados do quadro do gerente (esperam você, rodando agora, terminaram hoje); o desenho é ui/panel.rfwtxt.
 
 const { colorOf, bare, isOpen } = require('./links');
 
@@ -37,6 +37,8 @@ function repliedOf(card, session) {
 }
 
 /** Quantos agentes a sessão ainda tem rodando em segundo plano, com o turno dela já parado. */
+/** Dá pra fechar sem perder trabalho: hibernada, parada ou encerrada, e sem agentes em segundo plano. */
+const closable = (s) => Boolean(s) && (s.hibernated || RESTING.has(s.status) || s.status === 'ended') && !agentsOf(s);
 const agentsOf = (s) => (s && !s.hibernated && !PROMPT.has(s.status) && Number(s.backgroundAgents)) || 0;
 const behind = (n) => `rodando em segundo plano (${n} ${n === 1 ? 'agente' : 'agentes'})`;
 
@@ -243,6 +245,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     input: `answer-${key}`,
     canDismiss: Boolean(card) && state !== 'done' && !String(key).startsWith('@'),
     canMessage: Boolean(session) && !['question', 'approve', 'reply'].includes(kind),
+    canClose: state === 'done' && closable(session),
     writing: Boolean(ui.writing && ui.writing[key]),
     clear: ui.clears[key] || 0,
     live: state !== 'working' ? '' : agentsOf(session) ? behind(agentsOf(session)) : plain(activity.lastTool || activity.lastMessage).slice(0, 140),
@@ -274,6 +277,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       suggest: `suggest:${key}`,
       paste: `paste:${key}`,
       resume: session ? `focus:${session.id}` : `resume:${key}`,
+      close: `close:${key}`,
     },
     ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2), session),
   };
@@ -405,4 +409,4 @@ function panel(links, key, sessions, library, ui, now) {
   return { title: `painel · ${data.name}`, rfw: { library, root: 'root' }, data };
 }
 
-module.exports = { flagOf, STALL_MS, agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };
+module.exports = { closable, split, flagOf, STALL_MS, agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };

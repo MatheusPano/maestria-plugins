@@ -83,6 +83,7 @@ test('a lateral põe quem precisa de você primeiro, com o pedido do cartão, e 
   assert.equal(items[1].action, 'focus:t2');
   assert.equal(items[3].action, `fold:${root}`);
   assert.equal(badge, '1');
+  assert.equal(sidebar(l, [{ ...sessions[0], status: 'waitingPermission', needsYou: true }, ...sessions.slice(1)], {}, now).badge, '2', 'o gerente esperando você também conta');
   sessions[2] = { ...sessions[2], status: 'waitingAnswer', needsYou: true };
   assert.equal(sidebar(l, sessions, {}, now).blocks[1].items.find((i) => i.title === 'trabalha').subtitle, 'Pergunta na aba.');
   l.nodes[work].card = { state: 'working', since: 0, answered: { text: 'x', at: 60000 } };

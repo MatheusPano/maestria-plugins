@@ -524,30 +524,40 @@ test('responder a pergunta ou a permissão na própria aba tira da coluna na hor
   handlers.req.initialize({ dataDir });
   const card = (args) => handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', ...args } });
   const read = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
-  await card({ headline: 'responda na aba' });
-  const key = Object.keys(read()).find((k) => read()[k].tabId === 'w');
+  const w = sessions.find((s) => s.id === 'w');
   const hook = (name, payload) => handlers.note.event({ type: 'hook', tabId: 'w', name, payload });
-  hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'r1' });
-  assert.equal(read()[key].card.state, 'needs_you');
-  hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q1' });
-  hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q1' });
-  assert.deepEqual([read()[key].card.state, read()[key].card.headline], ['working', 'Você respondeu na aba.']);
+  await card({ headline: 'PR #12 aberto, falta o merge' });
+  const key = Object.keys(read()).find((k) => read()[k].tabId === 'w');
+  hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q0' });
+  hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q0' });
+  assert.equal(read()[key].card.headline, 'PR #12 aberto, falta o merge', 'o cartão postado com a aba parada não é sobre a pergunta');
+  w.status = 'waitingAnswer';
+  try {
+    await card({ headline: 'responda na aba' });
+    hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'r1' });
+    assert.equal(read()[key].card.state, 'needs_you');
+    hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q1' });
+    hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q1' });
+    assert.deepEqual([read()[key].card.state, read()[key].card.headline], ['working', 'Você respondeu na aba.']);
 
-  await card({ headline: 'libera o push' });
-  hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'b1' });
-  hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b1' });
-  hook('Notification', { notification_type: 'permission_prompt', message: 'atrasada' });
-  hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'r2' });
-  assert.equal(read()[key].card.state, 'needs_you', 'a notificação que chega depois da ferramenta não vale para a próxima');
-  hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'b2' });
-  hook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
-  hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b2' });
-  assert.equal(read()[key].card.state, 'working');
+    await card({ headline: 'libera o push' });
+    hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'b1' });
+    hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b1' });
+    hook('Notification', { notification_type: 'permission_prompt', message: 'atrasada' });
+    hook('PostToolUse', { tool_name: 'Read', tool_use_id: 'r2' });
+    assert.equal(read()[key].card.state, 'needs_you', 'a notificação que chega depois da ferramenta não vale para a próxima');
+    hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'b2' });
+    hook('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
+    hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b2' });
+    assert.equal(read()[key].card.state, 'working');
 
-  await card({ action: { kind: 'approve', text: 'mergear o PR #12?' } });
-  hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q2' });
-  hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q2' });
-  assert.deepEqual([read()[key].card.state, read()[key].card.action.kind], ['needs_you', 'approve']);
+    await card({ action: { kind: 'approve', text: 'mergear o PR #12?' } });
+    hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q2' });
+    hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: 'q2' });
+    assert.deepEqual([read()[key].card.state, read()[key].card.action.kind], ['needs_you', 'approve']);
+  } finally {
+    w.status = 'idle';
+  }
 });
 
 test('o turno da sessão fica gravado no nó e no cartão: a aba que some no meio dele vira interrompida', async () => {
@@ -563,4 +573,99 @@ test('o turno da sessão fica gravado no nó e no cartão: a aba que some no mei
   assert.equal(read()[key].card.busy, true);
   hook('Stop');
   assert.deepEqual([read()[key].busy, read()[key].card.busy], [false, false]);
+
+  hook('UserPromptSubmit', { prompt: 'de novo' });
+  hook('PostToolUseFailure', { tool_name: 'Bash', is_interrupt: true });
+  assert.equal(read()[key].busy, false, 'Esc no meio da ferramenta encerra o turno');
+  hook('UserPromptSubmit', { prompt: 'de novo' });
+  hook('SessionEnd', { reason: 'other' });
+  assert.equal(read()[key].busy, true, 'a sessão morta por sinal continua no meio do turno');
+  hook('SessionEnd', { reason: 'clear' });
+  assert.equal(read()[key].busy, false);
+  hook('PreToolUse', { tool_name: 'Bash', tool_use_id: 'c1' });
+  assert.equal(read()[key].busy, true, 'ferramenta rodando volta o turno (depois de um auto-compact, por exemplo)');
+
+  hook('UserPromptSubmit', { prompt: 'pensa' });
+  const real = Date.now;
+  const w = sessions.find((s) => s.id === 'w');
+  const later = async () => {
+    Date.now = () => real() + 31 * 1000;
+    try {
+      handlers.note.event({ type: 'session.changed' });
+      await new Promise((r) => setTimeout(r, 400));
+    } finally {
+      Date.now = real;
+    }
+  };
+  w.status = 'ready';
+  try {
+    await later();
+  } finally {
+    w.status = 'idle';
+  }
+  assert.equal(read()[key].busy, true, '"ready" no meio do turno (auto-compact) não encerra o turno');
+  await later();
+  assert.deepEqual([read()[key].busy, read()[key].card.busy], [false, false], 'parada há mais de 30 s depois do pedido (Esc pensando) não está no turno');
+});
+
+test('a aba fechada vai para o histórico: na própria aba, pelo painel (sem repetir) e volta com retomar', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const file = path.join(dataDir, 'links.json');
+  const hist = () => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')).history || [] : []);
+  const changed = async () => {
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const act = async (a) => {
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a } });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const drop = (id) => sessions.splice(sessions.findIndex((s) => s.id === id), 1);
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-cwd-'));
+  sessions.push({ id: 'z', kind: 'claude', title: 'TASK#5 solta', status: 'idle', sessionId: 's-z', cwd });
+  sessions.push({ id: 'k', kind: 'claude', title: 'pronta', status: 'idle', sessionId: 's-k', cwd });
+  try {
+    await changed();
+    drop('z');
+    await changed();
+    assert.deepEqual(hist(), [], 'só entra se continuar sumida na leitura seguinte');
+    await changed();
+    assert.deepEqual(hist().map((h) => [h.tabId, h.by, h.task]), [['z', 'você, na aba', 'TASK#5']]);
+
+    sessions.push({ id: 'q', kind: 'claude', title: 'piscou', status: 'idle', sessionId: 's-q', cwd });
+    await changed();
+    const q = sessions.splice(sessions.findIndex((s) => s.id === 'q'), 1)[0];
+    await changed();
+    sessions.push(q);
+    await changed();
+    drop('q');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(hist().some((h) => h.tabId === 'q'), false, 'uma leitura que perdeu a aba e a achou de novo não registra');
+    sessions.push(q);
+    await changed();
+
+    const before = calls.length;
+    await act('close:@k');
+    assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.close'), [['session.close', { tabId: 'k' }]]);
+    drop('k');
+    await changed();
+    assert.deepEqual(hist().map((h) => [h.tabId, h.by]), [['k', 'você, no painel'], ['z', 'você, na aba']]);
+
+    const panelData = () => calls.filter(([m, p]) => (m === 'view.update' || m === 'view.open') && p.viewId === 'painel').pop()[1].data;
+    await act('history');
+    assert.equal(panelData().history.open, true);
+    assert.equal(panelData().history.rows.length, 2);
+    await act('history:week');
+    assert.deepEqual(panelData().history.ranges.map((r) => r.active), [false, false, true, false]);
+    await act('history');
+    assert.equal(panelData().history.open, false);
+
+    queue['session.openClaude'] = [{ tabId: 'z2', resumed: true }];
+    const mark = calls.length;
+    await act(`reopen:${hist().find((h) => h.tabId === 'z').id}`);
+    assert.deepEqual(calls.slice(mark).filter(([m]) => m === 'session.openClaude').map(([, p]) => p), [{ cwd, label: 'TASK#5 solta', resume: 's-z' }]);
+  } finally {
+    for (const id of ['z', 'k', 'q']) if (sessions.some((s) => s.id === id)) drop(id);
+  }
 });

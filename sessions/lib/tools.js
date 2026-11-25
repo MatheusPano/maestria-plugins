@@ -2,7 +2,8 @@
 // main.js liga `tool.call` a handle(). ctx: { request, home, cwd, tabId, isDir, links, save, showPanel, log } (os testes passam um falso).
 
 const path = require('path');
-const { tinted, colorOf, isOpen } = require('./links');
+const { tinted, colorOf, isOpen, bare } = require('./links');
+const history = require('./history');
 const { typeInto } = require('./wake');
 const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf } = require('./cards');
 const relay = require('./relay');
@@ -162,10 +163,21 @@ async function close({ tabId }, ctx) {
   if (!me || !key || !links.subtree(me).includes(key)) throw new ToolError(`A aba ${tabId} não está na sua árvore; só fecha quem você abriu ou ligou.`);
   const s = await liveTab(ctx, tabId);
   if (s.kind !== 'claude') throw new ToolError(`A aba ${tabId} não é uma sessão do claude.`);
-  if (!s.hibernated && !RESTING.has(s.status)) {
+  if (!s.hibernated && !RESTING.has(s.status) && s.status !== 'ended') {
     throw new ToolError(`A sessão ${tabId} está ${s.statusLabel || s.status}; só fecha quando ela termina o turno e não está esperando o usuário.`);
   }
-  await ctx.request('session.close', { tabId });
+  if (agentsOf(s)) throw new ToolError(`A sessão ${tabId} ainda tem ${agentsOf(s)} agente(s) rodando em segundo plano; espere eles terminarem.`);
+  const reply = s.reply || (ctx.replyOf ? ctx.replyOf(s) : null);
+  const entry = history.record(links, { key, session: { ...s, reply }, by: `gerente ${bare(links.nodes[me].name)}` });
+  try {
+    await ctx.request('session.close', { tabId });
+  } catch (e) {
+    history.forget(links, entry.id);
+    throw e;
+  }
+  ctx.save();
+  const body = `${entry.name}: ${history.whatOf(entry)}`;
+  await ctx.request('window.notify', { title: 'Sessão fechada pelo gerente', body }).catch(() => ctx.request('window.showBanner', { text: `fechada: ${body}` }).catch(() => {}));
   return ok({ tabId, closed: true });
 }
 
@@ -285,6 +297,7 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     doneAt: state === 'done' ? (prev.state === 'done' && prev.doneAt) || now : null,
     doneBecause: state === 'done' ? because : null,
     busy: Boolean(links.nodes[key].busy),
+    onPrompt: PROMPT.has(s.status),
   };
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));

@@ -9,11 +9,12 @@ const tools = require('./lib/tools');
 const { Links, tinted, bare, isOpen } = require('./lib/links');
 const { awake, typeInto } = require('./lib/wake');
 const { sidebar } = require('./lib/tree');
-const { ALL, panel, detail, managerKeys, RESTING, PROMPT } = require('./lib/cards');
+const { ALL, panel, detail, managerKeys, RESTING, PROMPT, agentsOf, closable } = require('./lib/cards');
 const { deliver, handOver, answeredInTab, copy } = require('./lib/answers');
 const { replies, cwdOf } = require('./lib/replies');
 const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
+const history = require('./lib/history');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
@@ -34,7 +35,7 @@ const state = {
   probed: false,
   modal: null,
   live: {},
-  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, playing: null, focus: null },
+  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, history: null, playing: null, focus: null },
   title: undefined,
   doctor: false,
   sent: new relay.Sent(),
@@ -42,6 +43,7 @@ const state = {
   permitting: new Map(),
   pre: new Map(),
   lastSessions: [],
+  missing: new Map(),
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -143,10 +145,23 @@ function sendOnce(memo, wrong, value, send) {
   return Promise.all(fresh.map(send));
 }
 
+/** Uma aba que sumiu só entra no histórico se continuar sumida na leitura seguinte: lista falha ou a Maestria saindo não contam. */
+const CONFIRM_MS = 2000;
+function closedByYou(sessions) {
+  const ids = new Set(sessions.map((s) => s.id));
+  const confirmed = [...state.missing.values()].filter((s) => !ids.has(s.id));
+  state.missing = new Map(history.vanished(state.links, state.lastSessions, sessions).map((s) => [s.id, s]));
+  if (state.missing.size) setTimeout(schedule, CONFIRM_MS);
+  for (const s of confirmed) history.record(state.links, { key: state.links.byTab(s.id), session: { ...s, reply: s.reply || (s.sessionId ? readReply(s.sessionId, s.cwd) : null) }, by: 'você, na aba' });
+  return confirmed;
+}
+
 async function refresh() {
   const sessions = await listSessions();
+  const gone = closedByYou(sessions);
   state.lastSessions = sessions;
-  if (state.links.reconcile(sessions)) writeLinks();
+  const settled = settleTurns(sessions);
+  if (state.links.reconcile(sessions) || gone.length || settled) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
     mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message)),
@@ -186,8 +201,14 @@ async function refresh() {
 }
 
 /** O template só vai na primeira vez por processo: reenviá-lo reconstrói a janela e zera a rolagem. */
-function panelUpdate(sessions) {
+function panelOf(sessions) {
   const p = panel(state.links, state.current, sessions, LIBRARY, state.ui);
+  p.data.history = history.view(state.links, state.current, state.ui.history);
+  return p;
+}
+
+function panelUpdate(sessions) {
+  const p = panelOf(sessions);
   const was = state.title;
   state.title = p.title;
   if (was === undefined) return { viewId: PANEL, ...p };
@@ -238,7 +259,7 @@ async function showPanelNow(key, how) {
   if (how !== 'card') state.current = key;
   else if (state.current !== key) state.current = ALL;
   state.open = true;
-  const p = panel(state.links, state.current, sessions, LIBRARY, state.ui);
+  const p = panelOf(sessions);
   state.title = p.title;
   await mx.request('view.open', { viewId: PANEL, ...p }).catch((e) => {
     state.open = false;
@@ -315,6 +336,7 @@ const ctx = ({ tabId, cwd }) => ({
   request,
   exec,
   prsOf,
+  replyOf: (s) => (s && s.sessionId ? readReply(s.sessionId, s.cwd) : null),
   home: os.homedir(),
   cwd,
   tabId,
@@ -340,18 +362,41 @@ mx.onRequest('command.invoke', ({ command, context }) => {
   return null;
 });
 
+/** SessionEnd por sinal (aba fechada, queda) não encerra o turno: é o que mostra que a sessão parou no meio. */
+const CLEAN_END = new Set(['clear', 'resume', 'logout', 'prompt_input_exit']);
+/** Ferramenta rodando é turno rodando: volta o busy que o settle tirou (o auto-compact põe a aba em "ready" no meio do turno). */
+const IN_TURN = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse']);
+const turnEnded = (name, p) =>
+  name === 'Stop' || name === 'StopFailure' || (name === 'PostToolUseFailure' && Boolean(p.is_interrupt)) || (name === 'SessionEnd' && CLEAN_END.has(p.reason));
+
+function setBusy(node, busy) {
+  if (Boolean(node.busy) === busy) return false;
+  node.busy = busy;
+  if (node.card) node.card = { ...node.card, busy };
+  return true;
+}
+
+/** Esc no meio do pensamento não manda hook: a aba vista parada um tempo depois do último pedido não está mais no turno. */
+const BUSY_GRACE = 30 * 1000;
+function settleTurns(sessions, now = Date.now()) {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  let changed = false;
+  for (const n of Object.values(state.links.nodes)) {
+    const s = n.busy && byId.get(n.tabId);
+    if (s && isOpen(s) && !s.hibernated && s.status === 'idle' && now - (n.busyAt || 0) > BUSY_GRACE && setBusy(n, false)) changed = true;
+  }
+  return changed;
+}
+
 /**
  * O turno da sessão pelos hooks: [node.busy] (gravado, sobrevive ao restart) diz se ela estava no meio de um turno quando a aba sumiu,
  * e a pergunta ou a permissão respondida na aba passa a vez na hora. A permissão vale só pra ferramenta que a pediu ([tool_use_id]).
  */
 function trackTurn(node, name, tabId, p) {
   let changed = false;
-  const busy = name === 'UserPromptSubmit' ? true : ['Stop', 'StopFailure', 'SessionEnd'].includes(name) ? false : null;
-  if (busy !== null && Boolean(node.busy) !== busy) {
-    node.busy = busy;
-    if (node.card) node.card = { ...node.card, busy };
-    changed = true;
-  }
+  const busy = IN_TURN.has(name) ? true : turnEnded(name, p) ? false : null;
+  if (busy) node.busyAt = Date.now();
+  if (busy !== null && setBusy(node, busy)) changed = true;
   const id = p.tool_use_id;
   if (name === 'PreToolUse') state.pre.set(tabId, { id, done: false });
   if ((name === 'PostToolUse' || name === 'PostToolUseFailure') && state.pre.get(tabId) && state.pre.get(tabId).id === id) state.pre.get(tabId).done = true;
@@ -486,7 +531,7 @@ async function answer(key, text, message = false) {
   return mx.request('window.showBanner', { text: `enviado para ${where}` }).catch(() => {});
 }
 
-/** Tira o cartão [key] de "precisa de você"/"trabalhando": vai para Feito, até o gerente postar outro. */
+/** Tira o cartão [key] de "esperam você"/"rodando agora": vai para "terminaram hoje", até o gerente postar outro. */
 function dismiss(key) {
   const node = state.links.nodes[key];
   if (!node || !node.card) return null;
@@ -504,18 +549,54 @@ async function resume(key) {
   if (!n) return null;
   const open = (await listSessions()).find((s) => s.id === n.tabId && isOpen(s));
   if (open) return mx.request('session.focus', { tabId: open.id });
-  if (!n.sessionId) throw new Error(`não sei qual conversa era "${n.name}": ela nunca reportou o sessionId`);
-  const cwd = (n.cwd && isDir(n.cwd) && n.cwd) || cwdOf(os.homedir(), n.sessionId);
-  if (!cwd || !isDir(cwd)) throw new Error(`não achei a pasta da conversa "${n.name}"`);
-  const r = await mx.request('session.openClaude', { cwd, label: tinted(n.name, n.color, n.manager), resume: n.sessionId });
+  const r = await reopenConversation(n);
+  n.tabId = r.tabId;
+  n.cwd = r.cwd;
+  save();
+  return null;
+}
+
+/** Abre de novo a conversa [sessionId] (com --resume) numa aba nova, na pasta e com o nome dela. */
+async function reopenConversation({ name, color, manager, sessionId, cwd: was }) {
+  if (!sessionId) throw new Error(`não sei qual conversa era "${name}": ela nunca reportou o sessionId`);
+  const cwd = (was && isDir(was) && was) || cwdOf(os.homedir(), sessionId);
+  if (!cwd || !isDir(cwd)) throw new Error(`não achei a pasta da conversa "${name}"`);
+  const label = color ? tinted(name, color, manager) : name;
+  const r = await mx.request('session.openClaude', { cwd, label, resume: sessionId });
   if (!r || !r.resumed) {
     if (r && r.tabId) await mx.request('session.close', { tabId: r.tabId }).catch(() => {});
     throw new Error('esta Maestria ainda não retoma conversas por plugin; atualize a Maestria');
   }
-  n.tabId = r.tabId;
-  n.cwd = cwd;
-  save();
+  return { tabId: r.tabId, cwd };
+}
+
+/** Retomar uma linha do histórico: pelo nó, se ele ainda é dessa conversa; senão, uma aba solta. */
+async function reopen(id) {
+  const h = state.links.history.find((x) => x.id === id);
+  if (!h) return null;
+  const n = h.key && state.links.nodes[h.key];
+  if (n && n.sessionId === h.sessionId) return resume(h.key);
+  const open = (await listSessions()).find((s) => s.sessionId === h.sessionId && isOpen(s));
+  if (open) return mx.request('session.focus', { tabId: open.id });
+  await reopenConversation({ ...h, color: null });
   return null;
+}
+
+/** "Fechar a aba" num cartão feito: guarda no histórico e fecha. */
+async function closeTab(key) {
+  const tabId = key.startsWith('@') ? key.slice(1) : state.links.nodes[key] && state.links.nodes[key].tabId;
+  const s = tabId && (await listSessions()).find((x) => x.id === tabId && isOpen(x));
+  if (!s) return null;
+  if (!closable(s)) throw new Error(`"${bare(s.title)}" está ${agentsOf(s) ? 'com agentes rodando em segundo plano' : s.statusLabel || s.status}; espere o turno acabar`);
+  const h = history.record(state.links, { key: state.links.byTab(s.id), session: { ...s, reply: s.reply || readReply(s.sessionId, s.cwd) }, by: 'você, no painel' });
+  try {
+    await mx.request('session.close', { tabId: s.id });
+  } catch (e) {
+    history.forget(state.links, h.id);
+    throw e;
+  }
+  save();
+  return mx.request('window.showBanner', { text: `fechada e guardada no histórico: ${h.name}` }).catch(() => {});
 }
 
 /** Manda [text] direto pro gerente do painel [key]. */
@@ -710,6 +791,18 @@ async function onAction(act, values) {
   if (verb === 'novo') return createManager();
   if (verb === 'focus') return mx.request('session.focus', { tabId: a });
   if (verb === 'resume') return resume(a);
+  if (verb === 'reopen') return reopen(a);
+  if (verb === 'close') return closeTab(a);
+  if (verb === 'hpr') {
+    const h = links.history.find((x) => x.id === a);
+    const pr = h && h.prs[Number(b)];
+    return pr ? mx.request('window.openUrl', { url: pr.url }) : null;
+  }
+  if (verb === 'history') {
+    state.ui.history = a || (state.ui.history ? null : 'today');
+    if (b === 'show') return showPanel(ALL, 'raise');
+    return schedule();
+  }
   if (verb === 'doctor') return openDoctor();
   if (verb === 'doctor-all') return fixAll();
   if (verb === 'sweep') {

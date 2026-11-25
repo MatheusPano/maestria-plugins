@@ -185,7 +185,7 @@ test('sessions_card guarda o cartão, liga a sessão ao gerente e abre o painel'
   assert.equal(w.parent, me);
   assert.deepEqual({ ...w.card, at: 0, since: 0 }, {
     state: 'needs_you', headline: null, bullets: ['a', 'b'], action: { kind: 'question', text: 'posso?', where: null, tabId: null, options: [] },
-    proof: null, at: 0, since: 0, doneAt: null, doneBecause: null, busy: false,
+    proof: null, at: 0, since: 0, doneAt: null, doneBecause: null, busy: false, onPrompt: false,
   });
   assert.deepEqual(shown, [me]);
   assert.ok(ctx.calls.some((c) => c.method === 'session.rename' && c.params.tabId === 'w' && c.params.title === '● [S] TASK#5 worker'));
@@ -308,6 +308,26 @@ test('sessions_close fecha só uma sessão da sua árvore que terminou o turno',
     assert.match(r.content[0].text, re);
   }
   assert.deepEqual(closed(), ['pronta', 'dorme']);
+  assert.deepEqual(ctx.links.history.map((h) => [h.tabId, h.by]), [['dorme', 'gerente gerente'], ['pronta', 'gerente gerente']]);
+  assert.deepEqual(ctx.calls.filter((c) => c.method === 'window.notify').map((c) => c.params), [
+    { title: 'Sessão fechada pelo gerente', body: 'pronta: Sem cartão nem resposta.' },
+    { title: 'Sessão fechada pelo gerente', body: 'dorme: Sem cartão nem resposta.' },
+  ]);
+});
+
+test('sessions_close que falha não deixa registro no histórico', async () => {
+  const sessions = [{ id: 'me', kind: 'claude', title: 'g' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle' }];
+  const ctx = makeCtx({ sessions });
+  const me = ctx.links.add({ tabId: 'me', name: 'g', manager: true });
+  ctx.links.add({ tabId: 'w', parent: me, name: 'w' });
+  const request = ctx.request;
+  ctx.request = async (method, params) => {
+    if (method === 'session.close') throw new Error('a aba não fechou');
+    return request(method, params);
+  };
+  const r = await tools.handle('sessions_close', { tabId: 'w' }, ctx);
+  assert.equal(r.isError, true);
+  assert.deepEqual(ctx.links.history, []);
 });
 
 test('sessions_card recusa a própria aba e uma aba da árvore de outro gerente, sem mexer na árvore', async () => {

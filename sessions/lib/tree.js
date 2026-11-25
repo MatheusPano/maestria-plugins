@@ -2,6 +2,7 @@
 // A aba da lateral: cada gerente com as sessões dele embaixo, quem precisa de você primeiro, e as prontas dobradas.
 
 const { colorOf, bare, isOpen } = require('./links');
+const history = require('./history');
 const { stateOf, flagOf, liveOf, waitOf, repliedOf, plain, agentsOf, behind } = require('./cards');
 
 const STATUS_TONE = {
@@ -175,7 +176,11 @@ function looseItem(links, s) {
 function sidebar(links, sessions, ui = {}, now = Date.now()) {
   const linked = new Set(Object.values(links.nodes).map((n) => n.tabId));
   const loose = sessions.filter((s) => s.kind === 'claude' && isOpen(s) && !s.embedded && !linked.has(s.id));
-  const waiting = sessions.filter((s) => isOpen(s) && s.needsYou && linked.has(s.id)).length;
+  const live = liveOf(sessions);
+  const waiting = Object.values(links.nodes).filter((n) => {
+    const s = live.get(n.tabId) || null;
+    return n.parent ? stateOf(n.card || null, s, now) === 'needs_you' : Boolean(s && s.needsYou);
+  }).length;
   const blocks = [
     { type: 'header', title: 'Gerentes', actions: [{ action: 'doctor', icon: 'clean', tooltip: 'diagnóstico' }, { action: 'novo', icon: 'add', tooltip: 'novo gerente' }] },
     {
@@ -188,6 +193,10 @@ function sidebar(links, sessions, ui = {}, now = Date.now()) {
   if (loose.length) {
     blocks.push({ type: 'section', text: 'outras sessões', count: loose.length });
     blocks.push({ type: 'list', flat: true, items: loose.map((s) => looseItem(links, s)) });
+  }
+  if (links.history.length) {
+    blocks.push({ type: 'section', text: 'histórico' });
+    blocks.push({ type: 'list', flat: true, items: [{ title: history.summary(links, now), icon: 'clock', tone: 'faint', action: 'history:today:show' }] });
   }
   return { blocks, badge: waiting ? String(waiting) : '' };
 }

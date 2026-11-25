@@ -281,6 +281,12 @@ test('todo cartão com sessão viva tem caixa de mensagem; o feito só abre a ca
   const all = Object.fromEntries(b.cols.flatMap((c) => c.cards).map((c) => [c.title, c]));
   assert.deepEqual(['w', 'q', 'd', 'x'].map((t) => all[t].canMessage), [true, false, true, false]);
   assert.deepEqual([all.w.writing, all.d.writing], [false, true]);
+  const closeOf = (s) => board(l, g, [sessions[0], { id: 'd', title: 'd', ...s }], {}, NOW).cols.flatMap((c) => c.cards).find((c) => c.title === 'd').canClose;
+  assert.deepEqual(
+    [{ status: 'idle' }, { status: 'unknown' }, { status: 'idle', backgroundAgents: 1 }, { status: 'working', hibernated: true }].map(closeOf),
+    [true, false, false, true],
+    'fechar a aba só aparece quando o fechamento vai passar',
+  );
   assert.equal(all.w.acts.write, `write:${w}`);
   assert.deepEqual([b.canTell, b.tell.input, b.tell.act], [true, `tell-${g}`, `tell:${g}`]);
   assert.equal(board(l, g, sessions.slice(1), {}, NOW).canTell, false);

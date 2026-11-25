@@ -28,9 +28,9 @@ function handOver(node, text, now, message, viaManager = false) {
   };
 }
 
-/** Você respondeu a pergunta ou a permissão na própria aba: o cartão "precisa de você" sem ação (que só apontava pra aba) passa a vez pra sessão na hora. */
+/** Você respondeu a pergunta ou a permissão na própria aba: o cartão "precisa de você" sem ação, postado enquanto a aba esperava, passa a vez pra sessão na hora. */
 function answeredInTab(node, now) {
-  if (!node.card || node.card.state !== 'needs_you' || node.card.action) return false;
+  if (!node.card || node.card.state !== 'needs_you' || node.card.action || !node.card.onPrompt) return false;
   node.card = { ...node.card, state: 'working', action: null, headline: 'Você respondeu na aba.', since: now, doneAt: null, answered: { text: 'na aba', at: now } };
   return true;
 }

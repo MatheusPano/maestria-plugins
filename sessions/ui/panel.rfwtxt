@@ -22,6 +22,7 @@ widget root = Column(
         ),
       ),
     ),
+    History(),
   ],
 );
 
@@ -244,7 +245,7 @@ widget TitleRow = Row(
       default: IconButton(icon: "open", tooltip: "ir para a aba", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.focus }),
     },
     switch args.c.canDismiss {
-      true: IconButton(icon: "check", tooltip: "dispensar: o cartão vai para Feito", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.dismiss }),
+      true: IconButton(icon: "check", tooltip: "dispensar: o cartão vai para Terminaram hoje", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.dismiss }),
       default: SizedBox(),
     },
     IconButton(icon: "more", tooltip: "abrir o cartão", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.detail }),
@@ -718,7 +719,157 @@ widget Done = Box(
       default: SizedBox(),
     },
     Proofs(c: args.c),
+    switch args.c.canClose {
+      true: Gap(
+        child: Wrap(
+          spacing: 6.0,
+          runSpacing: 6.0,
+          children: [
+            Btn(label: "fechar a aba", icon: "close", act: args.c.acts.close, kind: "sec"),
+            Btn(label: "ir para a aba", icon: "terminal", act: args.c.acts.focus, kind: "sec"),
+          ],
+        ),
+      ),
+      default: switch args.c.closed {
+        true: Gap(child: Row(children: [Btn(label: "retomar a conversa", icon: "play", act: args.c.acts.resume, kind: "sec")])),
+        default: SizedBox(),
+      },
+    },
   ],
+);
+
+widget History = switch data.history.has {
+  true: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Container(height: 1.0, color: data.theme.border),
+      Padding(
+        padding: [16.0, 8.0, 14.0, 8.0],
+        child: Row(
+          children: [
+            Pressable(
+              radius: 4.0,
+              hoverColor: data.theme.hover,
+              padding: [4.0, 4.0, 6.0, 4.0],
+              onTap: event "act" { a: data.history.toggle },
+              child: Row(
+                mainAxisSize: "min",
+                children: [
+                  Glyph(icon: "chevron", size: 12.0, color: data.theme.dim),
+                  SizedBox(width: 6.0),
+                  Text(text: data.history.label, style: { fontSize: 12.5, fontWeight: "w600", color: data.theme.fg }),
+                ],
+              ),
+            ),
+            Expanded(child: SizedBox()),
+            switch data.history.open {
+              true: Wrap(
+                spacing: 6.0,
+                children: [
+                  ...for r in data.history.ranges:
+                    Toggle(text: r.label, act: r.act, active: r.active),
+                ],
+              ),
+              default: SizedBox(),
+            },
+          ],
+        ),
+      ),
+      switch data.history.open {
+        true: Container(
+          height: 240.0,
+          child: SingleChildScrollView(
+            id: "history",
+            primary: false,
+            padding: [16.0, 0.0, 14.0, 12.0],
+            child: Column(
+              crossAxisAlignment: "stretch",
+              children: [
+                switch data.history.isEmpty {
+                  true: Text(text: data.history.empty, style: { fontSize: 12.0, color: data.theme.faint }),
+                  default: SizedBox(),
+                },
+                ...for h in data.history.rows:
+                  HistoryRow(h: h),
+                switch data.history.more {
+                  "": SizedBox(),
+                  default: Text(text: data.history.more, style: { fontSize: 11.0, color: data.theme.faint }),
+                },
+              ],
+            ),
+          ),
+        ),
+        default: SizedBox(),
+      },
+    ],
+  ),
+  default: SizedBox(),
+};
+
+widget HistoryRow = Padding(
+  padding: [0.0, 0.0, 0.0, 6.0],
+  child: Container(
+    padding: [10.0, 8.0, 10.0, 8.0],
+    decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 6.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Row(
+      crossAxisAlignment: "start",
+      children: [
+        SizedBox(width: 74.0, child: Text(text: args.h.when, style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.dim })),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              Row(
+                children: [
+                  Text(text: args.h.task, style: { fontSize: 11.0, color: data.theme.dim }),
+                  SizedBox(width: 6.0),
+                  Expanded(child: Text(text: args.h.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, fontWeight: "w500", color: data.theme.fg })),
+                  SizedBox(width: 8.0),
+                  Text(text: args.h.by, style: { fontSize: 11.0, color: data.theme.faint }),
+                ],
+              ),
+              Padding(padding: [0.0, 3.0, 0.0, 0.0], child: Text(text: args.h.what, maxLines: 2, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim })),
+              switch args.h.hasPrs {
+                true: Padding(
+                  padding: [0.0, 5.0, 0.0, 0.0],
+                  child: Wrap(
+                    spacing: 5.0,
+                    runSpacing: 5.0,
+                    children: [
+                      ...for p in args.h.prs:
+                        Chip(icon: "branch", label: p.label, act: p.act),
+                    ],
+                  ),
+                ),
+                default: SizedBox(),
+              },
+            ],
+          ),
+        ),
+        SizedBox(width: 10.0),
+        switch args.h.canResume {
+          true: Btn(label: "retomar", icon: "play", act: args.h.resume, kind: "sec"),
+          default: SizedBox(),
+        },
+      ],
+    ),
+  ),
+);
+
+widget Toggle = Pressable(
+  radius: 6.0,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.act },
+  child: Container(
+    padding: [8.0, 3.0, 8.0, 3.0],
+    decoration: {
+      type: "box",
+      color: switch args.active { true: data.theme.hover, default: 0x00000000 },
+      borderRadius: [{ x: 6.0 }],
+      border: [{ color: switch args.active { true: data.theme.accent, default: data.theme.border }, width: 1.0 }],
+    },
+    child: Text(text: args.text, style: { fontSize: 11.5, color: data.theme.fg }),
+  ),
 );
 
 widget Btn = Pressable(

@@ -71,7 +71,7 @@ function diagnose(links, sessions, { dataDir = null, now = Date.now() } = {}) {
       out.push({
         tone: 'yellow',
         title: `O cartão de "${name(k)}" não muda há ${plural(days, 'dia', 'dias')}`,
-        detail: `${card.state === 'needs_you' ? 'Precisa de você' : 'Trabalhando'}: ${card.headline || (card.action && card.action.text) || 'sem título'}. Se já não vale, dispense.`,
+        detail: `${card.state === 'needs_you' ? 'Espera você' : 'Rodando'}: ${card.headline || (card.action && card.action.text) || 'sem título'}. Se já não vale, dispense.`,
         fix: `dismiss:${k}`,
         fixLabel: 'dispensar',
       });
