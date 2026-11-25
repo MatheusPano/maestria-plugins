@@ -106,7 +106,7 @@ function replies(home) {
   const projects = path.join(home, '.claude', 'projects');
   const found = new Map();
   const cache = new Map();
-  return (sessionId, cwd) => {
+  const read = (sessionId, cwd) => {
     if (!sessionId) return null;
     const file = transcriptOf(projects, sessionId, cwd, found);
     if (!file) return null;
@@ -126,6 +126,17 @@ function replies(home) {
     cache.set(file, { size: st.size, mtime: st.mtimeMs, reply });
     return reply;
   };
+  /** Quando a conversa mexeu no transcript pela última vez (ms), ou null. */
+  read.touched = (sessionId, cwd) => {
+    const file = sessionId && transcriptOf(projects, sessionId, cwd, found);
+    try {
+      return file ? fs.statSync(file).mtimeMs : null;
+    } catch {
+      found.delete(sessionId);
+      return null;
+    }
+  };
+  return read;
 }
 
 /** A pasta onde a conversa [sessionId] rodou, lida do começo do transcript; null se não achar. */

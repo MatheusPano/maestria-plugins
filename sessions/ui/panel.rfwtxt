@@ -1143,3 +1143,139 @@ widget Finding = Padding(
     ),
   ),
 );
+
+// "Fechar abas paradas": os dados vêm de lib/cleanup.js.
+widget cleanup = Column(
+  crossAxisAlignment: "stretch",
+  children: [
+    Padding(
+      padding: [22.0, 18.0, 22.0, 10.0],
+      child: Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Text(text: "Fechar abas paradas", style: { fontSize: 17.0, fontWeight: "w600", color: data.theme.fg }),
+          SizedBox(height: 4.0),
+          Text(text: "Cada uma fechada vai para o histórico com o resumo do cartão (ou a última resposta), os PRs e o botão retomar.", style: { fontSize: 12.0, color: data.theme.dim }),
+          SizedBox(height: 12.0),
+          Row(
+            children: [
+              Text(text: "Paradas há mais de", style: { fontSize: 12.0, color: data.theme.dim }),
+              SizedBox(width: 8.0),
+              Wrap(spacing: 6.0, children: [...for i in data.idles: Toggle(text: i.label, act: i.act, active: i.active)]),
+            ],
+          ),
+        ],
+      ),
+    ),
+    Expanded(
+      child: SingleChildScrollView(
+        id: "cleanup",
+        primary: false,
+        padding: [22.0, 0.0, 22.0, 12.0],
+        child: Column(
+          crossAxisAlignment: "stretch",
+          children: [
+            switch data.isEmpty {
+              true: Text(text: data.empty, style: { fontSize: 12.5, color: data.theme.dim }),
+              default: SizedBox(),
+            },
+            ...for g in data.groups:
+              switch g.has {
+                true: CleanGroup(g: g),
+                default: SizedBox(),
+              },
+          ],
+        ),
+      ),
+    ),
+    Container(height: 1.0, color: data.theme.border),
+    Padding(
+      padding: [22.0, 12.0, 22.0, 14.0],
+      child: Row(
+        children: [
+          Expanded(child: Text(text: data.summary, style: { fontSize: 12.0, color: data.theme.dim })),
+          Btn(label: "cancelar", icon: "close", act: "clean-cancel", kind: "sec"),
+          SizedBox(width: 8.0),
+          switch data.canRun {
+            true: Btn(label: data.run, icon: "check", act: "clean-run", kind: "pri"),
+            default: Btn(label: data.run, icon: "check", act: "", kind: "sec"),
+          },
+        ],
+      ),
+    ),
+  ],
+);
+
+widget CleanGroup = Padding(
+  padding: [0.0, 0.0, 0.0, 12.0],
+  child: Container(
+    decoration: { type: "box", borderRadius: [{ x: 8.0 }], border: [{ color: data.theme.border, width: 1.0 }] },
+    child: Column(
+      crossAxisAlignment: "stretch",
+      children: [
+        Container(
+          padding: [12.0, 9.0, 12.0, 9.0],
+          decoration: { type: "box", color: data.theme.sidebar, borderRadius: [{ x: 8.0 }] },
+          child: Row(
+            children: [
+              Check(on: args.g.checked, act: args.g.act),
+              SizedBox(width: 10.0),
+              Expanded(child: Text(text: args.g.title, style: { fontSize: 13.0, fontWeight: "w600", color: data.theme.fg })),
+              Text(text: args.g.why, style: { fontSize: 11.0, color: data.theme.faint }),
+            ],
+          ),
+        ),
+        ...for c in args.g.items:
+          Container(
+            padding: [12.0, 8.0, 12.0, 8.0],
+            decoration: { type: "box", border: [{ style: "none" }, { color: data.theme.border, width: 1.0 }, { style: "none" }, { style: "none" }] },
+            child: Row(
+              children: [
+                Check(on: c.checked, act: c.act),
+                SizedBox(width: 10.0),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: "stretch",
+                    children: [
+                      Row(
+                        children: [
+                          Text(text: c.task, style: { fontSize: 11.0, color: data.theme.dim }),
+                          SizedBox(width: 6.0),
+                          Expanded(child: Text(text: c.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 12.5, color: data.theme.fg })),
+                        ],
+                      ),
+                      SizedBox(height: 2.0),
+                      Text(text: c.sub, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.dim }),
+                    ],
+                  ),
+                ),
+                SizedBox(width: 10.0),
+                Text(text: c.age, style: { fontSize: 11.5, fontFamily: data.theme.mono, color: data.theme.dim }),
+              ],
+            ),
+          ),
+      ],
+    ),
+  ),
+);
+
+widget Check = Pressable(
+  radius: 4.0,
+  hoverColor: data.theme.hover,
+  onTap: event "act" { a: args.act },
+  child: Container(
+    width: 18.0,
+    height: 18.0,
+    alignment: { x: 0.0, y: 0.0 },
+    decoration: {
+      type: "box",
+      color: switch args.on { true: data.theme.accent, default: 0x00000000 },
+      borderRadius: [{ x: 4.0 }],
+      border: [{ color: switch args.on { true: data.theme.accent, default: data.theme.dim }, width: 1.5 }],
+    },
+    child: switch args.on {
+      true: Glyph(icon: "check", size: 12.0, color: data.theme.onAccent),
+      default: SizedBox(),
+    },
+  ),
+);

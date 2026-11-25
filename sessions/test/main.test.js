@@ -728,3 +728,57 @@ test('o cartão feito fecha a aba sozinho quando ela para, uma notificação por
     for (const t of tabs) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
   }
 });
+
+test('a limpeza abre com os grupos padrão marcados, troca o tempo, desmarca e fecha as marcadas para o histórico', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const old = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+  const tabs = ['p1', 'p2', 'p3'].map((id) => ({ id, kind: 'claude', title: `TASK#9${id.slice(1)} ${id}`, status: 'idle', hibernated: true, sessionId: `s-${id}`, startedAt: old }));
+  const recent = { id: 'p4', kind: 'claude', title: 'recente', status: 'idle', hibernated: true, sessionId: 's-p4', startedAt: new Date(Date.now() - 8 * 3600 * 1000).toISOString() };
+  sessions.push(...tabs, recent);
+  const act = async (viewId, a) => {
+    handlers.note['view.action']({ viewId, action: 'act', values: { a } });
+    await new Promise((r) => setTimeout(r, 100));
+  };
+  const last = (viewId) => calls.filter(([m, p]) => (m === 'view.open' || m === 'view.update') && p.viewId === viewId).pop()[1].data;
+  try {
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'p3', state: 'needs_you', headline: 'PR #40 esperando revisão' } });
+    handlers.note.event({ type: 'session.changed' });
+    await new Promise((r) => setTimeout(r, 400));
+    const side = calls.filter(([m]) => m === 'sidebar.update').pop()[1];
+    assert.ok(side.blocks.some((b) => b.items && b.items.some((i) => i.action === 'cleanup' && i.title === '3 paradas há mais de 1 dia')));
+
+    await act('sidebar', 'cleanup');
+    const open = calls.filter(([m, p]) => m === 'view.open' && p.viewId === 'limpeza').pop()[1];
+    assert.deepEqual([open.modal, open.rfw.root], [true, 'cleanup']);
+    assert.equal(last('limpeza').summary, '2 marcadas · fica 1 aberta');
+    await act('limpeza', 'clean-idle:6h');
+    assert.equal(last('limpeza').summary, '3 marcadas · fica 1 aberta', 'com 6 h entra a de 8 h');
+    await act('limpeza', 'clean-pick:p4');
+    await act('limpeza', 'clean-group:open');
+    assert.equal(last('limpeza').summary, '3 marcadas · fica 1 aberta');
+    await act('limpeza', 'clean-group:open');
+    await act('limpeza', 'clean-pick:p1');
+    assert.equal(last('limpeza').summary, '1 marcada · ficam 3 abertas');
+
+    const mark = calls.length;
+    await act('limpeza', 'clean-run');
+    const after = calls.slice(mark);
+    assert.deepEqual(after.filter(([m]) => m === 'session.close').map(([, p]) => p.tabId), ['p2']);
+    assert.ok(after.some(([m, p]) => m === 'view.close' && p.viewId === 'limpeza'));
+    assert.ok(after.some(([m, p]) => m === 'window.showBanner' && p.text === '1 aba fechada e guardada no histórico'));
+    const hist = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).history;
+    assert.deepEqual(hist.filter((h) => h.tabId.startsWith('p')).map((h) => [h.tabId, h.by]), [['p2', 'você, na limpeza']]);
+
+    sessions.splice(sessions.indexOf(tabs[1]), 1);
+    await act('sidebar', 'cleanup');
+    assert.equal(last('limpeza').summary, '1 marcada · fica 1 aberta');
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'p1', state: 'needs_you', headline: 'olha isso' } });
+    const again = calls.length;
+    await act('limpeza', 'clean-run');
+    assert.equal(calls.slice(again).some(([m]) => m === 'session.close'), false, 'a que mudou de grupo depois que você viu não fecha');
+    assert.ok(calls.slice(again).some(([m, p]) => m === 'window.showBanner' && /nada foi fechado/.test(p.text)));
+  } finally {
+    for (const t of [...tabs, recent]) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
+  }
+});

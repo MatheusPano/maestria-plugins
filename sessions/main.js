@@ -16,6 +16,7 @@ const doctor = require('./lib/doctor');
 const relay = require('./lib/relay');
 const history = require('./lib/history');
 const closer = require('./lib/closer');
+const cleanup = require('./lib/cleanup');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
@@ -46,6 +47,7 @@ const state = {
   lastSessions: [],
   missing: new Map(),
   closeFailed: new Map(),
+  cleanup: null,
   retitled: new Map(),
   tinted: new Map(),
 };
@@ -54,6 +56,7 @@ const LEGACY_PANEL = 'painel:';
 const CARD = 'cartao:';
 const IMAGE = 'imagem:';
 const DOCTOR = 'diagnostico';
+const CLEANUP = 'limpeza';
 const LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'panel.rfwtxt'), 'utf8');
 
 /** O que a sessão está fazendo agora, a partir do último PreToolUse. */
@@ -182,10 +185,85 @@ async function closeDone(sessions) {
   return closed.length > 0;
 }
 
+/** As abas paradas há mais de [idle], com a última resposta e a hora em que a conversa mexeu por último. */
+function parkedOf(sessions, idle = cleanup.DEFAULT_IDLE) {
+  const withReply = sessions.map((s) => (cleanup.parked(s) && !s.reply && s.sessionId ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
+  return cleanup.candidates(state.links, withReply, { idle, touched: (s) => readReply.touched(s.sessionId, s.cwd) });
+}
+
+const cleanupData = () => cleanup.view(state.cleanup.list, state.cleanup.picked, state.cleanup.idle);
+
+/** Abre "Fechar abas paradas" com as de 1 dia e os grupos padrão marcados. */
+async function openCleanup() {
+  const list = parkedOf(await listSessions());
+  state.cleanup = { idle: cleanup.DEFAULT_IDLE, list, picked: cleanup.defaults(list) };
+  return mx.request('view.open', { viewId: CLEANUP, title: 'fechar abas paradas', modal: true, width: 760, height: 640, rfw: { library: LIBRARY, root: 'cleanup' }, data: cleanupData() });
+}
+
+async function onCleanup(verb, arg) {
+  const c = state.cleanup;
+  if (!c) return null;
+  if (verb === 'cancel') {
+    state.cleanup = null;
+    return mx.request('view.close', { viewId: CLEANUP }).catch(() => {});
+  }
+  if (verb === 'idle') {
+    c.idle = arg;
+    const list = parkedOf(await listSessions(), arg);
+    if (state.cleanup !== c || c.idle !== arg) return null;
+    c.list = list;
+    c.picked = cleanup.defaults(c.list);
+  } else if (verb === 'pick') {
+    if (!c.list.some((x) => x.tabId === arg)) return null;
+    if (c.picked.has(arg)) c.picked.delete(arg);
+    else c.picked.add(arg);
+  } else if (verb === 'group') {
+    const ids = c.list.filter((x) => x.group === arg).map((x) => x.tabId);
+    const all = ids.every((id) => c.picked.has(id));
+    for (const id of ids) all ? c.picked.delete(id) : c.picked.add(id);
+  } else if (verb === 'run') return runCleanup();
+  return mx.request('view.update', { viewId: CLEANUP, data: cleanupData() }).catch(() => {});
+}
+
+/** Fecha as marcadas que continuam paradas e no grupo que você viu, cada uma para o histórico, e conta numa linha. */
+async function runCleanup() {
+  const { picked, idle, list: seen } = state.cleanup;
+  state.cleanup = null;
+  await mx.request('view.close', { viewId: CLEANUP }).catch(() => {});
+  const sessions = await listSessions();
+  const groupSeen = new Map(seen.map((x) => [x.tabId, x.group]));
+  const still = new Set(parkedOf(sessions, idle).filter((x) => picked.has(x.tabId) && groupSeen.get(x.tabId) === x.group).map((x) => x.tabId));
+  let closed = 0;
+  let failed = 0;
+  for (const s of sessions.filter((x) => still.has(x.id))) {
+    const key = state.links.byTab(s.id);
+    const was = key && state.links.nodes[key].card;
+    const reply = s.reply || readReply(s.sessionId, s.cwd);
+    const h = history.record(state.links, { key, session: { ...s, reply }, by: 'você, na limpeza' });
+    try {
+      await mx.request('session.close', { tabId: s.id });
+      closed++;
+    } catch (e) {
+      history.forget(state.links, h.id);
+      const n = key && state.links.nodes[key];
+      if (n && was && was.closeFor && n.card) n.card = { ...n.card, closeFor: was.closeFor };
+      failed++;
+      mx.log('limpeza não fechou', s.id, e.message);
+    }
+  }
+  save();
+  const skipped = picked.size - still.size;
+  const text = !closed && !failed
+    ? 'nada foi fechado: as marcadas acordaram, mudaram ou já fecharam'
+    : `${closed} ${closed === 1 ? 'aba fechada e guardada' : 'abas fechadas e guardadas'} no histórico${failed ? `; ${failed} não fecharam` : ''}${skipped ? `; ${skipped} mudaram e ficaram` : ''}`;
+  return mx.request('window.showBanner', { text }).catch(() => {});
+}
+
 async function refresh() {
   const sessions = await listSessions();
   const gone = closedByYou(sessions);
   state.lastSessions = sessions;
+  state.ui.parked = cleanup.candidates(state.links, sessions, { touched: (s) => readReply.touched(s.sessionId, s.cwd) }).length;
   const settled = settleTurns(sessions);
   const reconciled = state.links.reconcile(sessions);
   const migrated = closer.migrate(state.links, sessions);
@@ -834,6 +912,8 @@ async function onAction(act, values) {
     return schedule();
   }
   if (verb === 'doctor') return openDoctor();
+  if (verb === 'cleanup') return openCleanup();
+  if (verb.startsWith('clean-')) return onCleanup(verb.slice(6), a);
   if (verb === 'doctor-all') return fixAll();
   if (verb === 'sweep') {
     doctor.sweep(a, links, state.dataDir);
@@ -897,7 +977,7 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
     onLink(action).catch((e) => mx.log('link', action, e.message));
     return;
   }
-  if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
+  if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && id !== CLEANUP && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
   const act = String(action === 'act' ? values && values.a : action || (values && values.action) || '');
   onAction(act, values).catch((e) => {
     mx.log('ação', act, e.message);

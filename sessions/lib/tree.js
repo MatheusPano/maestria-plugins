@@ -3,6 +3,7 @@
 
 const { colorOf, bare, isOpen } = require('./links');
 const history = require('./history');
+const cleanup = require('./cleanup');
 const { stateOf, flagOf, liveOf, waitOf, repliedOf, plain, agentsOf, behind } = require('./cards');
 
 const STATUS_TONE = {
@@ -193,6 +194,10 @@ function sidebar(links, sessions, ui = {}, now = Date.now()) {
   if (loose.length) {
     blocks.push({ type: 'section', text: 'outras sessões', count: loose.length });
     blocks.push({ type: 'list', flat: true, items: loose.map((s) => looseItem(links, s)) });
+  }
+  if (ui.parked) {
+    blocks.push({ type: 'section', text: 'paradas' });
+    blocks.push({ type: 'list', flat: true, items: [{ title: cleanup.sidebarLine(ui.parked), subtitle: 'fechar e guardar no histórico', icon: 'clean', tone: 'faint', action: 'cleanup' }] });
   }
   if (links.history.length) {
     blocks.push({ type: 'section', text: 'histórico' });
