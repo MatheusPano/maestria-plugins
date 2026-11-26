@@ -8,6 +8,8 @@ const KEEP = 30;
 const SENT_MS = 10 * 60 * 1000;
 const limits = { quiet: 10 * 1000, gap: 5 * 60 * 1000, settle: 2 * 60 * 1000 };
 const LINE = 160;
+const REPLY = 600;
+const REPLY_TAIL = 200;
 
 const isPassive = (e) => e.kind === 'direct' || e.kind === 'waiting';
 const norm = (text) => String(text || '').replace(/\s+/g, ' ').trim();
@@ -15,10 +17,37 @@ const unwrap = (text) => String(text || '').replace(/<\/?pasted_content(?: id="[
 /** O texto como você o escreveu: sem as marcas das imagens coladas nem o envelope que o Claude Code põe no texto colado. */
 const typed = (text) => norm(unwrap(text).replace(/\[Image #\d+\]\s*/g, ''));
 const MACHINE = /^\s*<(?:task-notification|agent-message)\b/;
+const quoted = (text) => clip(text).replace(/"/g, "'");
 const clip = (text) => {
-  const t = norm(plain(text));
-  return t.length > LINE ? `${t.slice(0, LINE)}…` : t;
+  const t = Array.from(norm(plain(text)));
+  return t.length > LINE ? `${t.slice(0, LINE).join('')}…` : t.join('');
 };
+
+/** A resposta como o aviso a cita: inteira até REPLY caracteres; maior, o começo e o fim (onde costuma estar o pedido), marcada como cortada. */
+const excerpt = (text) => {
+  const t = Array.from(norm(plain(text)).replace(/"/g, "'"));
+  if (t.length <= REPLY) return { text: t.join(''), cut: false };
+  return { text: `${t.slice(0, REPLY - REPLY_TAIL).join('')} […] ${t.slice(-REPLY_TAIL).join('')}`, cut: true };
+};
+const QUESTION = /(?<=\S)\?(?=[\s"'”»)\]*_:…]|$)/;
+const ITEM = /^\s*(?:[-*•]|\d+[.)]|[a-zA-Z][.)])\s/;
+/** A última frase da resposta, pulando a lista de opções que costuma vir depois da pergunta. */
+function lastAsk(text) {
+  const rows = plain(text).split('\n').map((r) => r.trim()).filter(Boolean);
+  let i = rows.length - 1;
+  while (i > 0 && ITEM.test(rows[i])) i--;
+  const row = rows[i] || '';
+  const sentences = row.split(/(?<=[.!?])\s+/);
+  return sentences[sentences.length - 1] || '';
+}
+/** De quem é a vez: pelo estado da aba, pelo erro, por uma pergunta no fim da resposta e por um PR novo. */
+function turnOf(s, fresh, errored = false) {
+  if (s.needsYou || PROMPT.has(s.status)) return 'do usuário: a aba espera uma permissão ou resposta';
+  if (errored) return 'do gerente: a sessão parou com erro; mande retomar ou avise o usuário';
+  if (s.reply && s.reply.text && QUESTION.test(lastAsk(s.reply.text))) return 'do usuário: a resposta termina com uma pergunta (veja se pede decisão, aprovação, commit ou teste)';
+  if (fresh.length) return 'do usuário: PR novo esperando revisão ou merge';
+  return 'ninguém pediu nada ao usuário: a sessão parou por conta própria';
+}
 
 /** As mensagens que o plugin pôs numa aba (do gerente ou do painel), pra não contar como digitadas por você. */
 class Sent {
@@ -120,7 +149,7 @@ function lines(links, events, sessions) {
   });
 }
 
-/** O bloco de uma sessão que pede ação: o que aconteceu (um ou mais eventos), o estado, o cartão, a resposta e os PRs novos. */
+/** O bloco de uma sessão que pede ação: o que aconteceu (um ou mais eventos), o tabId, o estado, o cartão, a resposta, de quem é a vez e os PRs novos. */
 function block(links, key, events, sessions, now) {
   const node = links.nodes[key];
   const s = node && sessions.find((x) => x.id === node.tabId && isOpen(x));
@@ -132,27 +161,34 @@ function block(links, key, events, sessions, now) {
     : e.kind === 'closed' ? `foi fechada pelo usuário${e.text ? ` ${e.text}` : ''}`
     : !s ? 'fechou'
     : `parou há ${Math.max(1, Math.round((now - e.at) / 60000))} min (${s.hibernated ? 'hibernada' : s.statusLabel || s.status}, sem agentes)`);
-  const out = [`- "${name}" ${[...new Set(what)].join('; ')}.`];
+  const tab = s ? ` [tabId ${s.id}]` : '';
+  const out = [`- "${name}"${tab} ${[...new Set(what)].join('; ')}.`];
   if (!s) out.push(`  a aba está fechada: o cartão${card ? ` (${card.state})` : ''} fica como está; só o usuário a retoma pelo painel`);
-  else if (card) out.push(`  cartão: ${card.state}${card.headline ? ` "${clip(card.headline)}"` : ''}${card.state === 'working' ? ' → atualize' : ''}`);
+  else if (card) out.push(`  cartão: ${card.state}${card.headline ? ` "${quoted(card.headline)}"` : ''}${card.state === 'working' ? ' → atualize' : ''}`);
   else out.push('  sem cartão → poste um com sessions_card');
-  if (s && s.reply && s.reply.text) out.push(`  resposta: "${clip(s.reply.text)}"`);
+  if (s && s.reply && s.reply.text) {
+    const r = excerpt(s.reply.text);
+    out.push(`  resposta${r.cut ? ' (cortada no meio)' : ''}: "${r.text}"`);
+  }
   const fresh = prsOf(s).filter((u) => !seen.has(u));
   if (fresh.length) out.push(`  PR novo: ${fresh.join(' ')}`);
+  if (s) out.push(`  vez: ${turnOf(s, fresh, events.some((e) => e.kind === 'error'))}`);
   return out;
 }
 
 const HEAD = (n) => `[sessions] ${n === 1 ? '1 sessão pede' : `${n} sessões pedem`} você (aviso automático do plugin, não é mensagem do usuário):`;
-const TAIL = 'Atualize os cartões com sessions_card (o done fecha a aba) e me reporte uma linha por sessão: estado real, o que falta e de quem é a vez.';
+const TAIL = 'Este aviso basta para agir: atualize o cartão de cada sessão com sessions_card (o tabId vai acima; o done fecha a aba) e responda ao usuário uma linha por sessão, com estado real, o que falta e de quem é a vez. Não chame sessions_list nem leia o transcript, a não ser que uma entrada esteja ambígua ou cortada demais para decidir. Se nada mudou para o usuário, responda numa linha curta.';
 
-/** O aviso ao gerente: uma entrada por sessão que pede ação, já com o resumo; o resto só conta. */
-function digest(links, events, sessions, now = Date.now(), passive = 0, waiting = 0) {
+/** O aviso ao gerente: uma entrada por sessão que pede ação, já com o resumo; as sessões que esperam na aba e o que o usuário escreveu direto vão no fim. */
+function digest(links, events, sessions, now = Date.now(), { waiting = 0, asking = [], direct = [] } = {}) {
   const byKey = new Map();
   for (const e of events) byKey.set(e.key, [...(byKey.get(e.key) || []), e]);
   const body = [...byKey].flatMap(([key, list]) => block(links, key, list, sessions, now));
+  const ask = asking.filter((k) => !byKey.has(k));
   const rest = [
     waiting ? `${waiting === 1 ? '1 sessão acabou' : `${waiting} sessões acabaram`} de parar: aviso se não voltarem a rodar.` : '',
-    passive ? `${passive} ${passive === 1 ? 'novidade' : 'novidades'} sem ação (o usuário escreveu direto, sessão esperando na aba): veja no sessions_list.` : '',
+    ask.length ? `Esperando o usuário na aba (permissão ou pergunta): ${ask.map((k) => `"${nameOf(links, k, sessions)}"`).join(', ')} → cartão needs_you, e o usuário responde na aba.` : '',
+    ...lines(links, direct, sessions),
   ].filter(Boolean);
   return [HEAD(byKey.size), ...body, ...(rest.length ? rest : ['Sem outras novidades.']), TAIL].join('\n');
 }
@@ -186,20 +222,38 @@ function due(node, manager, now = Date.now(), asking = false) {
   return now - (node.relayedAt || 0) >= limits.gap;
 }
 
-/** Separa a fila do gerente: o que acorda agora, o que segue esperando (inclui as passivas) e quantas passivas há. */
+function nameOf(links, key, sessions) {
+  const node = links.nodes[key];
+  const s = node && sessions.find((x) => x.id === node.tabId && isOpen(x));
+  return bare(s ? s.title : node ? node.name : key) || key;
+}
+
+/** Separa a fila do gerente: o que acorda agora, o que segue esperando (inclui as passivas), as sessões que ainda esperam na aba e o que o usuário escreveu direto. */
 function sort(links, events, sessions, now = Date.now()) {
   const wake = [];
   const keep = [];
+  const asking = [];
+  const direct = [];
   let passive = 0;
   let waiting = 0;
   for (const e of events) {
     const c = classify(links, e, sessions, now);
     if (c === 'wake') wake.push(e);
     else if (c !== 'drop') keep.push(e);
-    if (c === 'passive') passive++;
     if (c === 'wait') waiting++;
+    if (c !== 'passive') continue;
+    passive++;
+    if (e.kind === 'direct') direct.push(e);
+    else if (!asking.includes(e.key) && asks(links, e.key, sessions)) asking.push(e.key);
   }
-  return { wake, keep, passive, waiting };
+  return { wake, keep, passive, waiting, asking, direct };
+}
+
+/** A sessão [key] segue esperando o usuário na aba agora. */
+function asks(links, key, sessions) {
+  const node = links.nodes[key];
+  const s = node && sessions.find((x) => x.id === node.tabId && isOpen(x));
+  return Boolean(s && (s.needsYou || PROMPT.has(s.status)));
 }
 
 /** Tira da fila do gerente o que a sessão [key] tinha: ela foi fechada pelo gerente, pelo plugin ou pela limpeza. */
@@ -219,4 +273,4 @@ function markSeen(links, events, sessions) {
   }
 }
 
-module.exports = { Asking, Sent, fromUser, queue, forget, lines, digest, due, classify, sort, markSeen, isPassive, limits };
+module.exports = { Asking, Sent, fromUser, queue, forget, lines, digest, excerpt, turnOf, due, classify, sort, markSeen, isPassive, limits };

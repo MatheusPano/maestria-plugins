@@ -678,7 +678,8 @@ test('o cartão feito fecha a aba sozinho quando ela para, uma notificação por
     handlers.note.event({ type: 'session.changed' });
     await new Promise((r) => setTimeout(r, 400));
   };
-  const tabs = ['c1', 'c2', 'c3'].map((id) => ({ id, kind: 'claude', title: `TASK#${id.slice(1)} ${id}`, status: 'working', sessionId: `s-${id}` }));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-cwd-'));
+  const tabs = ['c1', 'c2', 'c3'].map((id) => ({ id, kind: 'claude', title: `TASK#${id.slice(1)} ${id}`, status: 'working', sessionId: `s-${id}`, cwd: home }));
   sessions.push(...tabs);
   try {
     const done = (tabId, extra = {}) => handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId, state: 'done', doneBecause: 'PR mergeado', ...extra } });
@@ -724,6 +725,18 @@ test('o cartão feito fecha a aba sozinho quando ela para, uma notificação por
     await changed();
     assert.equal(calls.slice(before).some(([m]) => m === 'session.close'), false, 'a conversa retomada não fecha de novo');
     assert.equal(read().nodes[k4].card.closeFor, null);
+
+    if (sessions.includes(tabs[0])) sessions.splice(sessions.indexOf(tabs[0]), 1);
+    const k1 = Object.keys(read().nodes).find((k) => read().nodes[k].tabId === 'c1');
+    const g = read().nodes[k1].parent;
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `forget:${k1}` } });
+    await new Promise((r) => setTimeout(r, 50));
+    queue['session.openClaude'] = [{ tabId: 'c6', resumed: true }];
+    const h1 = read().history.find((h) => h.tabId === 'c1');
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: `reopen:${h1.id}` } });
+    await new Promise((r) => setTimeout(r, 100));
+    const back = Object.values(read().nodes).find((n) => n.tabId === 'c6');
+    assert.deepEqual([back && back.parent, back && back.sessionId], [g, 's-c1'], 'o nó esquecido volta embaixo do gerente ao retomar pelo histórico');
   } finally {
     for (const t of tabs) if (sessions.includes(t)) sessions.splice(sessions.indexOf(t), 1);
   }
@@ -842,7 +855,7 @@ test('fim de turno só acorda o gerente quando a sessão parou de vez; a aba fec
     await changed();
     const got = toManager(before);
     assert.equal(got.length, 1);
-    assert.match(got[0], /^\[sessions\] 1 sessão pede você[\s\S]*"st" parou há 1 min[\s\S]*cartão: working "rodando" → atualize/);
+    assert.match(got[0], /^\[sessions\] 1 sessão pede você[\s\S]*"st" \[tabId st\] parou há 1 min[\s\S]*cartão: working "rodando" → atualize/);
 
     const mark = calls.length;
     sessions.splice(sessions.indexOf(tab), 1);

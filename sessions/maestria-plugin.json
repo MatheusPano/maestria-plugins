@@ -56,7 +56,7 @@
       },
       {
         "name": "sessions_list",
-        "description": "List the open Maestria sessions: tabId, title, folder, branch, status, whether it waits for the user, its manager (parentTabId) and color, and its last prompt and last reply. Pass mine: true for only the sessions you opened. When you are a manager, `answers` carries what the user answered on your cards since your last call. When you are a manager, events carries what happened in your sessions that did not need you right away (the user typed straight into one, a session waits on the user).",
+        "description": "List the open Maestria sessions: tabId, title, folder, branch, status, whether it waits for the user, its manager (parentTabId) and color, and its last prompt and last reply. Pass mine: true for only the sessions you opened. When you are a manager, `answers` carries what the user answered on your cards since your last call. When you are a manager, events carries what happened in your sessions that did not need you right away (the user typed straight into one, a session waits on the user). Not needed to answer a [sessions] notice: the notice already has what to act on; call this only when an entry is ambiguous or cut too short to decide.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -76,7 +76,7 @@
           "properties": {
             "tabId": {
               "type": "string",
-              "description": "Target tab, from sessions_list or sessions_open."
+              "description": "Target tab, from sessions_open, sessions_list or a [sessions] notice."
             },
             "text": {
               "type": "string",
@@ -119,7 +119,7 @@
           "properties": {
             "tabId": {
               "type": "string",
-              "description": "The session to close, from sessions_list."
+              "description": "The session to close, from sessions_list or a [sessions] notice."
             }
           },
           "required": [
@@ -130,13 +130,13 @@
       },
       {
         "name": "sessions_card",
-        "description": "Set or replace the card of a session you manage, in your manager panel (a Maestria board: needs-you, working, done today). Use it instead of writing status reports in chat. Only for a session in your own tree (one you opened or linked), never your own tab. The result has link (this card) and panel (your panel): to point the user at a card or the panel, paste that maestria:// link bare on its own line, not inside markdown; clicking it in Maestria opens it there. state: working, needs_you or done. done means nothing is left for the session or the user: the PR merged or deployed, the task closed. Pushed but waiting for a PR to be opened, reviewed or merged, or for any decision, is needs_you (put the PR in proof); still running is working. done needs doneBecause and is refused while the session runs or waits on the user, while a PR in proof or in its transcript is open, or with commits not pushed. A done card closes the session's tab by itself once it is at rest (it goes to the panel history with resume, and the user is notified); after that you can no longer reach the session, only the user can resume it. sessions_send to a done session cancels the closing until the next done. Pass keepOpen: true only when the user still needs the tab. The result (and sessions_list) also carries events: what happened in your sessions since you last looked that did not need you right away (the user typed straight into one, a session waits on the user); sessions that stop for good, cite a new PR, fail or are closed by the user wake you with a [sessions] notice instead, at most one every 5 minutes, already with state, card, reply and PRs. headline: one sentence, what the user has to do (or what is happening). Up to 3 short bullets (the session's notes, folded on the card). action: a command for the user to run (kind \"command\", tabId = the tab it belongs to: the card types it there), a question (kind \"question\", optional options A/B/C, each with an optional audio file to listen to) or an approval (kind \"approve\": approve / reject with a reason). Answers go straight into the session's terminal (while it sits in a permission prompt they are held and typed once it leaves it; held for over an hour, from before a restart, or with the tab closed, they go to you instead), and you get a copy in the `answers` of your next sessions_list or sessions_card. proof: images (absolute paths, shown as thumbnails), prs (url, ci), audio (absolute paths) and log (the last lines of a run). A session not yet in your tree is linked to you.",
+        "description": "Set or replace the card of a session you manage, in your manager panel (a Maestria board: needs-you, working, done today). Use it instead of writing status reports in chat. Only for a session in your own tree (one you opened or linked), never your own tab. The result has link (this card) and panel (your panel): to point the user at a card or the panel, paste that maestria:// link bare on its own line, not inside markdown; clicking it in Maestria opens it there. state: working, needs_you or done. done means nothing is left for the session or the user: the PR merged or deployed, the task closed. Pushed but waiting for a PR to be opened, reviewed or merged, or for any decision, is needs_you (put the PR in proof); still running is working. done needs doneBecause and is refused while the session runs or waits on the user, while a PR in proof or in its transcript is open, or with commits not pushed. A done card closes the session's tab by itself once it is at rest (it goes to the panel history with resume, and the user is notified); after that you can no longer reach the session, only the user can resume it. sessions_send to a done session cancels the closing until the next done. Pass keepOpen: true only when the user still needs the tab. The result (and sessions_list) also carries events: what happened in your sessions since you last looked that did not need you right away (the user typed straight into one, a session waits on the user); sessions that stop for good, cite a new PR, fail or are closed by the user wake you with a [sessions] notice instead, at most one every 5 minutes, already with tabId, state, card, reply, whose turn it is and PRs. The notice is enough to act on: update each card from it and answer the user one line per session, without sessions_list or reading the transcript unless an entry is ambiguous or cut too short; a notice that changes nothing for the user gets one short line. headline: one sentence, what the user has to do (or what is happening). Up to 3 short bullets (the session's notes, folded on the card). action: a command for the user to run (kind \"command\", tabId = the tab it belongs to: the card types it there), a question (kind \"question\", optional options A/B/C, each with an optional audio file to listen to) or an approval (kind \"approve\": approve / reject with a reason). Answers go straight into the session's terminal (while it sits in a permission prompt they are held and typed once it leaves it; held for over an hour, from before a restart, or with the tab closed, they go to you instead), and you get a copy in the `answers` of your next sessions_list or sessions_card. proof: images (absolute paths, shown as thumbnails), prs (url, ci), audio (absolute paths) and log (the last lines of a run). A session not yet in your tree is linked to you.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "tabId": {
               "type": "string",
-              "description": "The session the card is about."
+              "description": "The session the card is about (the tabId in a [sessions] notice)."
             },
             "state": {
               "type": "string",
