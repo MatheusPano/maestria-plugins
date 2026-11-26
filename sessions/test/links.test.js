@@ -32,6 +32,27 @@ test('reconcile segue o sessionId quando o tabId muda e esquece o que sumiu há 
   assert.equal(l.nodes[gone], undefined);
 });
 
+test('a aba fechada com cartão feito é esquecida depois de um dia, as outras depois de três; lista vazia não esquece nada', () => {
+  let now = 0;
+  const l = new Links({}, () => now);
+  const root = l.add({ tabId: 't1', name: 'g', manager: true });
+  const done = l.add({ tabId: 't2', parent: root, name: 'd' });
+  const open = l.add({ tabId: 't3', parent: root, name: 'o' });
+  l.nodes[done].card = { state: 'done' };
+  l.nodes[open].card = { state: 'needs_you' };
+  const live = [{ id: 't1', sessionId: 's1' }];
+  now = 25 * 3600 * 1000;
+  assert.equal(l.reconcile([]), false);
+  assert.ok(l.nodes[done]);
+  l.reconcile(live);
+  assert.equal(l.nodes[done], undefined);
+  assert.ok(l.nodes[open]);
+  now = 4 * 24 * 3600 * 1000;
+  l.reconcile(live);
+  assert.equal(l.nodes[open], undefined);
+  assert.ok(l.nodes[root]);
+});
+
 test('depois do /clear a aba ganha outro sessionId e o nó segue a aba; se a conversa antiga está noutra aba, o nó vai com ela', () => {
   let now = 0;
   const l = new Links({}, () => now);

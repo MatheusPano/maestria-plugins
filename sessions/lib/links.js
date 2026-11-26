@@ -23,6 +23,7 @@ const BY_ID = new Map(COLORS.map((c) => [c.id, c]));
 const LEGACY = ['🟥', '🟦', '🟩', '🟨', '🟪', '🟧', '🟫', '⬜', '⬛'];
 const PREFIX = new RegExp(`^(?:(?:${[...COLORS.map((c) => c.mark), ...LEGACY].join('|')})\\s*)+(?:\\[[GS]\\]\\s*)?`, 'u');
 const FORGET_MS = 3 * 24 * 3600 * 1000;
+const DONE_FORGET_MS = 24 * 3600 * 1000;
 const SEEN_MS = 3600 * 1000;
 const HISTORY_MS = 30 * 24 * 3600 * 1000;
 const HISTORY_MAX = 500;
@@ -112,7 +113,7 @@ class Links {
         if (!n.sessionId && s.sessionId) n.sessionId = s.sessionId;
         if (s.cwd) n.cwd = s.cwd;
         n.seenAt = now;
-      } else if (this.now() - (n.seenAt || 0) > FORGET_MS) {
+      } else if (sessions.length && (n.card && n.card.state === 'done' ? this.now() - Math.max(n.seenAt || 0, n.card.doneAt || 0) > DONE_FORGET_MS : this.now() - (n.seenAt || 0) > FORGET_MS)) {
         delete this.nodes[key];
         for (const m of Object.values(this.nodes)) if (m.parent === key) m.parent = n.parent;
         changed = true;

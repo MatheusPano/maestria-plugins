@@ -20,9 +20,9 @@ const cleanup = require('./lib/cleanup');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
-  '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe com sessions_list (mine: true)',
+  '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe pelos avisos [sessions] (sessions_list com mine: true só quando precisar)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe um aviso [sessions] só quando uma sessão pede ação (parou de vez, citou um PR novo, deu erro ou o usuário fechou a aba), no máximo um a cada 5 min e já com estado, cartão, resposta e PRs: não abra o transcript para isso. O que não pede ação (o usuário escreveu direto, sessão esperando na aba) vem nos events do próximo sessions_list. Atualize os cartões e reporte ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe um aviso [sessions] só quando uma sessão pede ação (parou de vez, citou um PR novo, deu erro ou o usuário fechou a aba), no máximo um a cada 5 min e já com tabId, estado, cartão, resposta, de quem é a vez e PRs. O aviso basta para agir: atualize o cartão de cada sessão com sessions_card e responda ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Só chame sessions_list ou leia o transcript quando uma entrada estiver ambígua ou cortada demais para decidir; um aviso sem mudança para o usuário se responde numa linha curta. O que o usuário escreveu direto numa sessão e as sessões esperando na aba vão no fim do aviso; sem aviso, aparecem nos events do próximo sessions_list. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -587,7 +587,7 @@ async function flushRelays(sessions) {
   for (const node of Object.values(state.links.nodes)) {
     const manager = sessions.find((s) => s.id === node.tabId);
     if (!relay.due(node, manager, now, state.asking.has(node.tabId))) continue;
-    const { wake, keep, passive, waiting } = relay.sort(state.links, node.events, sessions, now);
+    const { wake, keep, waiting, asking, direct } = relay.sort(state.links, node.events, sessions, now);
     if (!wake.length) {
       if (keep.length !== node.events.length) {
         node.events = keep;
@@ -595,14 +595,15 @@ async function flushRelays(sessions) {
       }
       continue;
     }
-    node.events = keep;
+    const told = keep.filter((e) => direct.includes(e) || (e.kind === 'waiting' && asking.includes(e.key)));
+    node.events = keep.filter((e) => !told.includes(e));
     node.relayedAt = now;
     try {
-      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, wake, sessions, now, passive, waiting), submit: true });
+      await request('terminal.sendText', { tabId: manager.id, text: relay.digest(state.links, wake, sessions, now, { waiting, asking, direct }), submit: true });
       relay.markSeen(state.links, wake, sessions);
     } catch (e) {
       mx.log('aviso ao gerente:', e.message);
-      node.events = [...wake, ...(node.events || [])];
+      node.events = [...wake, ...told, ...(node.events || [])];
       node.relayedAt = 0;
     }
     writeLinks();
@@ -742,7 +743,13 @@ async function reopen(id) {
   if (n && n.sessionId === h.sessionId) return resume(h.key);
   const open = (await listSessions()).find((s) => s.sessionId === h.sessionId && isOpen(s));
   if (open) return mx.request('session.focus', { tabId: open.id });
-  await reopenConversation({ ...h, color: null });
+  const root = !n && h.root && h.root !== h.key ? state.links.nodes[h.root] : null;
+  const r = await reopenConversation({ ...h, color: root ? root.color : null });
+  if (root) {
+    const key = state.links.add({ tabId: r.tabId, parent: h.root, name: h.name, manager: h.manager });
+    Object.assign(state.links.nodes[key], { sessionId: h.sessionId, cwd: r.cwd });
+    save();
+  }
   return null;
 }
 
