@@ -18,6 +18,7 @@ const history = require('./lib/history');
 const closer = require('./lib/closer');
 const cleanup = require('./lib/cleanup');
 const autocard = require('./lib/autocard');
+const ci = require('./lib/ci');
 const compact = require('./lib/compact');
 const modelOf = require('./lib/model');
 const usage = require('./lib/usage');
@@ -59,6 +60,8 @@ const state = {
   readySince: {},
   settings: {},
   compacted: new Map(),
+  ciAsked: new Map(),
+  polling: false,
 };
 const PANEL = 'painel';
 const LEGACY_PANEL = 'painel:';
@@ -1113,5 +1116,24 @@ const watched = (n) => n.card && n.card.state === 'working' && state.lastSession
 setInterval(() => {
   if (Object.values(state.links.nodes).some((n) => (n.events || []).some((e) => !relay.isPassive(e)) || watched(n))) schedule();
 }, 30 * 1000).unref();
+
+/** The CI badge of the PRs in the cards follows gh, with no model call. */
+async function pollCi() {
+  if (state.polling || !state.file) return;
+  state.polling = true;
+  try {
+    if (await ci.poll(state.links, exec, state.ciAsked)) {
+      writeLinks();
+      schedule();
+    }
+  } catch (e) {
+    mx.log('ci:', e.message);
+  } finally {
+    state.polling = false;
+  }
+}
+
+setInterval(pollCi, 60 * 1000).unref();
+setTimeout(pollCi, 5000).unref();
 
 mx.start();
