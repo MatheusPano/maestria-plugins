@@ -45,6 +45,10 @@
             "prompt": {
               "type": "string",
               "description": "First message of the session. Omit to open it idle."
+            },
+            "model": {
+              "type": "string",
+              "description": "Model for the new session (an alias such as sonnet, opus or haiku, or a model id); the plugin types /model into the tab before the prompt. Omit to keep Claude Code's default. The result says which model was set (null when the tab was not ready in time)."
             }
           },
           "required": [
@@ -304,6 +308,22 @@
       }
     ],
     "sidebar": true,
+    "settings": [
+      {
+        "id": "managerModel",
+        "type": "string",
+        "default": "sonnet",
+        "title": "modelo dos gerentes novos",
+        "description": "alias (sonnet, opus, haiku) ou id do modelo que o gerente criado pelo comando \"novo gerente\" usa; vazio deixa o padrão do Claude Code."
+      },
+      {
+        "id": "compactAt",
+        "type": "number",
+        "default": 120,
+        "title": "compactar gerente parado acima de (mil tokens)",
+        "description": "um gerente parado com o contexto maior que isto recebe /compact (os avisos releem o contexto inteiro a cada vez). 0 desliga."
+      }
+    ],
     "commands": [
       {
         "id": "gerente",

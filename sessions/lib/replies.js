@@ -126,6 +126,8 @@ function replies(home) {
     cache.set(file, { size: st.size, mtime: st.mtimeMs, reply });
     return reply;
   };
+  /** The transcript file of the conversation, or null. */
+  read.file = (sessionId, cwd) => (sessionId ? transcriptOf(projects, sessionId, cwd, found) : null);
   /** Quando a conversa mexeu no transcript pela última vez (ms), ou null. */
   read.touched = (sessionId, cwd) => {
     const file = sessionId && transcriptOf(projects, sessionId, cwd, found);

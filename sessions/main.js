@@ -18,12 +18,15 @@ const history = require('./lib/history');
 const closer = require('./lib/closer');
 const cleanup = require('./lib/cleanup');
 const autocard = require('./lib/autocard');
+const compact = require('./lib/compact');
+const modelOf = require('./lib/model');
+const usage = require('./lib/usage');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
-  '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe pelos avisos [sessions] (sessions_list com mine: true só quando precisar)',
+  '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe pelos avisos [sessions] (sessions_list, que já vem enxuto, só quando precisar; all: true lista tudo)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe um aviso [sessions] só quando uma sessão pede ação (parou de vez, citou um PR novo, deu erro, encerrou ou hibernou no meio do turno, ou o usuário fechou a aba), no máximo um a cada 5 min e já com tabId, estado, cartão, resposta, de quem é a vez e PRs. O aviso basta para agir: atualize o cartão de cada sessão com sessions_card e responda ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Só chame sessions_list ou leia o transcript quando uma entrada estiver ambígua ou cortada demais para decidir; um aviso sem mudança para o usuário se responde numa linha curta. O que o usuário escreveu direto numa sessão e as sessões esperando na aba vão no fim do aviso; sem aviso, aparecem nos events do próximo sessions_list. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Uma sessão que para sem pergunta nem PR novo tem o cartão atualizado pelo plugin (cardAuto) e não te avisa. Você recebe um aviso [sessions] só quando uma sessão pede ação (terminou com uma pergunta, citou um PR novo, deu erro, encerrou ou hibernou no meio do turno, ou o usuário fechou a aba), no máximo um a cada 5 min e já com tabId, estado, cartão, resposta, de quem é a vez e PRs. O aviso basta para agir: atualize o cartão de cada sessão com sessions_card e responda ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Só chame sessions_list ou leia o transcript quando uma entrada estiver ambígua ou cortada demais para decidir; um aviso sem mudança para o usuário se responde numa linha curta. O que o usuário escreveu direto numa sessão e as sessões esperando na aba vão no fim do aviso; sem aviso, aparecem nos events do próximo sessions_list. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -54,6 +57,8 @@ const state = {
   retitled: new Map(),
   tinted: new Map(),
   readySince: {},
+  settings: {},
+  compacted: new Map(),
 };
 const PANEL = 'painel';
 const LEGACY_PANEL = 'painel:';
@@ -87,6 +92,8 @@ async function request(method, params) {
 const withLive = (sessions) =>
   sessions.map((s) => (state.live[s.id] ? { ...s, activity: { ...(s.activity || {}), lastTool: state.live[s.id] } } : s));
 const readReply = replies(os.homedir());
+const readUsage = usage.reader(readReply.file);
+const setting = (id, fallback) => (state.settings[id] === undefined ? fallback : state.settings[id]);
 
 /** Junta a última resposta do Claude às conversas paradas (o cartão compara com ela, e a visão de todas a mostra). */
 function withReplies(sessions) {
@@ -300,6 +307,16 @@ function deliverPending(sessions) {
     });
 }
 
+/** Sends /compact to the idle managers whose context passed the setting; one ask per manager every 15 min. */
+async function compactIdle(sessions) {
+  const threshold = Number(setting('compactAt', 120)) * 1000;
+  const tabs = compact.due(state.links, sessions, (s) => readUsage(s.sessionId, s.cwd), { threshold, compacted: state.compacted });
+  for (const tabId of tabs) {
+    state.compacted.set(tabId, Date.now());
+    await request('terminal.sendText', { tabId, text: '/compact', submit: true }).catch((e) => mx.log('compact:', e.message));
+  }
+}
+
 async function refresh() {
   const sessions = await listSessions();
   const gone = closedByYou(sessions);
@@ -308,6 +325,7 @@ async function refresh() {
   const settled = settleTurns(sessions);
   const cut = interruptions(sessions);
   const carded = autocard.run(state.links, sessions);
+  await compactIdle(sessions);
   const reconciled = state.links.reconcile(sessions);
   const migrated = closer.migrate(state.links, sessions);
   const auto = await closeDone(sessions);
@@ -461,8 +479,10 @@ async function createManager(context = {}) {
   const node = state.links.nodes[key];
   const params = { cwd, label: tinted(name, node.color, true), prompt: MANAGER_BRIEF };
   try {
-    const { tabId } = await mx.request('session.openClaude', params);
+    const wanted = String(setting('managerModel', 'sonnet') || '').trim();
+    const { tabId, model } = await modelOf.openClaude(request, params, wanted);
     node.tabId = tabId;
+    if (wanted && !model) await mx.request('window.showBanner', { text: `sessions: o gerente abriu no modelo padrão: a aba não ficou pronta a tempo para /model ${wanted}` }).catch(() => {});
     state.ui.focus = key;
     save();
   } catch (e) {
@@ -502,9 +522,14 @@ const ctx = ({ tabId, cwd }) => ({
 
 mx.onRequest('initialize', (params) => {
   state.dataDir = params.dataDir || null;
+  state.settings = params.settings || {};
   state.file = path.join(state.dataDir || path.join(os.homedir(), '.maestria-rs', 'plugin-data', 'maestria.sessions'), 'links.json');
   load();
   return {};
+});
+
+mx.onNotification('settings.changed', ({ settings }) => {
+  state.settings = settings || {};
 });
 
 mx.onRequest('tool.call', ({ tool, args, tabId, cwd }) => tools.handle(tool, args, ctx({ tabId, cwd })));

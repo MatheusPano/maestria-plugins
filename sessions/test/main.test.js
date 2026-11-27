@@ -88,6 +88,7 @@ test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~, 
   const home = os.homedir();
   const sub = fs.mkdtempSync(path.join(home, '.sessions-test-'));
   try {
+    handlers.note['settings.changed']({ settings: { managerModel: '' } });
     queue['folders.list'] = [[{ root: '/var/www/x', name: 'x' }]];
     queue['window.pick'] = [':outra-pasta'];
     queue['window.input'] = ['/nao/existe/mesmo', `~/${path.basename(sub)}`, 'meu gerente'];
@@ -110,6 +111,28 @@ test('novo gerente em outra pasta: pede o caminho até ser uma pasta, aceita ~, 
   } finally {
     sessions.splice(sessions.findIndex((s) => s.id === 'novo'), 1);
     fs.rmSync(sub, { recursive: true, force: true });
+  }
+});
+
+test('a new manager starts on the configured model: /model first, then the brief', async () => {
+  handlers.note['settings.changed']({ settings: { managerModel: 'haiku' } });
+  const dir = os.tmpdir();
+  queue['folders.list'] = [[]];
+  queue['window.pick'] = [dir];
+  queue['window.input'] = ['modeled'];
+  queue['session.openClaude'] = [{ tabId: 'modeled' }];
+  sessions.push({ id: 'modeled', kind: 'claude', title: 'modeled', status: 'ready' });
+  try {
+    const before = calls.length;
+    handlers.note['view.action']({ viewId: 'sidebar', action: 'novo' });
+    await new Promise((r) => setTimeout(r, 2200));
+    const mine = calls.slice(before);
+    assert.deepEqual(mine.find(([m]) => m === 'session.openClaude')[1].prompt, undefined);
+    const typed = mine.filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text.slice(0, 11)]);
+    assert.deepEqual(typed, [['modeled', '/model haik'], ['modeled', 'Você é um g']]);
+  } finally {
+    sessions.splice(sessions.findIndex((s) => s.id === 'modeled'), 1);
+    handlers.note['settings.changed']({ settings: {} });
   }
 });
 

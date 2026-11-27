@@ -8,6 +8,7 @@ const closer = require('./closer');
 const { typeInto } = require('./wake');
 const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf, running, stateOf, flagOf } = require('./cards');
 const relay = require('./relay');
+const modelOf = require('./model');
 const { proofOf, audioOf, ProofError } = require('./proof');
 
 const KINDS = ['command', 'question', 'approve'];
@@ -68,7 +69,7 @@ async function parentOf(ctx) {
   return key;
 }
 
-async function open({ cwd, name, prompt }, ctx) {
+async function open({ cwd, name, prompt, model }, ctx) {
   const dir = resolveCwd(cwd, ctx);
   const label = String(name || '').trim();
   if (!label) throw new ToolError('name é obrigatório.');
@@ -77,11 +78,13 @@ async function open({ cwd, name, prompt }, ctx) {
   const params = { cwd: dir, label: color ? tinted(label, color) : label, background: true };
   const text = String(prompt || '').trim();
   if (text) params.prompt = text;
-  const { tabId } = (await ctx.request('session.openClaude', params)) || {};
+  const asked = String(model || '').trim();
+  if (asked && !modelOf.valid(asked)) throw new ToolError(`model inválido: ${asked}`);
+  const { tabId, model: set } = (await modelOf.openClaude(ctx.request, params, asked, { sleep: ctx.sleep })) || {};
   if (!tabId) throw new ToolError('A Maestria não devolveu a aba da sessão nova.');
   if (parent) ctx.links.add({ tabId, parent, name: label });
   ctx.save();
-  return ok({ tabId, name: params.label, cwd: dir, prompted: Boolean(text), color: color ? colorOf(color).id : null });
+  return ok({ tabId, name: params.label, cwd: dir, prompted: Boolean(text), ...(asked ? { model: set } : {}), color: color ? colorOf(color).id : null });
 }
 
 function summary(s, links, sent, replyOf) {
