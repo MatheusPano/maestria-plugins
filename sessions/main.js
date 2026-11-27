@@ -17,12 +17,17 @@ const relay = require('./lib/relay');
 const history = require('./lib/history');
 const closer = require('./lib/closer');
 const cleanup = require('./lib/cleanup');
+const autocard = require('./lib/autocard');
+const ci = require('./lib/ci');
+const compact = require('./lib/compact');
+const modelOf = require('./lib/model');
+const usage = require('./lib/usage');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
-  '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe pelos avisos [sessions] (sessions_list com mine: true só quando precisar)',
+  '(cada pedido se sustenta sozinho, a sessão nova não sabe nada desta conversa), acompanhe pelos avisos [sessions] (sessions_list, que já vem enxuto, só quando precisar; all: true lista tudo)',
   'e mande instruções com sessions_send. As sessões que você abre ganham a sua cor. Não faça o trabalho pesado você mesmo:',
-  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Você recebe um aviso [sessions] só quando uma sessão pede ação (parou de vez, citou um PR novo, deu erro, encerrou ou hibernou no meio do turno, ou o usuário fechou a aba), no máximo um a cada 5 min e já com tabId, estado, cartão, resposta, de quem é a vez e PRs. O aviso basta para agir: atualize o cartão de cada sessão com sessions_card e responda ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Só chame sessions_list ou leia o transcript quando uma entrada estiver ambígua ou cortada demais para decidir; um aviso sem mudança para o usuário se responde numa linha curta. O que o usuário escreveu direto numa sessão e as sessões esperando na aba vão no fim do aviso; sem aviso, aparecem nos events do próximo sessions_list. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
+  'coordene, junte os resultados e reporte. Um cartão só vai para done quando não sobra nada: PR mergeado ou em produção e tarefa fechada; push feito esperando PR ou merge é needs_you. O cartão done fecha a aba da sessão sozinho quando ela para (fica no histórico do painel, com retomar; depois disso você não fala mais com ela, só o usuário a retoma); passe keepOpen: true só quando o usuário ainda precisa da aba. Mandar mais trabalho com sessions_send desarma o fechamento até o próximo done. Uma sessão que terminou sem nada para mostrar você fecha com sessions_close. Quando citar um cartão ou o painel, cole o link maestria:// que o sessions_card devolve, sozinho na linha: clicado, ele abre o cartão. Uma sessão que para sem pergunta nem PR novo tem o cartão atualizado pelo plugin (cardAuto) e não te avisa. Você recebe um aviso [sessions] só quando uma sessão pede ação (terminou com uma pergunta, citou um PR novo, deu erro, encerrou ou hibernou no meio do turno, ou o usuário fechou a aba), no máximo um a cada 5 min e já com tabId, estado, cartão, resposta, de quem é a vez e PRs. O aviso basta para agir: atualize o cartão de cada sessão com sessions_card e responda ao usuário uma linha por sessão, com o estado real, o que falta e de quem é a vez. Só chame sessions_list ou leia o transcript quando uma entrada estiver ambígua ou cortada demais para decidir; um aviso sem mudança para o usuário se responde numa linha curta. O que o usuário escreveu direto numa sessão e as sessões esperando na aba vão no fim do aviso; sem aviso, aparecem nos events do próximo sessions_list. Nunca diga que algo está pronto sem ter conferido. O pedido do usuário chega na próxima mensagem.',
 ].join(' ');
 
 const state = {
@@ -53,6 +58,10 @@ const state = {
   retitled: new Map(),
   tinted: new Map(),
   readySince: {},
+  settings: {},
+  compacted: new Map(),
+  ciAsked: new Map(),
+  polling: false,
 };
 const PANEL = 'painel';
 const LEGACY_PANEL = 'painel:';
@@ -60,6 +69,7 @@ const CARD = 'cartao:';
 const IMAGE = 'imagem:';
 const DOCTOR = 'diagnostico';
 const CLEANUP = 'limpeza';
+const ARCHIVE_IDLE = '3d';
 /** Esta subida do plugin: uma resposta pendente de antes do reinício vai pro gerente, não pra aba. */
 const BOOT = `${process.pid}-${Date.now()}`;
 const LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'panel.rfwtxt'), 'utf8');
@@ -86,13 +96,20 @@ async function request(method, params) {
 const withLive = (sessions) =>
   sessions.map((s) => (state.live[s.id] ? { ...s, activity: { ...(s.activity || {}), lastTool: state.live[s.id] } } : s));
 const readReply = replies(os.homedir());
+const readUsage = usage.reader(readReply.file);
+const setting = (id, fallback) => (state.settings[id] === undefined ? fallback : state.settings[id]);
 
 /** Junta a última resposta do Claude às conversas paradas (o cartão compara com ela, e a visão de todas a mostra). */
 function withReplies(sessions) {
   return sessions.map((s) => (s.kind === 'claude' && s.sessionId && !s.needsYou && (RESTING.has(s.status) || s.hibernated) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
 }
 
-const listSessions = async () => withReplies(withLive((await mx.request('sessions.list')) || []));
+/** Tokens per hour and context of the conversations in the tree (the managers and their sessions). */
+function withUsage(sessions) {
+  return sessions.map((s) => (s.kind === 'claude' && s.sessionId && state.links.byTab(s.id) ? { ...s, usage: readUsage(s.sessionId, s.cwd) } : s));
+}
+
+const listSessions = async () => withUsage(withReplies(withLive((await mx.request('sessions.list')) || [])));
 
 /** Como o plugin acorda uma aba hibernada antes de digitar nela: avisa com um banner e relê as abas até ela ficar pronta. */
 const wakeIo = {
@@ -202,6 +219,19 @@ function parkedOf(sessions, idle = cleanup.DEFAULT_IDLE) {
   return cleanup.candidates(state.links, withReply, { idle, touched: (s) => readReply.touched(s.sessionId, s.cwd) });
 }
 
+/** The tabs the panel's "arquivar parados" closes: parked for over 3 days, only the groups the cleanup marks by default (done card, no card). */
+function archivable(sessions) {
+  const list = cleanup.candidates(state.links, sessions, { idle: ARCHIVE_IDLE, touched: (s) => readReply.touched(s.sessionId, s.cwd) });
+  const picked = cleanup.defaults(list);
+  return list.filter((c) => picked.has(c.tabId));
+}
+
+async function archive() {
+  const list = parkedOf(await listSessions(), ARCHIVE_IDLE);
+  state.cleanup = { idle: ARCHIVE_IDLE, list, picked: cleanup.defaults(list) };
+  return runCleanup();
+}
+
 const cleanupData = () => cleanup.view(state.cleanup.list, state.cleanup.picked, state.cleanup.idle);
 
 /** Abre "Fechar abas paradas" com as de 1 dia e os grupos padrão marcados. */
@@ -299,18 +329,31 @@ function deliverPending(sessions) {
     });
 }
 
+/** Sends /compact to the idle managers whose context passed the setting; one ask per manager every 15 min. */
+async function compactIdle(sessions) {
+  const threshold = Number(setting('compactAt', 120)) * 1000;
+  const tabs = compact.due(state.links, sessions, (s) => readUsage(s.sessionId, s.cwd), { threshold, compacted: state.compacted });
+  for (const tabId of tabs) {
+    state.compacted.set(tabId, Date.now());
+    await request('terminal.sendText', { tabId, text: '/compact', submit: true }).catch((e) => mx.log('compact:', e.message));
+  }
+}
+
 async function refresh() {
   const sessions = await listSessions();
   const gone = closedByYou(sessions);
   state.lastSessions = sessions;
   state.ui.parked = cleanup.candidates(state.links, sessions, { touched: (s) => readReply.touched(s.sessionId, s.cwd) }).length;
+  state.ui.archivable = archivable(sessions).length;
   const settled = settleTurns(sessions);
   const cut = interruptions(sessions);
+  const carded = autocard.run(state.links, sessions);
+  await compactIdle(sessions);
   const reconciled = state.links.reconcile(sessions);
   const migrated = closer.migrate(state.links, sessions);
   const auto = await closeDone(sessions);
   deliverPending(sessions);
-  if (reconciled || migrated || gone.length || settled || cut || auto) writeLinks();
+  if (reconciled || migrated || gone.length || settled || cut || carded || auto) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
     mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message)),
@@ -459,8 +502,10 @@ async function createManager(context = {}) {
   const node = state.links.nodes[key];
   const params = { cwd, label: tinted(name, node.color, true), prompt: MANAGER_BRIEF };
   try {
-    const { tabId } = await mx.request('session.openClaude', params);
+    const wanted = String(setting('managerModel', 'sonnet') || '').trim();
+    const { tabId, model } = await modelOf.openClaude(request, params, wanted);
     node.tabId = tabId;
+    if (wanted && !model) await mx.request('window.showBanner', { text: `sessions: o gerente abriu no modelo padrão: a aba não ficou pronta a tempo para /model ${wanted}` }).catch(() => {});
     state.ui.focus = key;
     save();
   } catch (e) {
@@ -500,9 +545,14 @@ const ctx = ({ tabId, cwd }) => ({
 
 mx.onRequest('initialize', (params) => {
   state.dataDir = params.dataDir || null;
+  state.settings = params.settings || {};
   state.file = path.join(state.dataDir || path.join(os.homedir(), '.maestria-rs', 'plugin-data', 'maestria.sessions'), 'links.json');
   load();
   return {};
+});
+
+mx.onNotification('settings.changed', ({ settings }) => {
+  state.settings = settings || {};
 });
 
 mx.onRequest('tool.call', ({ tool, args, tabId, cwd }) => tools.handle(tool, args, ctx({ tabId, cwd })));
@@ -829,6 +879,12 @@ async function readyTabOf(key) {
   return s;
 }
 
+/** Acorda a aba hibernada do cartão [key]. */
+async function wakeCard(key) {
+  await awake(wakeIo, await tabOfCard(key));
+  return schedule();
+}
+
 /** Cola na aba do cartão [key] a imagem da área de transferência: ela fica no prompt da aba até a mensagem ir. */
 async function pasteImage(key) {
   const s = await readyTabOf(key);
@@ -990,6 +1046,8 @@ async function onAction(act, values) {
   if (verb === 'novo') return createManager();
   if (verb === 'focus') return mx.request('session.focus', { tabId: a });
   if (verb === 'resume') return resume(a);
+  if (verb === 'wake') return wakeCard(a);
+  if (verb === 'archive') return archive();
   if (verb === 'reopen') return reopen(a);
   if (verb === 'close') return closeTab(a);
   if (verb === 'hpr') {
@@ -1073,7 +1131,7 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
     return;
   }
   if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && id !== CLEANUP && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
-  const act = String(action === 'act' ? values && values.a : action || (values && values.action) || '');
+  const act = String(action === 'act' ? (values && (values.a || values.action)) || '' : action || (values && values.action) || '');
   onAction(act, values).catch((e) => {
     mx.log('ação', act, e.message);
     mx.request('window.showBanner', { text: `sessions: ${e.message}` }).catch(() => {});
@@ -1086,5 +1144,24 @@ const watched = (n) => n.card && n.card.state === 'working' && state.lastSession
 setInterval(() => {
   if (Object.values(state.links.nodes).some((n) => (n.events || []).some((e) => !relay.isPassive(e)) || watched(n))) schedule();
 }, 30 * 1000).unref();
+
+/** The CI badge of the PRs in the cards follows gh, with no model call. */
+async function pollCi() {
+  if (state.polling || !state.file) return;
+  state.polling = true;
+  try {
+    if (await ci.poll(state.links, exec, state.ciAsked)) {
+      writeLinks();
+      schedule();
+    }
+  } catch (e) {
+    mx.log('ci:', e.message);
+  } finally {
+    state.polling = false;
+  }
+}
+
+setInterval(pollCi, 60 * 1000).unref();
+setTimeout(pollCi, 5000).unref();
 
 mx.start();

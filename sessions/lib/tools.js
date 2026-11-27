@@ -8,6 +8,7 @@ const closer = require('./closer');
 const { typeInto } = require('./wake');
 const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf, running, stateOf, flagOf } = require('./cards');
 const relay = require('./relay');
+const modelOf = require('./model');
 const { proofOf, audioOf, ProofError } = require('./proof');
 
 const KINDS = ['command', 'question', 'approve'];
@@ -68,7 +69,7 @@ async function parentOf(ctx) {
   return key;
 }
 
-async function open({ cwd, name, prompt }, ctx) {
+async function open({ cwd, name, prompt, model }, ctx) {
   const dir = resolveCwd(cwd, ctx);
   const label = String(name || '').trim();
   if (!label) throw new ToolError('name é obrigatório.');
@@ -77,11 +78,13 @@ async function open({ cwd, name, prompt }, ctx) {
   const params = { cwd: dir, label: color ? tinted(label, color) : label, background: true };
   const text = String(prompt || '').trim();
   if (text) params.prompt = text;
-  const { tabId } = (await ctx.request('session.openClaude', params)) || {};
+  const asked = String(model || '').trim();
+  if (asked && !modelOf.valid(asked)) throw new ToolError(`model inválido: ${asked}`);
+  const { tabId, model: set } = (await modelOf.openClaude(ctx.request, params, asked, { sleep: ctx.sleep })) || {};
   if (!tabId) throw new ToolError('A Maestria não devolveu a aba da sessão nova.');
   if (parent) ctx.links.add({ tabId, parent, name: label });
   ctx.save();
-  return ok({ tabId, name: params.label, cwd: dir, prompted: Boolean(text), color: color ? colorOf(color).id : null });
+  return ok({ tabId, name: params.label, cwd: dir, prompted: Boolean(text), ...(asked ? { model: set } : {}), color: color ? colorOf(color).id : null });
 }
 
 function summary(s, links, sent, replyOf) {
@@ -122,6 +125,7 @@ function cardSummary(card, s) {
     cardState: card.state,
     cardHeadline: card.headline || null,
     doneBecause: card.doneBecause || null,
+    ...(card.auto ? { cardAuto: true } : {}),
     ...(shows !== card.state || flag ? { cardShows: shows, ...(flag ? { cardFlag: flag === 'interrupted' ? 'interrupted: the tab ended or hibernated mid-turn' : 'stalled: stopped while the card says working' } : {}) } : {}),
   };
 }
@@ -132,15 +136,47 @@ function queuedOf(sent, tabId) {
   return q.length ? { unconfirmedSends: q.map((m) => ({ text: m.text.length > 200 ? `${m.text.slice(0, 200)}…` : m.text, at: new Date(m.at).toISOString() })) } : {};
 }
 
-async function list({ mine }, ctx) {
-  const all = (await sessionsOf(ctx)).filter((s) => isOpen(s) && !s.embedded);
-  if (ctx.links.reconcile(all)) ctx.save();
-  let out = all.map((s) => summary(s, ctx.links, ctx.sent, ctx.replyOf));
-  if (mine) {
-    const me = ctx.links.byTab(ctx.tabId);
-    out = out.filter((s) => me && s.parentTabId === ctx.tabId);
+const LEAN_MESSAGE = 200;
+
+/** The few fields a manager needs to act on a session; `all: true` returns the full summary instead. */
+function lean(s, links, sent, replyOf) {
+  const full = summary(s, links, sent, replyOf);
+  const message = full.lastMessage && full.lastMessage.length > LEAN_MESSAGE ? `${full.lastMessage.slice(0, LEAN_MESSAGE)}…` : full.lastMessage;
+  return {
+    tabId: full.tabId,
+    title: full.title,
+    status: full.status,
+    ...(full.needsYou ? { needsYou: true } : {}),
+    ...(full.backgroundAgents ? { backgroundAgents: full.backgroundAgents } : {}),
+    branch: full.branch,
+    ...(message ? { lastMessage: message } : {}),
+    ...(full.card ? { cardState: full.cardState, cardHeadline: full.cardHeadline } : {}),
+    ...(full.cardShows ? { cardShows: full.cardShows } : {}),
+    ...(full.cardFlag ? { cardFlag: full.cardFlag } : {}),
+    ...(full.cardAuto ? { cardAuto: true } : {}),
+    ...(full.unconfirmedSends ? { unconfirmedSends: full.unconfirmedSends } : {}),
+  };
+}
+
+/** Default: the live claude sessions under the caller. `all: true`: every open tab (shells, plugin tabs, hibernated ones, other managers' trees) with the full summary. */
+async function list({ all: everything, mine }, ctx) {
+  const open = (await sessionsOf(ctx)).filter((s) => isOpen(s) && !s.embedded);
+  if (ctx.links.reconcile(open)) ctx.save();
+  if (everything) {
+    let out = open.map((s) => summary(s, ctx.links, ctx.sent, ctx.replyOf));
+    if (mine) out = out.filter((s) => s.parentTabId === ctx.tabId);
+    return ok({ sessions: out, ...takeAnswers(ctx, open) });
   }
-  return ok({ sessions: out, ...takeAnswers(ctx, all) });
+  const me = ctx.links.byTab(ctx.tabId);
+  const tree = new Set(me ? ctx.links.subtree(me).slice(1).map((k) => ctx.links.nodes[k].tabId) : []);
+  const claude = open.filter((s) => s.kind === 'claude' && tree.has(s.id));
+  const awake = claude.filter((s) => !s.hibernated);
+  const sleeping = claude.length - awake.length;
+  return ok({
+    sessions: awake.map((s) => lean(s, ctx.links, ctx.sent, ctx.replyOf)),
+    ...(sleeping ? { hibernated: sleeping, note: 'hibernated sessions are left out; sessions_send wakes one by tabId, `all: true` lists them' } : {}),
+    ...takeAnswers(ctx, open),
+  });
 }
 
 /** O que chegou pra este gerente desde a última leitura (e esvazia): as respostas nos cartões e as novidades das sessões. */

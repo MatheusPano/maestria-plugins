@@ -119,7 +119,24 @@ test('erro da Maestria vira resultado de erro e vai pro log', async () => {
   assert.equal(logged.length, 1);
 });
 
-test('sessions_list resume, traz gerente, cor e última atividade, e deixa de fora encerradas e embutidas', async () => {
+test('sessions_list defaults to the live claude sessions under the caller, with few fields', async () => {
+  const sessions = [
+    { id: 'me', kind: 'claude', title: 'A', cwd: '/r', branch: 'main', status: 'idle', statusLabel: 'Parado', sessionId: 's1' },
+    { id: 'tab2', kind: 'shell', title: 'B', cwd: '/r', exited: true },
+    { id: 'tab3', kind: 'shell', title: 'C', cwd: '/r', embedded: true },
+    { id: 'tab9', kind: 'claude', title: 'D', cwd: '/s', status: 'waitingAnswer', needsYou: true, activity: { lastPrompt: 'faz', lastMessage: 'pergunta?' } },
+    { id: 'other', kind: 'claude', title: 'E', cwd: '/s', status: 'idle' },
+    { id: 'sleepy', kind: 'claude', title: 'F', cwd: '/s', status: 'idle', hibernated: true },
+  ];
+  const ctx = makeCtx({ sessions });
+  await tools.handle('sessions_open', { cwd: '/srv/app', name: 'D' }, ctx);
+  ctx.links.add({ tabId: 'sleepy', parent: ctx.links.byTab('me'), name: 'F' });
+  const res = body(await tools.handle('sessions_list', {}, ctx));
+  assert.deepEqual(res.sessions, [{ tabId: 'tab9', title: 'D', status: 'waitingAnswer', needsYou: true, branch: null, lastMessage: 'pergunta?' }]);
+  assert.equal(res.hibernated, 1);
+});
+
+test('sessions_list with all: true returns every open tab with the full summary', async () => {
   const sessions = [
     { id: 'me', kind: 'claude', title: 'A', cwd: '/r', branch: 'main', status: 'idle', statusLabel: 'Parado', sessionId: 's1' },
     { id: 'tab2', kind: 'shell', title: 'B', cwd: '/r', exited: true },
@@ -128,14 +145,14 @@ test('sessions_list resume, traz gerente, cor e última atividade, e deixa de fo
   ];
   const ctx = makeCtx({ sessions });
   await tools.handle('sessions_open', { cwd: '/srv/app', name: 'D' }, ctx);
-  const all = body(await tools.handle('sessions_list', {}, ctx)).sessions;
+  const all = body(await tools.handle('sessions_list', { all: true }, ctx)).sessions;
   assert.deepEqual(all.map((s) => s.tabId), ['me', 'tab9']);
   assert.deepEqual(all[1], {
     tabId: 'tab9', kind: 'claude', title: 'D', cwd: '/s', branch: null, status: 'waitingAnswer', statusLabel: null,
     needsYou: true, hibernated: false, backgroundAgents: 0, color: 'red', parentTabId: 'me', manager: false, lastPrompt: 'faz', lastMessage: 'pergunta?',
   });
   assert.equal(all[0].manager, true);
-  const mine = body(await tools.handle('sessions_list', { mine: true }, ctx)).sessions;
+  const mine = body(await tools.handle('sessions_list', { all: true, mine: true }, ctx)).sessions;
   assert.deepEqual(mine.map((s) => s.tabId), ['tab9']);
 });
 
@@ -441,7 +458,7 @@ test('sessions_send confirms delivery by the prompt hook, also into a running tu
   assert.match(second.notConfirmed, /unconfirmedSends/);
   const third = body(await tools.handle('sessions_send', { tabId: 'w', text: 'and v4' }, ctx));
   assert.deepEqual(third.earlierUnconfirmed, ['no, v3']);
-  ctx.links.ensure('me', 'g');
+  ctx.links.add({ tabId: 'w', parent: ctx.links.ensure('me', 'g').key, name: 'w' });
   const listed = body(await tools.handle('sessions_list', {}, ctx)).sessions.find((s) => s.tabId === 'w');
   assert.deepEqual(listed.unconfirmedSends.map((q) => q.text), ['no, v3', 'and v4']);
 });

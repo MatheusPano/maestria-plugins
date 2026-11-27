@@ -250,3 +250,27 @@ test('a session that ended or hibernated mid-turn wakes the manager, named, unle
   assert.match(exited, /teve o claude encerrado no meio do turno/);
   assert.doesNotMatch(exited, /a aba está fechada/);
 });
+
+test('a slash command the plugin sent counts as delivered once it had time to run, with no prompt hook', () => {
+  let now = 0;
+  const sent = new Sent(() => now);
+  sent.note('t', '/compact');
+  assert.equal(sent.wasDelivered('t', '/compact', 0), false);
+  assert.deepEqual(sent.status('t').queued.map((m) => m.text), ['/compact']);
+  now = 3000;
+  assert.equal(sent.wasDelivered('t', '/compact', 0), true);
+  assert.deepEqual(sent.status('t').queued, []);
+  assert.deepEqual(sent.status('t').delivered.map((m) => m.text), ['/compact']);
+  sent.note('t', '/model sonnet', false);
+  now = 9000;
+  assert.deepEqual(sent.status('t').delivered.map((m) => m.text), ['/compact'], 'text left in the prompt is not a run command');
+});
+
+test('a prompt that starts with a path is not a slash command', () => {
+  let now = 0;
+  const sent = new Sent(() => now);
+  sent.note('t', '/var/www/x fails, look at it');
+  now = 5000;
+  assert.equal(sent.wasDelivered('t', '/var/www/x fails, look at it', 0), false);
+  assert.equal(sent.status('t').queued.length, 1);
+});

@@ -6,6 +6,9 @@ const { PROMPT, RESTING, plain, agentsOf, running } = require('./cards');
 
 const KEEP = 30;
 const SENT_MS = 10 * 60 * 1000;
+/** Claude Code runs a slash command without a prompt hook: after this long it counts as delivered. */
+const SLASH_MS = 3 * 1000;
+const isSlash = (text) => /^\/[a-z][\w:-]*(\s|$)/i.test(text);
 const limits = { quiet: 10 * 1000, gap: 5 * 60 * 1000, settle: 2 * 60 * 1000 };
 const LINE = 160;
 const REPLY = 600;
@@ -98,15 +101,23 @@ class Sent {
   /** The session took [text], sent to [tabId] at or after [since], as a prompt. */
   wasDelivered(tabId, text, since) {
     const said = norm(text);
-    return this.delivered.some((d) => d.tabId === tabId && d.text === said && d.at >= since);
+    return this.delivered.some((d) => d.tabId === tabId && d.text === said && d.at >= since) || (this.byTab.get(tabId) || []).some((m) => m.text === said && m.at >= since && this.ran(m));
+  }
+
+  /** A slash command the plugin submitted that had time to run. */
+  ran(m) {
+    return !m.typed && isSlash(m.text) && this.now() - m.at >= SLASH_MS;
   }
 
   /** What the plugin submitted to [tabId] that the session has not taken as a prompt yet ([queued]), and what it took ([delivered]). */
   status(tabId) {
     const fresh = (m) => this.now() - m.at < SENT_MS;
     return {
-      queued: (this.byTab.get(tabId) || []).filter((m) => fresh(m) && m.text && !m.typed).map((m) => ({ text: m.text, at: m.at })),
-      delivered: this.delivered.filter((m) => m.tabId === tabId && this.now() - m.deliveredAt < SENT_MS).map(({ text, at, deliveredAt }) => ({ text, at, deliveredAt })),
+      queued: (this.byTab.get(tabId) || []).filter((m) => fresh(m) && m.text && !m.typed && !this.ran(m)).map((m) => ({ text: m.text, at: m.at })),
+      delivered: [
+        ...this.delivered.filter((m) => m.tabId === tabId && this.now() - m.deliveredAt < SENT_MS).map(({ text, at, deliveredAt }) => ({ text, at, deliveredAt })),
+        ...(this.byTab.get(tabId) || []).filter((m) => fresh(m) && this.ran(m)).map((m) => ({ text: m.text, at: m.at, deliveredAt: m.at + SLASH_MS })),
+      ],
     };
   }
 }
@@ -150,6 +161,17 @@ function classify(links, e, sessions, now = Date.now()) {
   const seen = new Set(node.seenPrs || []);
   if (prsOf(s).some((u) => !seen.has(u))) return 'wake';
   return now - e.at >= limits.settle ? 'wake' : 'wait';
+}
+
+/** A finished turn nothing asks the user about: the tab is stopped, the reply does not end in a question and carries no PR the manager has not seen. The plugin can write that card itself. */
+function autoable(links, e, sessions, now = Date.now()) {
+  if (e.kind !== 'turn' || now - e.at < limits.quiet) return false;
+  const node = links.nodes[e.key];
+  const s = node && sessions.find((x) => x.id === node.tabId && isOpen(x));
+  if (!s || s.kind !== 'claude' || s.needsYou || PROMPT.has(s.status) || running(s) || agentsOf(s)) return false;
+  if (!s.reply || !s.reply.text || QUESTION.test(lastAsk(s.reply.text))) return false;
+  const seen = new Set(node.seenPrs || []);
+  return !prsOf(s).some((u) => !seen.has(u));
 }
 
 /** Uma linha por evento, com o nome da sessão e o que ela disse por último. */
@@ -302,4 +324,4 @@ function markSeen(links, events, sessions) {
   }
 }
 
-module.exports = { Asking, Sent, fromUser, queue, forget, lines, digest, excerpt, turnOf, due, classify, sort, markSeen, isPassive, limits };
+module.exports = { autoable, Asking, Sent, fromUser, queue, forget, lines, digest, excerpt, turnOf, due, classify, sort, markSeen, isPassive, limits };

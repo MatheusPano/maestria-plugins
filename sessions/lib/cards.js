@@ -2,6 +2,7 @@
 // Os dados do quadro do gerente (esperam você, rodando agora, terminaram hoje); o desenho é ui/panel.rfwtxt.
 
 const { colorOf, bare, isOpen } = require('./links');
+const { compact } = require('./usage');
 
 const STATES = ['working', 'needs_you', 'done'];
 const MAX_BULLETS = 3;
@@ -79,7 +80,8 @@ function ago(ms, now) {
   const min = Math.max(0, Math.round((now - ms) / 60000));
   if (min < 1) return 'agora';
   if (min < 60) return `há ${min} min`;
-  return `há ${Math.floor(min / 60)} h`;
+  if (min < 48 * 60) return `há ${Math.floor(min / 60)} h`;
+  return `há ${Math.floor(min / 1440)} d`;
 }
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
 const liveOf = (sessions) => new Map(sessions.filter(isOpen).map((s) => [s.id, s]));
@@ -174,7 +176,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
   const flag = replied ? null : flagOf(card, session, now);
   let kind = action && !tabAsks ? action.kind : 'none';
   if (tabAsks || (state === 'needs_you' && !action)) kind = 'wait';
-  if (replied || (flag === 'stalled' && session.reply && session.reply.text)) kind = 'reply';
+  const autoReply = c.auto && state === 'needs_you' && !action && Boolean(session && session.reply && session.reply.text);
+  if (replied || autoReply || (flag === 'stalled' && session.reply && session.reply.text)) kind = 'reply';
   if (flag === 'interrupted') kind = 'resume';
   const shownReply = replied || (kind === 'reply' ? session.reply : null);
   const options = action && action.options && !tabAsks ? action.options : [];
@@ -191,6 +194,12 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     (kind === 'command' ? (target ? `Rode na aba ${bare(target.title)}.` : 'Rode este comando.') : '') ||
     (kind === 'wait' ? waitOf(session) : '') ||
     (!card && session ? firstLine((session.reply && session.reply.text) || (session.activity && session.activity.lastMessage)) : '');
+  const menu = [
+    !node.free && !String(key).startsWith('@') && { action: `detail:${key}`, label: 'abrir o cartão', icon: 'open' },
+    Boolean(card) && state !== 'done' && !String(key).startsWith('@') && { action: `dismiss:${key}`, label: 'dispensar: vai para Terminaram hoje', icon: 'check' },
+    Boolean(session && session.hibernated) && { action: `wake:${key}`, label: 'acordar a aba', icon: 'play' },
+    !session && !node.free && !String(key).startsWith('@') && { action: `resume:${key}`, label: 'retomar a conversa', icon: 'play' },
+  ].filter(Boolean);
   const lastTurn = session && session.reply ? session.reply.at : null;
   const since = (replied && replied.at) || c.since || c.at || lastTurn || now;
   const activity = (session && session.activity) || {};
@@ -200,6 +209,10 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     task: short(task),
     title,
     color: node.free ? FREE : hex(colorOf(node.color).hex),
+    waiting: state === 'needs_you' ? `espera você ${ago(since, now)}` : '',
+    waitingSince: since,
+    tokens: session && session.usage ? `${compact(session.usage.perHour)} tokens/h · contexto ${compact(session.usage.context)}` : '',
+    hasTokens: Boolean(session && session.usage),
     age: !card && !lastTurn ? '' : state === 'needs_you' ? ago(since, now) : state === 'working' ? `desde ${clock(since)}` : clock(c.doneAt || c.at || lastTurn || now),
     headline,
     context: node.pending && node.pending.length
@@ -246,6 +259,9 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     rejecting: Boolean(ui.rejecting[key]),
     input: `answer-${key}`,
     canDismiss: Boolean(card) && state !== 'done' && !String(key).startsWith('@'),
+    goTip: session ? 'ir para a aba' : 'retomar a conversa',
+    menu,
+    hasMenu: menu.length > 0,
     canMessage: Boolean(session) && !['question', 'approve', 'reply'].includes(kind),
     canClose: state === 'done' && closable(session),
     writing: Boolean(ui.writing && ui.writing[key]),
@@ -279,6 +295,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       suggest: `suggest:${key}`,
       paste: `paste:${key}`,
       resume: session ? `focus:${session.id}` : `resume:${key}`,
+      go: session ? `focus:${session.id}` : node.free || String(key).startsWith('@') ? '' : `resume:${key}`,
       close: `close:${key}`,
     },
     ...proofData(c.proof, key, thumbs || (state === 'done' ? 1 : 2), session),
@@ -290,6 +307,7 @@ const seqOf = (key) => Number(String(key).slice(1)) || 0;
 /** Ordem fixa dentro da coluna (a de entrada na árvore), pra um cartão não pular quando você mexe nele. */
 function order(a, b) {
   if (a.state !== b.state) return 0;
+  if (a.state === 'needs_you' && a.waitingSince !== b.waitingSince) return a.waitingSince - b.waitingSince;
   if (a.rank != null && b.rank != null) return a.rank - b.rank;
   return a.state === 'needs_you' ? seqOf(a.key) - seqOf(b.key) : seqOf(b.key) - seqOf(a.key);
 }
@@ -341,8 +359,15 @@ function board(links, key, sessions, ui = {}, now = Date.now()) {
   const me = live.get(manager.tabId);
   const name = bare(manager.name);
   const folder = me && me.cwd ? me.cwd.replace(/^\/home\/[^/]+/, '~') : '';
+  const tree = whole ? 0 : links.subtree(key).slice(1).reduce((n, k) => n + ((live.get(links.nodes[k].tabId) || {}).usage || { perHour: 0 }).perHour, 0);
+  const burn = [me && me.usage ? `gerente ${compact(me.usage.perHour)} tokens/h, contexto ${compact(me.usage.context)}` : '', tree ? `sessões ${compact(tree)} tokens/h` : ''].filter(Boolean).join(' · ');
   return {
     name,
+    usage: burn,
+    hasUsage: Boolean(burn),
+    meta: Boolean(burn) || Boolean(u.archivable),
+    archive: u.archivable ? `arquivar ${u.archivable} ${u.archivable === 1 ? 'parada' : 'paradas'} há mais de 3 dias` : '',
+    archiveAct: 'archive',
     folder: folder === name ? '' : folder,
     total: `${all.length} ${all.length === 1 ? 'sessão' : 'sessões'}`,
     color: whole ? FREE : hex(colorOf(manager.color).hex),
