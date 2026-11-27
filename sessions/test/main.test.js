@@ -966,3 +966,35 @@ test('a send to a tab without a manager is confirmed by its prompt hook too', as
   const res = JSON.parse((await call).content[0].text);
   assert.equal(res.delivered, true);
 });
+
+test('the big editor opens on the same field, sends like the card box and closes when the field empties', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'needs_you', headline: 'rode isso', action: { kind: 'command', text: 'make deploy' } } });
+  const nodes = JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes;
+  const key = Object.keys(nodes).find((k) => nodes[k].tabId === 'w');
+  const g = Object.keys(nodes).find((k) => nodes[k].tabId === 'g');
+  const act = async (a, extra = {}) => {
+    handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a, ...extra } });
+    await new Promise((r) => setTimeout(r, 400));
+  };
+  const shown = () => calls.filter(([m, p]) => (m === 'view.open' || m === 'view.update') && p.viewId === 'painel').pop()[1].data;
+  await act(`switch:${g}`);
+  await act(`expand:message:${key}`);
+  const open = shown();
+  assert.deepEqual(
+    [open.editor.show, open.editor.input, open.editor.submit, open.editor.paste, open.editor.canPaste, open.canTell],
+    [true, `answer-${key}`, `message:${key}`, `paste:${key}`, true, false],
+  );
+  const clear = open.editor.clear;
+  const before = calls.length;
+  await act(open.editor.submit, { text: 'um texto bem longo' });
+  assert.deepEqual(calls.slice(before).filter(([m]) => m === 'terminal.sendText').map(([, p]) => [p.tabId, p.text]), [['w', 'um texto bem longo']]);
+  const after = shown();
+  assert.equal(after.editor.show, false);
+  assert.equal(after.cols.flatMap((c) => c.cards).find((c) => c.key === key).clear, clear + 1);
+  await act(`expand:tell:${g}`);
+  assert.deepEqual([shown().editor.show, shown().editor.input, shown().editor.submit], [true, `tell-${g}`, `tell:${g}`]);
+  await act('collapse');
+  assert.deepEqual([shown().editor.show, shown().canTell], [false, true]);
+});

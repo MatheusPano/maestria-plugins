@@ -12,16 +12,19 @@ widget root = Column(
     Tell(),
     Container(height: 1.0, color: data.theme.border),
     Expanded(
-      child: Padding(
-        padding: [12.0, 12.0, 12.0, 0.0],
-        child: Row(
-          crossAxisAlignment: "stretch",
-          children: [
-            ...for col in data.cols:
-              Expanded(child: Lane(col: col)),
-          ],
+      child: switch data.editor.show {
+        true: Editor(),
+        default: Padding(
+          padding: [12.0, 12.0, 12.0, 0.0],
+          child: Row(
+            crossAxisAlignment: "stretch",
+            children: [
+              ...for col in data.cols:
+                Expanded(child: Lane(col: col)),
+            ],
+          ),
         ),
-      ),
+      },
     ),
     History(),
   ],
@@ -112,16 +115,20 @@ widget ManagerChip = Pressable(
 widget Tell = switch data.canTell {
   true: Padding(
     padding: [18.0, 0.0, 14.0, 12.0],
-    child: TextInput(
-      id: data.tell.input,
-      placeholder: "mensagem para o gerente",
-      clear: data.tell.clear,
-      autofocus: data.tell.focus,
-      fontSize: 12.5,
-      multiline: true,
-      maxLines: 5,
-      sendIcon: "send",
-      onSubmit: event "act" { a: data.tell.act },
+    child: Expandable(
+      act: data.tell.expand,
+      can: true,
+      child: TextInput(
+        id: data.tell.input,
+        placeholder: "mensagem para o gerente",
+        clear: data.tell.clear,
+        autofocus: data.tell.focus,
+        fontSize: 12.5,
+        multiline: true,
+        maxLines: 15,
+        sendIcon: "send",
+        onSubmit: event "act" { a: data.tell.act },
+      ),
     ),
   ),
   default: SizedBox(),
@@ -479,15 +486,93 @@ widget Reply = Column(
 );
 
 widget Answer = Gap(
-  child: TextInput(
-    id: args.c.input,
-    placeholder: args.hint,
-    clear: args.c.clear,
-    fontSize: 12.5,
-    multiline: true,
-    maxLines: 5,
-    sendIcon: "send",
-    onSubmit: event "act" { a: args.act },
+  child: Expandable(
+    act: args.c.acts.expandAnswer,
+    can: args.c.canExpand,
+    child: TextInput(
+      id: args.c.input,
+      placeholder: args.hint,
+      clear: args.c.clear,
+      fontSize: 12.5,
+      multiline: true,
+      maxLines: 15,
+      sendIcon: "send",
+      onSubmit: event "act" { a: args.act },
+    ),
+  ),
+);
+
+// The box with the button that opens it in the big editor (Editor), where the same field id keeps the text.
+widget Expandable = Row(
+  crossAxisAlignment: "start",
+  children: [
+    Expanded(child: args.child),
+    switch args.can {
+      true: Padding(
+        padding: [4.0, 0.0, 0.0, 0.0],
+        child: Pressable(
+          radius: 6.0,
+          hoverColor: data.theme.hover,
+          tooltip: "abrir na caixa grande",
+          onTap: event "act" { a: args.act },
+          child: Padding(padding: [6.0, 6.0, 6.0, 6.0], child: Glyph(icon: "icons/expand.svg", size: 14.0, color: data.theme.dim)),
+        ),
+      ),
+      default: SizedBox(),
+    },
+  ],
+);
+
+widget Editor = Padding(
+  padding: [18.0, 14.0, 18.0, 14.0],
+  child: Column(
+    crossAxisAlignment: "stretch",
+    children: [
+      Row(
+        children: [
+          Expanded(child: Text(text: data.editor.title, maxLines: 1, overflow: "ellipsis", style: { fontSize: 13.5, fontWeight: "w600", color: data.theme.fg })),
+          SizedBox(width: 8.0),
+          Btn(label: "recolher", icon: "icons/collapse.svg", act: data.editor.close, kind: "sec"),
+        ],
+      ),
+      SizedBox(height: 10.0),
+      Expanded(
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: "stretch",
+            children: [
+              switch data.editor.canPaste {
+                true: TextInput(
+                  id: data.editor.input,
+                  placeholder: data.editor.hint,
+                  clear: data.editor.clear,
+                  fontSize: 13.5,
+                  multiline: true,
+                  maxLines: 30,
+                  sendIcon: "send",
+                  onSubmit: event "act" { a: data.editor.submit },
+                  onPasteImage: event "act" { a: data.editor.paste },
+                ),
+                default: TextInput(
+                  id: data.editor.input,
+                  placeholder: data.editor.hint,
+                  clear: data.editor.clear,
+                  fontSize: 13.5,
+                  multiline: true,
+                  maxLines: 30,
+                  sendIcon: "send",
+                  onSubmit: event "act" { a: data.editor.submit },
+                ),
+              },
+              switch data.editor.hasImages {
+                true: Padding(padding: [2.0, 4.0, 0.0, 0.0], child: Text(text: data.editor.images, style: { fontSize: 11.0, color: data.theme.dim })),
+                default: SizedBox(),
+              },
+            ],
+          ),
+        ),
+      ),
+    ],
   ),
 );
 
@@ -495,16 +580,20 @@ widget MessageBox = Gap(
   child: Column(
     crossAxisAlignment: "stretch",
     children: [
-      TextInput(
-        id: args.c.input,
-        placeholder: args.hint,
-        clear: args.c.clear,
-        fontSize: 12.5,
-        multiline: true,
-        maxLines: 5,
-        sendIcon: "send",
-        onSubmit: event "act" { a: args.c.acts.message },
-        onPasteImage: event "act" { a: args.c.acts.paste },
+      Expandable(
+        act: args.c.acts.expandMessage,
+        can: args.c.canExpand,
+        child: TextInput(
+          id: args.c.input,
+          placeholder: args.hint,
+          clear: args.c.clear,
+          fontSize: 12.5,
+          multiline: true,
+          maxLines: 15,
+          sendIcon: "send",
+          onSubmit: event "act" { a: args.c.acts.message },
+          onPasteImage: event "act" { a: args.c.acts.paste },
+        ),
       ),
       switch args.c.hasImages {
         true: Padding(padding: [2.0, 4.0, 0.0, 0.0], child: Text(text: args.c.images, style: { fontSize: 11.0, color: data.theme.dim })),

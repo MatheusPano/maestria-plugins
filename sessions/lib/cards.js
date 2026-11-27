@@ -89,7 +89,10 @@ const ALL = '*';
 const FREE = 0xff8b8b8b;
 const firstLine = (text) => plain(text).split('\n').map((l) => l.trim()).find(Boolean) || '';
 
-const UI = () => ({ picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, playing: null });
+/** The hint of the Answer box each card kind shows (ui/panel.rfwtxt); a kind without one has no Answer box. */
+const ANSWER_HINTS = { wait: 'responda aqui: vai para a aba quando ela sair da pergunta', question: 'ou responda com suas palavras…', reply: 'sua resposta' };
+
+const UI = () => ({ picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, playing: null, expanded: null });
 
 /** Tira o "TASK#123" do começo do título: ele já vai na coluna do número. */
 function split(title, task) {
@@ -183,6 +186,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
   const options = action && action.options && !tabAsks ? action.options : [];
   const audible = options.some((o) => o.audio);
   const picked = ui.picked[key];
+  const canMessage = Boolean(session) && !['question', 'approve', 'reply'].includes(kind);
   const playing = ui.playing && ui.playing.key === key ? ui.playing.id : null;
   const headline =
     (flag === 'stalled' && `Parada há ${Math.max(3, Math.round((now - idleSince(c, session)) / 60000))} min, mas o cartão dizia que estava trabalhando.`) ||
@@ -258,13 +262,16 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     canUse: audible && picked != null && Boolean(options[picked]),
     rejecting: Boolean(ui.rejecting[key]),
     input: `answer-${key}`,
+    canExpand: true,
+    answerHint: state === 'done' ? '' : kind === 'approve' && ui.rejecting[key] ? 'por que rejeitar? (enter manda)' : ANSWER_HINTS[kind] || '',
     canDismiss: Boolean(card) && state !== 'done' && !String(key).startsWith('@'),
     goTip: session ? 'ir para a aba' : 'retomar a conversa',
     menu,
     hasMenu: menu.length > 0,
-    canMessage: Boolean(session) && !['question', 'approve', 'reply'].includes(kind),
+    canMessage,
     canClose: state === 'done' && closable(session),
     writing: Boolean(ui.writing && ui.writing[key]),
+    hasMessageBox: state === 'done' ? Boolean(ui.writing && ui.writing[key]) : canMessage,
     clear: ui.clears[key] || 0,
     live: state !== 'working' ? '' : agentsOf(session) ? behind(agentsOf(session)) : plain(activity.lastTool || activity.lastMessage).slice(0, 140),
     hasLive: state === 'working' && Boolean(agentsOf(session) || activity.lastTool || activity.lastMessage),
@@ -294,6 +301,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
       use: `use:${key}`,
       suggest: `suggest:${key}`,
       paste: `paste:${key}`,
+      expandAnswer: `expand:answer:${key}`,
+      expandMessage: `expand:message:${key}`,
       resume: session ? `focus:${session.id}` : `resume:${key}`,
       go: session ? `focus:${session.id}` : node.free || String(key).startsWith('@') ? '' : `resume:${key}`,
       close: `close:${key}`,
@@ -358,6 +367,7 @@ function board(links, key, sessions, ui = {}, now = Date.now()) {
   const cards = all.filter((c) => u.showOld || !old.includes(c)).sort(order);
   const me = live.get(manager.tabId);
   const name = bare(manager.name);
+  const editor = editorOf(u.expanded, key, all, Boolean(me), name, u);
   const folder = me && me.cwd ? me.cwd.replace(/^\/home\/[^/]+/, '~') : '';
   const tree = whole ? 0 : links.subtree(key).slice(1).reduce((n, k) => n + ((live.get(links.nodes[k].tabId) || {}).usage || { perHour: 0 }).perHour, 0);
   const burn = [me && me.usage ? `gerente ${compact(me.usage.perHour)} tokens/h, contexto ${compact(me.usage.context)}` : '', tree ? `sessões ${compact(tree)} tokens/h` : ''].filter(Boolean).join(' · ');
@@ -372,8 +382,9 @@ function board(links, key, sessions, ui = {}, now = Date.now()) {
     total: `${all.length} ${all.length === 1 ? 'sessão' : 'sessões'}`,
     color: whole ? FREE : hex(colorOf(manager.color).hex),
     managerTab: me ? `focus:${me.id}` : '',
-    tell: { input: `tell-${key}`, act: `tell:${key}`, clear: u.clears[`tell-${key}`] || 0, focus: u.focus === key },
-    canTell: Boolean(me),
+    tell: { input: `tell-${key}`, act: `tell:${key}`, clear: u.clears[`tell-${key}`] || 0, focus: u.focus === key, expand: `expand:tell:${key}` },
+    canTell: Boolean(me) && !editor.show,
+    editor,
     cols: COLUMNS.map((col) => {
       const list = cards.filter((c) => c.state === col.state);
       return { ...col, count: String(list.length), cards: list, isEmpty: list.length === 0 };
@@ -381,6 +392,27 @@ function board(links, key, sessions, ui = {}, now = Date.now()) {
     older: !old.length ? '' : u.showOld ? 'esconder os de antes de hoje' : `ontem e antes · ${old.length}`,
     olderAct: 'older',
   };
+}
+
+const NO_EDITOR = { show: false, title: '', input: '', hint: '', clear: 0, submit: '', paste: '', canPaste: false, images: '', hasImages: false, close: 'collapse' };
+
+/** The big editor for [expanded] ("answer:<key>", "message:<key>" or "tell:<board key>"): the same field id, so the typed text stays. */
+function editorOf(expanded, key, cards, managerLive, managerName, u) {
+  if (!expanded) return NO_EDITOR;
+  const at = expanded.indexOf(':');
+  const mode = expanded.slice(0, at);
+  const target = expanded.slice(at + 1);
+  if (mode === 'tell') {
+    if (target !== key || !managerLive) return NO_EDITOR;
+    const input = `tell-${key}`;
+    return { ...NO_EDITOR, show: true, title: `mensagem para o gerente ${managerName}`.trim(), input, hint: 'mensagem para o gerente', clear: u.clears[input] || 0, submit: `tell:${key}` };
+  }
+  const c = cards.find((x) => x.key === target);
+  if (!c) return NO_EDITOR;
+  const base = { ...NO_EDITOR, show: true, input: c.input, clear: c.clear };
+  if (mode === 'answer' && c.answerHint) return { ...base, title: `resposta para ${c.title}`, hint: c.answerHint, submit: c.acts.answer };
+  if (mode === 'message' && c.hasMessageBox) return { ...base, title: `mensagem para ${c.title}`, hint: 'mensagem para a sessão', submit: c.acts.message, paste: c.acts.paste, canPaste: true, images: c.images, hasImages: c.hasImages };
+  return NO_EDITOR;
 }
 
 /** O cartão aberto (modal): tudo do cartão, o log inteiro e de onde a sessão é. */
@@ -401,7 +433,7 @@ function detail(links, key, sessions, ui = {}, now = Date.now()) {
   ].filter(([, v]) => v).map(([k, v]) => ({ k, v }));
   const touched = (act.touched || []).slice(-8).map((f) => f.split('/').slice(-2).join('/'));
   return {
-    card: { ...c, open: true },
+    card: { ...c, open: true, canExpand: false },
     info,
     touched,
     hasTouched: touched.length > 0,

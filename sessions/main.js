@@ -42,7 +42,7 @@ const state = {
   probed: false,
   modal: null,
   live: {},
-  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, history: null, playing: null, focus: null },
+  ui: { picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, images: {}, unfolded: {}, showOld: false, history: null, playing: null, focus: null, expanded: null },
   title: undefined,
   doctor: false,
   sent: new relay.Sent(),
@@ -395,6 +395,7 @@ async function refresh() {
 /** O template só vai na primeira vez por processo: reenviá-lo reconstrói a janela e zera a rolagem. */
 function panelOf(sessions) {
   const p = panel(state.links, state.current, sessions, LIBRARY, state.ui);
+  if (state.ui.expanded && !state.ui.expanded.startsWith('tell:') && !p.data.editor.show) state.ui.expanded = null;
   p.data.history = history.view(state.links, state.current, state.ui.history);
   return p;
 }
@@ -753,6 +754,14 @@ function toggleAudio(key, kind, i) {
   return schedule();
 }
 
+/** Empties the field [id] (a card key or "tell-<key>") and closes the big editor that was showing it. */
+function emptied(id) {
+  state.ui.clears[id] = (state.ui.clears[id] || 0) + 1;
+  const shown = state.ui.expanded || '';
+  const target = shown.slice(shown.indexOf(':') + 1);
+  if (shown && (shown.startsWith('tell:') ? `tell-${target}` : target) === id) state.ui.expanded = null;
+}
+
 async function answer(key, text, message = false) {
   stopAudio();
   const { via, title } = await deliver(key, text, { ...wakeIo, links: state.links, sessions: await listSessions(), message, boot: BOOT });
@@ -760,7 +769,7 @@ async function answer(key, text, message = false) {
   delete state.ui.rejecting[key];
   delete state.ui.writing[key];
   if (via === 'terminal') delete state.ui.images[key];
-  state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
+  emptied(key);
   save();
   if (via === 'pending') {
     schedule();
@@ -857,8 +866,7 @@ async function tell(key, text) {
   if (!m) throw new Error('a aba do gerente está fechada');
   await typeInto(wakeIo, m, body);
   if (state.ui.focus === key) delete state.ui.focus;
-  const clear = `tell-${key}`;
-  state.ui.clears[clear] = (state.ui.clears[clear] || 0) + 1;
+  emptied(`tell-${key}`);
   schedule();
   return mx.request('window.showBanner', { text: `enviado para ${bare(m.title)}` }).catch(() => {});
 }
@@ -908,7 +916,7 @@ async function sendImages(key) {
   }
   delete state.ui.images[key];
   delete state.ui.writing[key];
-  state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
+  emptied(key);
   return save();
 }
 
@@ -935,7 +943,7 @@ async function onFree(verb, key, values) {
   await typeInto(wakeIo, s, body);
   delete state.ui.writing[key];
   delete state.ui.images[key];
-  state.ui.clears[key] = (state.ui.clears[key] || 0) + 1;
+  emptied(key);
   schedule();
   return mx.request('window.showBanner', { text: `enviado para ${bare(s.title)}` }).catch(() => {});
 }
@@ -1038,6 +1046,11 @@ const CARD_VERBS = ['paste', 'suggest', 'detail', 'notes', 'reject', 'write', 't
 
 async function onAction(act, values) {
   const [verb, a, b, ...more] = act.split(':');
+  if (verb === 'expand' || verb === 'collapse') {
+    const id = verb === 'expand' ? act.slice('expand:'.length) : null;
+    state.ui.expanded = id && state.ui.expanded !== id ? id : null;
+    return schedule();
+  }
   if (CARD_VERBS.includes(verb)) return onCard(verb, a, [b, ...more], values);
   if (verb === 'pr' || verb === 'image') return onProof(verb, a, Number(b));
   if (verb === 'url') return openFound(a, Number(b));
