@@ -544,3 +544,13 @@ test('the answer boxes grow to 15 lines and each has the expand button', () => {
   assert.match(editor, /onPasteImage: event "act" \{ a: data\.editor\.paste \}/);
   assert.equal((editor.match(/id: data\.editor\.input/g) || []).length, 2);
 });
+
+test('cartão esperando você tem uma caixa só: resposta se a aba pergunta, mensagem se ela está parada', () => {
+  const { l, g, kid } = setup();
+  kid('p', { state: 'needs_you', at: 1 });
+  kid('a', { state: 'needs_you', at: 1 });
+  const sessions = [{ id: 'g', title: 'g' }, { id: 'p', title: 'p', status: 'idle' }, { id: 'a', title: 'a', status: 'waitingPermission' }];
+  const b = board(l, g, sessions, {}, NOW);
+  const all = Object.fromEntries(b.cols.flatMap((c) => c.cards).map((c) => [c.title, c]));
+  assert.deepEqual(['p', 'a'].map((t) => [all[t].kind, all[t].asks, all[t].canMessage]), [['wait', false, true], ['wait', true, false]]);
+});

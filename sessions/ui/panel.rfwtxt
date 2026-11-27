@@ -234,7 +234,10 @@ widget Card = Box(
       "wait": Column(
         crossAxisAlignment: "stretch",
         children: [
-          Answer(c: args.c, act: args.c.acts.answer, hint: "responda aqui: vai para a aba quando ela sair da pergunta"),
+          switch args.c.asks {
+            true: Answer(c: args.c, act: args.c.acts.answer, hint: "responda aqui: vai para a aba quando ela sair da pergunta"),
+            default: SizedBox(),
+          },
           Prompted(c: args.c),
           Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
         ],

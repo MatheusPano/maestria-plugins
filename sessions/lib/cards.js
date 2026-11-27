@@ -186,7 +186,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
   const options = action && action.options && !tabAsks ? action.options : [];
   const audible = options.some((o) => o.audio);
   const picked = ui.picked[key];
-  const canMessage = Boolean(session) && !['question', 'approve', 'reply'].includes(kind);
+  const asks = kind === 'wait' && (tabAsks || prompt);
+  const canMessage = Boolean(session) && !asks && !['question', 'approve', 'reply'].includes(kind);
   const playing = ui.playing && ui.playing.key === key ? ui.playing.id : null;
   const headline =
     (flag === 'stalled' && `Parada há ${Math.max(3, Math.round((now - idleSince(c, session)) / 60000))} min, mas o cartão dizia que estava trabalhando.`) ||
@@ -263,6 +264,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     rejecting: Boolean(ui.rejecting[key]),
     input: `answer-${key}`,
     canExpand: true,
+    asks,
     answerHint: state === 'done' ? '' : kind === 'approve' && ui.rejecting[key] ? 'por que rejeitar? (enter manda)' : ANSWER_HINTS[kind] || '',
     canDismiss: Boolean(card) && state !== 'done' && !String(key).startsWith('@'),
     goTip: session ? 'ir para a aba' : 'retomar a conversa',
