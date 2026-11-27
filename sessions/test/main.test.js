@@ -535,11 +535,15 @@ test('com a pergunta ainda aberta nos hooks, o aviso não é digitado nem quando
 test('o cabeçalho do cartão tem o botão "ir para a aba", que leva direto à sessão', async () => {
   const lib = fs.readFileSync(path.join(root, 'ui', 'panel.rfwtxt'), 'utf8');
   const head = lib.slice(lib.indexOf('widget TitleRow'), lib.indexOf('widget Gap'));
-  assert.match(head, /switch args\.c\.acts\.focus \{\s*"": SizedBox\(\),\s*default: IconButton\(icon: "open", tooltip: "ir para a aba"[^\n]*a: args\.c\.acts\.focus/);
+  assert.match(head, /switch args\.c\.acts\.go \{\s*"": SizedBox\(\),\s*default: IconButton\(icon: "open", tooltip: args\.c\.goTip[^\n]*a: args\.c\.acts\.go/);
+  assert.match(head, /MenuButton\(icon: "more"[^\n]*menu: args\.c\.menu, onMenu: event "act" \{\}/);
   const before = calls.length;
   handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { a: 'focus:w' } });
   await tick();
   assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.focus'), [['session.focus', { tabId: 'w' }]]);
+  handlers.note['view.action']({ viewId: 'painel', action: 'act', values: { action: 'focus:g' } });
+  await tick();
+  assert.deepEqual(calls.slice(before).filter(([m]) => m === 'session.focus').pop(), ['session.focus', { tabId: 'g' }], 'a menu choice arrives as values.action');
 });
 
 test('responder a pergunta ou a permissão na própria aba tira da coluna na hora o cartão que só apontava pra aba; o que pede outra coisa fica', async () => {

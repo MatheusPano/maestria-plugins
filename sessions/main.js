@@ -69,6 +69,7 @@ const CARD = 'cartao:';
 const IMAGE = 'imagem:';
 const DOCTOR = 'diagnostico';
 const CLEANUP = 'limpeza';
+const ARCHIVE_IDLE = '3d';
 /** Esta subida do plugin: uma resposta pendente de antes do reinício vai pro gerente, não pra aba. */
 const BOOT = `${process.pid}-${Date.now()}`;
 const LIBRARY = fs.readFileSync(path.join(__dirname, 'ui', 'panel.rfwtxt'), 'utf8');
@@ -103,7 +104,12 @@ function withReplies(sessions) {
   return sessions.map((s) => (s.kind === 'claude' && s.sessionId && !s.needsYou && (RESTING.has(s.status) || s.hibernated) ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
 }
 
-const listSessions = async () => withReplies(withLive((await mx.request('sessions.list')) || []));
+/** Tokens per hour and context of the conversations in the tree (the managers and their sessions). */
+function withUsage(sessions) {
+  return sessions.map((s) => (s.kind === 'claude' && s.sessionId && state.links.byTab(s.id) ? { ...s, usage: readUsage(s.sessionId, s.cwd) } : s));
+}
+
+const listSessions = async () => withUsage(withReplies(withLive((await mx.request('sessions.list')) || [])));
 
 /** Como o plugin acorda uma aba hibernada antes de digitar nela: avisa com um banner e relê as abas até ela ficar pronta. */
 const wakeIo = {
@@ -211,6 +217,19 @@ async function closeDone(sessions) {
 function parkedOf(sessions, idle = cleanup.DEFAULT_IDLE) {
   const withReply = sessions.map((s) => (cleanup.parked(s) && !s.reply && s.sessionId ? { ...s, reply: readReply(s.sessionId, s.cwd) } : s));
   return cleanup.candidates(state.links, withReply, { idle, touched: (s) => readReply.touched(s.sessionId, s.cwd) });
+}
+
+/** The tabs the panel's "arquivar parados" closes: parked for over 3 days, only the groups the cleanup marks by default (done card, no card). */
+function archivable(sessions) {
+  const list = cleanup.candidates(state.links, sessions, { idle: ARCHIVE_IDLE, touched: (s) => readReply.touched(s.sessionId, s.cwd) });
+  const picked = cleanup.defaults(list);
+  return list.filter((c) => picked.has(c.tabId));
+}
+
+async function archive() {
+  const list = parkedOf(await listSessions(), ARCHIVE_IDLE);
+  state.cleanup = { idle: ARCHIVE_IDLE, list, picked: cleanup.defaults(list) };
+  return runCleanup();
 }
 
 const cleanupData = () => cleanup.view(state.cleanup.list, state.cleanup.picked, state.cleanup.idle);
@@ -325,6 +344,7 @@ async function refresh() {
   const gone = closedByYou(sessions);
   state.lastSessions = sessions;
   state.ui.parked = cleanup.candidates(state.links, sessions, { touched: (s) => readReply.touched(s.sessionId, s.cwd) }).length;
+  state.ui.archivable = archivable(sessions).length;
   const settled = settleTurns(sessions);
   const cut = interruptions(sessions);
   const carded = autocard.run(state.links, sessions);
@@ -859,6 +879,12 @@ async function readyTabOf(key) {
   return s;
 }
 
+/** Acorda a aba hibernada do cartão [key]. */
+async function wakeCard(key) {
+  await awake(wakeIo, await tabOfCard(key));
+  return schedule();
+}
+
 /** Cola na aba do cartão [key] a imagem da área de transferência: ela fica no prompt da aba até a mensagem ir. */
 async function pasteImage(key) {
   const s = await readyTabOf(key);
@@ -1020,6 +1046,8 @@ async function onAction(act, values) {
   if (verb === 'novo') return createManager();
   if (verb === 'focus') return mx.request('session.focus', { tabId: a });
   if (verb === 'resume') return resume(a);
+  if (verb === 'wake') return wakeCard(a);
+  if (verb === 'archive') return archive();
   if (verb === 'reopen') return reopen(a);
   if (verb === 'close') return closeTab(a);
   if (verb === 'hpr') {
@@ -1103,7 +1131,7 @@ mx.onNotification('view.action', ({ viewId, action, values }) => {
     return;
   }
   if (id !== 'sidebar' && id !== PANEL && id !== DOCTOR && id !== CLEANUP && ![CARD, IMAGE].some((p) => id.startsWith(p))) return;
-  const act = String(action === 'act' ? values && values.a : action || (values && values.action) || '');
+  const act = String(action === 'act' ? (values && (values.a || values.action)) || '' : action || (values && values.action) || '');
   onAction(act, values).catch((e) => {
     mx.log('ação', act, e.message);
     mx.request('window.showBanner', { text: `sessions: ${e.message}` }).catch(() => {});

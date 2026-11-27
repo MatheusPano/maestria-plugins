@@ -8,6 +8,7 @@ widget root = Column(
   children: [
     Switch(),
     Top(),
+    Meta(),
     Tell(),
     Container(height: 1.0, color: data.theme.border),
     Expanded(
@@ -49,6 +50,22 @@ widget Top = Padding(
     ],
   ),
 );
+
+widget Meta = switch data.meta {
+  true: Padding(
+    padding: [18.0, 0.0, 14.0, 10.0],
+    child: Row(
+      children: [
+        Expanded(child: Text(text: data.usage, maxLines: 1, overflow: "ellipsis", style: { fontSize: 11.5, color: data.theme.faint })),
+        switch data.archive {
+          "": SizedBox(),
+          default: Btn(label: data.archive, icon: "close", act: data.archiveAct, kind: "sec"),
+        },
+      ],
+    ),
+  ),
+  default: SizedBox(),
+};
 
 widget Switch = switch data.hasSwitch {
   true: Padding(
@@ -195,6 +212,10 @@ widget Card = Box(
       "": SizedBox(),
       default: Padding(padding: [0.0, 3.0, 0.0, 0.0], child: Text(text: args.c.context, style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 })),
     },
+    switch args.c.hasTokens {
+      true: Padding(padding: [0.0, 3.0, 0.0, 0.0], child: Text(text: args.c.tokens, style: { fontSize: 11.0, color: data.theme.faint })),
+      default: SizedBox(),
+    },
     switch args.c.hasLive {
       true: Live(c: args.c),
       default: SizedBox(),
@@ -203,7 +224,14 @@ widget Card = Box(
       "command": Command(c: args.c),
       "question": Question(c: args.c),
       "approve": Approve(c: args.c),
-      "wait": Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
+      "wait": Column(
+        crossAxisAlignment: "stretch",
+        children: [
+          Answer(c: args.c, act: args.c.acts.answer, hint: "responda aqui: vai para a aba quando ela sair da pergunta"),
+          Prompted(c: args.c),
+          Gap(child: Row(children: [Btn(label: "ir para a aba", icon: "open", act: args.c.acts.focus, kind: "pri")])),
+        ],
+      ),
       "reply": Reply(c: args.c),
       "resume": Gap(child: Row(children: [Btn(label: "retomar a conversa", icon: "play", act: args.c.acts.resume, kind: "pri")])),
       default: SizedBox(),
@@ -238,17 +266,16 @@ widget TitleRow = Row(
       "": SizedBox(),
       default: Padding(padding: [0.0, 0.0, 8.0, 0.0], child: Pill(text: args.c.badge, tone: args.c.badgeTone)),
     },
-    Text(text: args.c.age, style: { fontSize: 11.0, color: switch args.c.state { "needs_you": data.theme.red, default: data.theme.faint } }),
+    Text(text: switch args.c.state { "needs_you": args.c.waiting, default: args.c.age }, style: { fontSize: 11.0, color: switch args.c.state { "needs_you": data.theme.red, default: data.theme.faint } }),
     SizedBox(width: 4.0),
-    switch args.c.acts.focus {
+    switch args.c.acts.go {
       "": SizedBox(),
-      default: IconButton(icon: "open", tooltip: "ir para a aba", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.focus }),
+      default: IconButton(icon: "open", tooltip: args.c.goTip, size: 14.0, extent: 22.0, color: data.theme.dim, onPressed: event "act" { a: args.c.acts.go }),
     },
-    switch args.c.canDismiss {
-      true: IconButton(icon: "check", tooltip: "dispensar: o cartão vai para Terminaram hoje", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.dismiss }),
+    switch args.c.hasMenu {
+      true: MenuButton(icon: "more", tooltip: "mais", menu: args.c.menu, onMenu: event "act" {}),
       default: SizedBox(),
     },
-    IconButton(icon: "more", tooltip: "abrir o cartão", size: 14.0, extent: 22.0, color: data.theme.faint, onPressed: event "act" { a: args.c.acts.detail }),
   ],
 );
 

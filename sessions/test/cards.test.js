@@ -43,7 +43,7 @@ test('sessão hibernada, encerrada ou fechada não está trabalhando; cartão "w
   assert.equal(stateOf({ state: 'done', dismissed: true }, { status: 'tool' }), 'done');
 });
 
-test('o quadro separa as três colunas na ordem de entrada na árvore (precisa de você: primeiro quem entrou antes), feito só de hoje', () => {
+test('o quadro separa as três colunas (precisa de você: quem espera há mais tempo primeiro), feito só de hoje', () => {
   const { l, g, kid } = setup();
   kid('a', { state: 'needs_you', since: min(5) });
   kid('b', { state: 'needs_you', since: min(90) });
@@ -54,14 +54,15 @@ test('o quadro separa as três colunas na ordem de entrada na árvore (precisa d
   const sessions = ['g', 'a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id, title: `TASK#${id.charCodeAt(0)} ${id}`, status: 'ready', cwd: '/home/w/r' }));
   const b = board(l, g, sessions, {}, NOW);
   const c = cols(b);
-  assert.deepEqual(c.needs_you.map((x) => x.title), ['a', 'b']);
+  assert.deepEqual(c.needs_you.map((x) => x.title), ['b', 'a']);
+  assert.deepEqual(c.needs_you.map((x) => x.waiting), ['espera você há 1 h', 'espera você há 5 min']);
   assert.deepEqual(c.working.map((x) => x.title), ['d', 'c']);
   assert.deepEqual(c.done.map((x) => x.title), ['e']);
   assert.equal(b.older, 'ontem e antes · 1');
   assert.deepEqual(b.cols.map((x) => x.count), ['2', '2', '1']);
-  assert.equal(c.needs_you[0].age, 'há 5 min');
-  assert.equal(c.needs_you[1].age, 'há 1 h');
-  assert.equal(c.needs_you[1].task, '#98');
+  assert.equal(c.needs_you[1].age, 'há 5 min');
+  assert.equal(c.needs_you[0].age, 'há 1 h');
+  assert.equal(c.needs_you[1].task, '#97');
   assert.equal(b.folder, '~/r');
   assert.equal(b.total, '6 sessões');
 });
@@ -226,7 +227,7 @@ test('cada cartão tem a sua caixa de resposta, e limpar uma não limpa as outra
   assert.deepEqual(Object.fromEntries(c.map((x) => [x.title, x.clear])), { a: 3, b: 0 });
 });
 
-test('responder um cartão do meio não o tira do lugar, nem quando ele responde de volta', () => {
+test('responder um cartão do meio não o tira do lugar; quem espera há mais tempo vem primeiro', () => {
   const { l, g, kid } = setup();
   const ks = ['a', 'b', 'c'].map((t) => kid(t, { state: 'working', since: min(30) }));
   const ses = (over = {}) => [{ id: 'g' }, ...['a', 'b', 'c'].map((id) => ({ id, title: id, status: 'tool', ...over[id] }))];
@@ -236,7 +237,7 @@ test('responder um cartão do meio não o tira do lugar, nem quando ele responde
   assert.deepEqual(order(board(l, g, ses(), {}, NOW)).working, ['c', 'b', 'a']);
   for (const k of ks) l.nodes[k].card = { state: 'working', since: NOW - 1000, answered: { text: 'ok', at: NOW - 1000 } };
   const replied = { a: { status: 'idle', reply: { text: 'r', at: NOW } }, b: { status: 'idle', reply: { text: 'r', at: NOW - 600 } }, c: { status: 'idle', reply: { text: 'r', at: NOW - 900 } } };
-  assert.deepEqual(order(board(l, g, ses(replied), {}, NOW)).needs_you, ['a', 'b', 'c']);
+  assert.deepEqual(order(board(l, g, ses(replied), {}, NOW)).needs_you, ['c', 'b', 'a']);
 });
 
 test('resposta longa: o cartão mostra o começo e oferece a inteira no cartão aberto', () => {
@@ -477,4 +478,33 @@ test('a card the plugin wrote from the last reply shows that reply and its headl
   const sessions = [{ id: 'g' }, { id: 's', title: 's', status: 'idle', reply: { text: 'Suite is green\nAll pass.', at: min(2) } }];
   const c = cols(board(l, g, sessions, {}, NOW));
   assert.deepEqual(c.needs_you.map((x) => [x.kind, x.headline, x.reply, x.badge]), [['reply', 'Suite is green', 'Suite is green\nAll pass.', 'respondeu']]);
+});
+
+test('every card has a way to the tab (or to resume it) and a menu with dismiss', () => {
+  const { l, g, kid } = setup();
+  kid('open', { state: 'needs_you' });
+  kid('gone', { state: 'working', busy: true });
+  kid('sleepy', { state: 'needs_you', at: NOW });
+  const sessions = [{ id: 'g' }, { id: 'open', title: 'open', status: 'idle' }, { id: 'sleepy', title: 'sleepy', status: 'idle', hibernated: true }];
+  const all = Object.values(cols(board(l, g, sessions, {}, NOW))).flat();
+  const by = Object.fromEntries(all.map((x) => [x.title, x]));
+  assert.deepEqual([by.open.acts.go, by.open.goTip], ['focus:open', 'ir para a aba']);
+  assert.match(by.gone.acts.go, /^resume:/);
+  assert.equal(by.gone.goTip, 'retomar a conversa');
+  assert.deepEqual(by.open.menu.map((m) => m.action.split(':')[0]), ['detail', 'dismiss']);
+  assert.deepEqual(by.sleepy.menu.map((m) => m.action.split(':')[0]), ['detail', 'dismiss', 'wake']);
+  assert.deepEqual(by.gone.menu.map((m) => m.action.split(':')[0]), ['detail', 'dismiss', 'resume']);
+});
+
+test('tokens per hour show on the card and on the panel header, for the manager and its sessions', () => {
+  const { l, g, kid } = setup();
+  kid('a', { state: 'working', at: NOW });
+  const sessions = [
+    { id: 'g', usage: { perHour: 1800000, context: 130000 } },
+    { id: 'a', title: 'a', status: 'tool', usage: { perHour: 340000, context: 90000 } },
+  ];
+  const b = board(l, g, sessions, { archivable: 2 }, NOW);
+  assert.equal(cols(b).working[0].tokens, '340k tokens/h · contexto 90k');
+  assert.equal(b.usage, 'gerente 1.8M tokens/h, contexto 130k · sessões 340k tokens/h');
+  assert.equal(b.archive, 'arquivar 2 paradas há mais de 3 dias');
 });
