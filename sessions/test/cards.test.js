@@ -508,3 +508,39 @@ test('tokens per hour show on the card and on the panel header, for the manager 
   assert.equal(b.usage, 'gerente 1.8M tokens/h, contexto 130k · sessões 340k tokens/h');
   assert.equal(b.archive, 'arquivar 2 paradas há mais de 3 dias');
 });
+
+test('the big editor reuses the card field and its submit act; a gone card or another board shows none', () => {
+  const { l, g, kid } = setup();
+  const k = kid('w', { state: 'needs_you', headline: 'aprova?', action: { kind: 'approve', text: 'merge?' }, at: NOW });
+  const sessions = [{ id: 'g', kind: 'claude', title: 'gerente', status: 'idle' }, { id: 'w', kind: 'claude', title: 'w', status: 'idle' }];
+  const rejecting = board(l, g, sessions, { expanded: `answer:${k}`, rejecting: { [k]: true }, clears: { [k]: 2 } }, NOW);
+  assert.deepEqual(
+    [rejecting.editor.show, rejecting.editor.input, rejecting.editor.submit, rejecting.editor.clear, rejecting.editor.canPaste, rejecting.editor.hint, rejecting.canTell],
+    [true, `answer-${k}`, `answer:${k}`, 2, false, 'por que rejeitar? (enter manda)', false],
+  );
+  assert.equal(board(l, g, sessions, { expanded: 'answer:k999' }, NOW).editor.show, false);
+  assert.equal(board(l, g, sessions, { expanded: `answer:${k}` }, NOW).editor.show, false, 'approve without rejecting has no answer box');
+  l.nodes[k].card = { state: 'working', headline: 'seguindo', at: NOW };
+  assert.equal(board(l, g, sessions, { expanded: `answer:${k}` }, NOW).editor.show, false, 'the card stopped asking: the editor closes');
+  assert.equal(board(l, g, sessions, { expanded: `message:${k}` }, NOW).editor.submit, `message:${k}`);
+  l.nodes[k].card = { state: 'needs_you', headline: 'aprova?', action: { kind: 'approve', text: 'merge?' }, at: NOW };
+  assert.equal(board(l, g, sessions, { expanded: 'tell:other' }, NOW).editor.show, false);
+  assert.equal(board(l, g, [sessions[1]], { expanded: `tell:${g}` }, NOW).editor.show, false, 'no tell editor while the manager tab is closed');
+  const card = cols(board(l, g, sessions, {}, NOW)).needs_you[0];
+  assert.deepEqual([card.canExpand, card.acts.expandAnswer, card.acts.expandMessage], [true, `expand:answer:${k}`, `expand:message:${k}`]);
+  assert.equal(detail(l, k, sessions, {}, NOW).card.canExpand, false, 'the modal is a separate view: its field would not carry the text');
+});
+
+test('the answer boxes grow to 15 lines and each has the expand button', () => {
+  const lib = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'ui', 'panel.rfwtxt'), 'utf8');
+  assert.doesNotMatch(lib, /maxLines: 5,/);
+  const boxes = ['widget Tell', 'widget Answer', 'widget MessageBox'].map((w) => lib.slice(lib.indexOf(w), lib.indexOf('\n);', lib.indexOf(w))));
+  for (const box of boxes) {
+    assert.match(box, /Expandable\(/);
+    assert.match(box, /maxLines: 15,/);
+  }
+  assert.match(boxes[2], /onPasteImage: event "act" \{ a: args\.c\.acts\.paste \}/);
+  const editor = lib.slice(lib.indexOf('widget Editor'), lib.indexOf('\n);', lib.indexOf('widget Editor')));
+  assert.match(editor, /onPasteImage: event "act" \{ a: data\.editor\.paste \}/);
+  assert.equal((editor.match(/id: data\.editor\.input/g) || []).length, 2);
+});
