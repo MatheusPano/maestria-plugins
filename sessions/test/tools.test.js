@@ -414,3 +414,68 @@ test('sessions_close tira da fila do gerente o que a sessão tinha só quando a 
   await tools.handle('sessions_close', { tabId: 'w' }, ctx);
   assert.deepEqual(ctx.links.nodes[me].events, []);
 });
+
+test('sessions_send confirms delivery by the prompt hook, also into a running turn, and lists what was never confirmed', async () => {
+  const { Sent } = require('../lib/relay');
+  const sent = new Sent();
+  const sessions = [
+    { id: 'me', kind: 'claude', title: 'g' },
+    { id: 'w', kind: 'claude', title: 'w', status: 'tool' },
+  ];
+  const ctx = makeCtx({ sessions, sent, sleep: async () => {} });
+  const request = ctx.request;
+  let hooked = true;
+  ctx.request = async (m, p) => {
+    if (m === 'terminal.sendText') {
+      sent.note(p.tabId, p.text);
+      if (hooked) sent.take(p.tabId, p.text);
+    }
+    return request(m, p);
+  };
+  const first = body(await tools.handle('sessions_send', { tabId: 'w', text: 'use v2' }, ctx));
+  assert.deepEqual([first.delivered, first.wasBusy], [true, true]);
+  assert.match(first.intoRunningTurn, /next step/);
+  hooked = false;
+  const second = body(await tools.handle('sessions_send', { tabId: 'w', text: 'no, v3' }, ctx));
+  assert.equal(second.delivered, false);
+  assert.match(second.notConfirmed, /unconfirmedSends/);
+  const third = body(await tools.handle('sessions_send', { tabId: 'w', text: 'and v4' }, ctx));
+  assert.deepEqual(third.earlierUnconfirmed, ['no, v3']);
+  ctx.links.ensure('me', 'g');
+  const listed = body(await tools.handle('sessions_list', {}, ctx)).sessions.find((s) => s.tabId === 'w');
+  assert.deepEqual(listed.unconfirmedSends.map((q) => q.text), ['no, v3', 'and v4']);
+});
+
+test('an old tabId from before a Maestria restart reaches the same conversation under its new tabId', async () => {
+  const sessions = [
+    { id: 'me', kind: 'claude', title: 'g', sessionId: 'sg' },
+    { id: 'new', kind: 'claude', title: 'w', status: 'idle', sessionId: 'sw' },
+  ];
+  const ctx = makeCtx({ sessions });
+  const g = ctx.links.add({ tabId: 'me', name: 'g', manager: true });
+  const w = ctx.links.add({ tabId: 'old', parent: g, name: 'w' });
+  ctx.links.nodes[w].sessionId = 'sw';
+  const res = body(await tools.handle('sessions_send', { tabId: 'old', text: 'go on' }, ctx));
+  assert.equal(res.tabId, 'new');
+  assert.deepEqual([res.tabIdChanged.from, res.tabIdChanged.to], ['old', 'new']);
+  assert.deepEqual(ctx.calls.find((c) => c.method === 'terminal.sendText').params, { tabId: 'new', text: 'go on', submit: true });
+  const card = body(await tools.handle('sessions_card', { tabId: 'old', state: 'working', headline: 'x' }, ctx));
+  assert.equal(card.tabId, 'new');
+  assert.equal(ctx.links.nodes[w].card.headline, 'x');
+  assert.equal(ctx.links.current('nobody'), null);
+});
+
+test('sessions_list shows what the panel shows when the tab ended mid-turn under a "working" card', async () => {
+  const sessions = [
+    { id: 'me', kind: 'claude', title: 'g' },
+    { id: 'w', kind: 'claude', title: 'w', status: 'ended' },
+  ];
+  const ctx = makeCtx({ sessions });
+  const g = ctx.links.add({ tabId: 'me', name: 'g', manager: true });
+  const w = ctx.links.add({ tabId: 'w', parent: g, name: 'w' });
+  ctx.links.nodes[w].card = { state: 'working', headline: 'suite', at: 1, busy: true };
+  const s = body(await tools.handle('sessions_list', {}, ctx)).sessions.find((x) => x.tabId === 'w');
+  assert.equal(s.cardState, 'working');
+  assert.equal(s.cardShows, 'needs_you');
+  assert.match(s.cardFlag, /^interrupted/);
+});

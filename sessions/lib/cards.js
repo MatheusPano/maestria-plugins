@@ -411,4 +411,4 @@ function panel(links, key, sessions, library, ui, now) {
   return { title: `painel · ${data.name}`, rfw: { library, root: 'root' }, data };
 }
 
-module.exports = { closable, split, flagOf, STALL_MS, agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };
+module.exports = { running, closable, split, flagOf, STALL_MS, agentsOf, behind, ALL, panel, managers, managerKeys, board, detail, cardData, liveOf, stateOf, taskOf, STATES, MAX_BULLETS, PROMPT, RESTING, waitOf, repliedOf, plain };

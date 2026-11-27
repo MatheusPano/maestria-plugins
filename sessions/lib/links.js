@@ -27,6 +27,7 @@ const DONE_FORGET_MS = 24 * 3600 * 1000;
 const SEEN_MS = 3600 * 1000;
 const HISTORY_MS = 30 * 24 * 3600 * 1000;
 const HISTORY_MAX = 500;
+const FORMER_TABS = 5;
 
 const colorOf = (id) => BY_ID.get(id) || COLORS[0];
 const bare = (name) => String(name || '').replace(PREFIX, '').trim();
@@ -46,6 +47,13 @@ class Links {
 
   byTab(tabId) {
     return Object.keys(this.nodes).find((k) => this.nodes[k].tabId === tabId) || null;
+  }
+
+  /** The tab a [tabId] stands for now: itself, or the current tab of the node that had it before a Maestria restart; null if unknown. */
+  current(tabId) {
+    if (!tabId || this.byTab(tabId)) return tabId || null;
+    const n = Object.values(this.nodes).find((x) => (x.formerTabs || []).includes(tabId));
+    return n ? n.tabId : null;
   }
 
   node(key) {
@@ -109,6 +117,7 @@ class Links {
       if (s) {
         const now = this.now();
         if (n.tabId !== s.id || (!n.sessionId && s.sessionId) || (s.cwd && n.cwd !== s.cwd) || now - (n.seenAt || 0) > SEEN_MS) changed = true;
+        if (n.tabId && n.tabId !== s.id) n.formerTabs = [...(n.formerTabs || []).filter((t) => t !== s.id), n.tabId].slice(-FORMER_TABS);
         n.tabId = s.id;
         if (!n.sessionId && s.sessionId) n.sessionId = s.sessionId;
         if (s.cwd) n.cwd = s.cwd;
