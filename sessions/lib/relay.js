@@ -163,6 +163,17 @@ function classify(links, e, sessions, now = Date.now()) {
   return now - e.at >= limits.settle ? 'wake' : 'wait';
 }
 
+/** A finished turn nothing asks the user about: the tab is stopped, the reply does not end in a question and carries no PR the manager has not seen. The plugin can write that card itself. */
+function autoable(links, e, sessions, now = Date.now()) {
+  if (e.kind !== 'turn' || now - e.at < limits.quiet) return false;
+  const node = links.nodes[e.key];
+  const s = node && sessions.find((x) => x.id === node.tabId && isOpen(x));
+  if (!s || s.kind !== 'claude' || s.needsYou || PROMPT.has(s.status) || running(s) || agentsOf(s)) return false;
+  if (!s.reply || !s.reply.text || QUESTION.test(lastAsk(s.reply.text))) return false;
+  const seen = new Set(node.seenPrs || []);
+  return !prsOf(s).some((u) => !seen.has(u));
+}
+
 /** Uma linha por evento, com o nome da sessão e o que ela disse por último. */
 function lines(links, events, sessions) {
   const live = new Map(sessions.filter(isOpen).map((s) => [s.id, s]));
@@ -313,4 +324,4 @@ function markSeen(links, events, sessions) {
   }
 }
 
-module.exports = { Asking, Sent, fromUser, queue, forget, lines, digest, excerpt, turnOf, due, classify, sort, markSeen, isPassive, limits };
+module.exports = { autoable, Asking, Sent, fromUser, queue, forget, lines, digest, excerpt, turnOf, due, classify, sort, markSeen, isPassive, limits };

@@ -174,7 +174,8 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
   const flag = replied ? null : flagOf(card, session, now);
   let kind = action && !tabAsks ? action.kind : 'none';
   if (tabAsks || (state === 'needs_you' && !action)) kind = 'wait';
-  if (replied || (flag === 'stalled' && session.reply && session.reply.text)) kind = 'reply';
+  const autoReply = c.auto && state === 'needs_you' && !action && Boolean(session && session.reply && session.reply.text);
+  if (replied || autoReply || (flag === 'stalled' && session.reply && session.reply.text)) kind = 'reply';
   if (flag === 'interrupted') kind = 'resume';
   const shownReply = replied || (kind === 'reply' ? session.reply : null);
   const options = action && action.options && !tabAsks ? action.options : [];

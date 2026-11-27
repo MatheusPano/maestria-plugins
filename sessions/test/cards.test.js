@@ -470,3 +470,11 @@ test('a resposta guardada aparece no cartão, também com a aba no prompt, até 
   sessions[1] = { id: 'w', title: 'w', status: 'tool' };
   assert.match(card().context, /^Enviada às \d\d:\d\d: a vez é da sessão\.$/);
 });
+
+test('a card the plugin wrote from the last reply shows that reply and its headline, as "respondeu"', () => {
+  const { l, g, kid } = setup();
+  kid('s', { state: 'needs_you', headline: 'Suite is green', at: min(1), auto: true });
+  const sessions = [{ id: 'g' }, { id: 's', title: 's', status: 'idle', reply: { text: 'Suite is green\nAll pass.', at: min(2) } }];
+  const c = cols(board(l, g, sessions, {}, NOW));
+  assert.deepEqual(c.needs_you.map((x) => [x.kind, x.headline, x.reply, x.badge]), [['reply', 'Suite is green', 'Suite is green\nAll pass.', 'respondeu']]);
+});

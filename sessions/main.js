@@ -17,6 +17,7 @@ const relay = require('./lib/relay');
 const history = require('./lib/history');
 const closer = require('./lib/closer');
 const cleanup = require('./lib/cleanup');
+const autocard = require('./lib/autocard');
 
 const MANAGER_BRIEF = [
   'Você é um gerente de sessões na Maestria. Divida o trabalho e delegue: abra uma sessão por frente com sessions_open',
@@ -306,11 +307,12 @@ async function refresh() {
   state.ui.parked = cleanup.candidates(state.links, sessions, { touched: (s) => readReply.touched(s.sessionId, s.cwd) }).length;
   const settled = settleTurns(sessions);
   const cut = interruptions(sessions);
+  const carded = autocard.run(state.links, sessions);
   const reconciled = state.links.reconcile(sessions);
   const migrated = closer.migrate(state.links, sessions);
   const auto = await closeDone(sessions);
   deliverPending(sessions);
-  if (reconciled || migrated || gone.length || settled || cut || auto) writeLinks();
+  if (reconciled || migrated || gone.length || settled || cut || carded || auto) writeLinks();
   await flushRelays(sessions);
   await sendOnce(state.retitled, state.links.retitles(sessions), (w) => w.title, ({ tabId, title }) =>
     mx.request('session.rename', { tabId, title }).catch((e) => mx.log('rename:', e.message)),
