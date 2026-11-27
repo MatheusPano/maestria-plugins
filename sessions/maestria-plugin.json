@@ -56,13 +56,17 @@
       },
       {
         "name": "sessions_list",
-        "description": "List the open Maestria sessions: tabId, title, folder, branch, status, whether it waits for the user, its manager (parentTabId) and color, and its last prompt and last reply, its card (cardState as you wrote it; cardShows and cardFlag when the tab says otherwise, e.g. it ended mid-turn) and unconfirmedSends (messages the plugin submitted to it, from you or from the panel, that it has not taken as a prompt yet). Pass mine: true for only the sessions you opened. When you are a manager, `answers` carries what the user answered on your cards since your last call. When you are a manager, events carries what happened in your sessions that did not need you right away (the user typed straight into one, a session waits on the user). Not needed to answer a [sessions] notice: the notice already has what to act on; call this only when an entry is ambiguous or cut too short to decide.",
+        "description": "List the live claude sessions under you (the ones you opened or linked), lean: tabId, title, status, branch, last message, its card (cardState as you wrote it; cardShows and cardFlag when the tab says otherwise, e.g. it ended mid-turn; cardAuto when the plugin wrote the card itself from the last reply) and unconfirmedSends (messages the plugin submitted to it that it has not taken as a prompt yet). Hibernated sessions are only counted; pass all: true for every open tab with the full summary (shells, plugin tabs, hibernated ones, other trees, folder, color, parent, last prompt). When you are a manager, `answers` carries what the user answered on your cards since your last call, and events what happened in your sessions that did not need you right away. Not needed to answer a [sessions] notice: the notice already has what to act on; call this only when an entry is ambiguous or cut too short to decide.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "all": {
+              "type": "boolean",
+              "description": "Every open tab with the full summary, not only the live claude sessions under you."
+            },
             "mine": {
               "type": "boolean",
-              "description": "Only the sessions this session opened."
+              "description": "With all: true, only the sessions you opened."
             }
           },
           "additionalProperties": false
