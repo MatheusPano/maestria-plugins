@@ -44,7 +44,7 @@ test('acordada vale direto; a que não fica pronta ou some dá erro sem enviar',
   assert.deepEqual(a.calls.map((c) => c.m), ['terminal.sendText']);
 
   const slow = rig([{ id: 't', hibernated: false, exited: false, status: 'starting' }]);
-  await assert.rejects(awake(slow.io, { id: 't', title: 'w', hibernated: true }, { sleep, timeout: 3, step: 1 }), /não ficou pronta/);
+  await assert.rejects(awake(slow.io, { id: 't', title: 'w', hibernated: true }, { sleep, timeout: 3, step: 1 }), /ainda está acordando.*NÃO foi enviada/);
   assert.deepEqual(slow.calls.map((c) => c.m), ['session.wake']);
 
   const gone = { calls: [], io: { request: async () => {}, list: async () => [] } };
@@ -57,7 +57,7 @@ test('acordou numa pergunta: não digita no meio dela', async () => {
   assert.deepEqual(calls.map((c) => c.m), ['session.wake']);
 });
 
-test('processo que morre ao acordar falha na hora; a mesma aba não acorda duas vezes ao mesmo tempo', async () => {
+test('processo que continua morto depois do acordar falha; a mesma aba não acorda duas vezes ao mesmo tempo', async () => {
   const dead = rig([{ id: 't', hibernated: false, exited: true, status: 'ready' }]);
   await assert.rejects(awake(dead.io, { id: 't', title: 'w', hibernated: true }, { sleep }), /fechou ao acordar/);
 
@@ -68,4 +68,19 @@ test('processo que morre ao acordar falha na hora; a mesma aba não acorda duas 
   await assert.rejects(awake(io, { id: 'z', title: 'z', hibernated: true }, { sleep }), /já estou acordando/);
   release();
   assert.equal((await first).status, 'ready');
+});
+
+test('right after the wake the old process exit and a late "ended" are transient, not a failure', async () => {
+  const { calls, io } = rig([
+    { id: 't', hibernated: false, exited: false, status: 'starting' },
+    { id: 't', hibernated: false, exited: true, status: 'ended' },
+    { id: 't', hibernated: false, exited: false, status: 'starting' },
+    { id: 't', hibernated: false, exited: false, status: 'ready' },
+  ]);
+  const ready = await awake(io, { id: 't', title: 'w', hibernated: true }, { sleep });
+  assert.equal(ready.status, 'ready');
+  assert.deepEqual(calls.map((c) => c.m), ['session.wake']);
+
+  const late = rig([{ id: 't', hibernated: false, exited: false, status: 'ended' }]);
+  await assert.rejects(awake(late.io, { id: 't', title: 'w', hibernated: true }, { sleep, timeout: 20, step: 1 }), /NÃO foi enviada/, 'never types into a tab still showing "ended"');
 });

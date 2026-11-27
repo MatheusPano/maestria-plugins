@@ -867,3 +867,75 @@ test('fim de turno só acorda o gerente quando a sessão parou de vez; a aba fec
     Object.assign(relay.limits, was);
   }
 });
+
+test('a session whose claude ends mid-turn wakes its manager once, named, without waiting for a Stop', async () => {
+  const relay = require('../lib/relay');
+  const was = { ...relay.limits };
+  const w = sessions.find((s) => s.id === 'w');
+  const before = { ...w };
+  relay.limits.quiet = 0;
+  relay.limits.gap = 0;
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working', headline: 'suite' } });
+    handlers.note.event({ type: 'hook', tabId: 'w', name: 'PreToolUse', payload: { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'u1' } });
+    Object.assign(w, { status: 'ended', exited: false });
+    const sent = () => calls.filter(([m, p]) => m === 'terminal.sendText' && p.tabId === 'g' && /no meio do turno/.test(p.text));
+    const from = sent().length;
+    handlers.note.event({ type: 'session.status', tabId: 'w' });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(sent().length - from, 1);
+    assert.match(sent().at(-1)[1].text, /"w" \[tabId w\] encerrou no meio do turno/);
+    handlers.note.event({ type: 'session.status', tabId: 'w' });
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(sent().length - from, 1, 'once per turn');
+  } finally {
+    Object.assign(relay.limits, was);
+    for (const k of Object.keys(w)) delete w[k];
+    Object.assign(w, before);
+  }
+});
+
+test('a turn left "ready" for more than 10 min ended without a hook: a later hibernation is not reported as mid-turn', async () => {
+  const w = sessions.find((s) => s.id === 'w');
+  const before = { ...w };
+  const real = Date.now;
+  const at = async (ms) => {
+    Date.now = () => real() + ms;
+    try {
+      handlers.note.event({ type: 'session.changed' });
+      await new Promise((r) => setTimeout(r, 400));
+    } finally {
+      Date.now = real;
+    }
+  };
+  try {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+    handlers.req.initialize({ dataDir });
+    await handlers.req['tool.call']({ tool: 'sessions_card', tabId: 'g', args: { tabId: 'w', state: 'working' } });
+    const read = () => Object.values(JSON.parse(fs.readFileSync(path.join(dataDir, 'links.json'), 'utf8')).nodes).find((n) => n.tabId === 'w');
+    handlers.note.event({ type: 'hook', tabId: 'w', name: 'UserPromptSubmit', payload: { prompt: 'x' } });
+    w.status = 'ready';
+    await at(0);
+    assert.equal(read().busy, true, 'ready right after the prompt is still the turn (auto-compact)');
+    await at(11 * 60 * 1000);
+    assert.equal(read().busy, false);
+    Object.assign(w, { hibernated: true, exited: true, status: 'ended' });
+    await at(11 * 60 * 1000);
+    assert.equal(read().interruptedAt, undefined);
+  } finally {
+    for (const k of Object.keys(w)) delete w[k];
+    Object.assign(w, before);
+  }
+});
+
+test('a send to a tab without a manager is confirmed by its prompt hook too', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sessions-main-'));
+  handlers.req.initialize({ dataDir });
+  const call = handlers.req['tool.call']({ tool: 'sessions_send', tabId: 'w', args: { tabId: 'g', text: 'oi gerente' } });
+  await tick();
+  handlers.note.event({ type: 'hook', tabId: 'g', name: 'UserPromptSubmit', payload: { prompt: 'oi gerente' } });
+  const res = JSON.parse((await call).content[0].text);
+  assert.equal(res.delivered, true);
+});

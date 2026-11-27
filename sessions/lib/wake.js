@@ -4,27 +4,34 @@
 const { bare } = require('./links');
 const { RESTING, PROMPT } = require('./cards');
 
-const limits = { timeout: 60 * 1000, step: 1000 };
+// Under the host's 120 s tool timeout; right after a wake the host can briefly show the old process exited.
+const limits = { timeout: 90 * 1000, step: 1000, settle: 10 * 1000 };
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const waking = new Set();
 
 const name = (s) => bare(s.title) || s.id;
 
 /** Acorda [s] se ela hibernou e espera ficar pronta (ou numa pergunta); devolve a sessão acordada. */
-async function awake(io, s, { timeout = limits.timeout, step = limits.step, sleep = pause } = {}) {
+async function awake(io, s, { timeout = limits.timeout, step = limits.step, settle = limits.settle, sleep = pause, clock = Date.now } = {}) {
   if (!s.hibernated) return s;
   if (waking.has(s.id)) throw new Error(`já estou acordando "${name(s)}"; a mensagem anterior vai quando ela estiver pronta`);
   waking.add(s.id);
   try {
     if (io.notice) io.notice(s);
     await io.request('session.wake', { tabId: s.id });
-    for (let waited = 0; waited < timeout; waited += step) {
+    const start = clock();
+    for (let waited = 0; waited < timeout && clock() - start < timeout; waited += step) {
       await sleep(step);
       const now = ((await io.list()) || []).find((x) => x.id === s.id);
-      if (!now || (now.exited && !now.hibernated)) throw new Error(`"${name(s)}" fechou ao acordar`);
-      if (!now.hibernated && (RESTING.has(now.status) || PROMPT.has(now.status))) return now;
+      if (!now) throw new Error(`"${name(s)}" fechou ao acordar`);
+      if (now.hibernated) continue;
+      if (now.exited) {
+        if (waited + step >= settle) throw new Error(`"${name(s)}" fechou ao acordar`);
+        continue;
+      }
+      if (RESTING.has(now.status) || PROMPT.has(now.status)) return now;
     }
-    throw new Error(`"${name(s)}" acordou mas não ficou pronta a tempo; mande de novo`);
+    throw new Error(`"${name(s)}" ainda está acordando depois de ${Math.round(timeout / 1000)} s; a mensagem NÃO foi enviada`);
   } finally {
     waking.delete(s.id);
   }

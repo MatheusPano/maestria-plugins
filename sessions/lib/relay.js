@@ -2,7 +2,7 @@
 // O que acontece nas sessões de um gerente chega a ele: só o que pede ação o acorda; o resto espera o próximo sessions_list.
 
 const { bare, isOpen } = require('./links');
-const { PROMPT, RESTING, plain, agentsOf } = require('./cards');
+const { PROMPT, RESTING, plain, agentsOf, running } = require('./cards');
 
 const KEEP = 30;
 const SENT_MS = 10 * 60 * 1000;
@@ -54,11 +54,13 @@ class Sent {
   constructor(now = Date.now) {
     this.now = now;
     this.byTab = new Map();
+    this.delivered = [];
   }
 
-  note(tabId, text) {
+  /** [submit] false is text left in the prompt for you to send (a card command): it is not a pending message. */
+  note(tabId, text, submit = true) {
     const list = (this.byTab.get(tabId) || []).filter((m) => this.now() - m.at < SENT_MS);
-    list.push({ text: norm(text), at: this.now() });
+    list.push({ text: norm(text), at: this.now(), ...(submit ? {} : { typed: true }) });
     this.byTab.set(tabId, list);
   }
 
@@ -77,19 +79,39 @@ class Sent {
     this.note(tabId, text);
   }
 
-  /** Se [text] foi o plugin que mandou pra [tabId] (ou pra uma aba que estava abrindo), consome e diz true. */
+  /** Se [text] foi o plugin que mandou pra [tabId] (ou pra uma aba que estava abrindo), consome, guarda como entregue e diz true. */
   take(tabId, text) {
     const said = typed(text);
     for (const id of [tabId, '']) {
       const list = (this.byTab.get(id) || []).filter((m) => this.now() - m.at < SENT_MS);
       const i = list.findIndex((m) => m.text === said);
-      if (i >= 0) list.splice(i, 1);
+      if (i >= 0) {
+        const [m] = list.splice(i, 1);
+        this.delivered = [...this.delivered.filter((d) => this.now() - d.deliveredAt < SENT_MS), { tabId: id || tabId, text: m.text, at: m.at, deliveredAt: this.now() }];
+      }
       this.byTab.set(id, list);
       if (i >= 0) return true;
     }
     return false;
   }
+
+  /** The session took [text], sent to [tabId] at or after [since], as a prompt. */
+  wasDelivered(tabId, text, since) {
+    const said = norm(text);
+    return this.delivered.some((d) => d.tabId === tabId && d.text === said && d.at >= since);
+  }
+
+  /** What the plugin submitted to [tabId] that the session has not taken as a prompt yet ([queued]), and what it took ([delivered]). */
+  status(tabId) {
+    const fresh = (m) => this.now() - m.at < SENT_MS;
+    return {
+      queued: (this.byTab.get(tabId) || []).filter((m) => fresh(m) && m.text && !m.typed).map((m) => ({ text: m.text, at: m.at })),
+      delivered: this.delivered.filter((m) => m.tabId === tabId && this.now() - m.deliveredAt < SENT_MS).map(({ text, at, deliveredAt }) => ({ text, at, deliveredAt })),
+    };
+  }
 }
+
+
 
 /** O que você escreveu na aba [tabId], ou null quando o prompt não é seu: mandado pelo plugin (gerente, cartão) ou aviso de tarefa em segundo plano. */
 function fromUser(sent, tabId, prompt) {
@@ -112,8 +134,6 @@ function queue(links, key, event, now = Date.now()) {
   return true;
 }
 
-const BUSY = new Set(['working', 'tool']);
-const working = (s) => !s.hibernated && BUSY.has(s.status);
 const prsOf = (s) => ((s && s.reply && s.reply.links) || []).map((l) => l.url).filter((u) => /\/pull\/\d+/.test(u));
 
 /** O evento [e] agora: 'wake' acorda o gerente, 'wait' ainda pode virar wake, 'passive' vai no sessions_list, 'drop' sai. */
@@ -123,9 +143,10 @@ function classify(links, e, sessions, now = Date.now()) {
   if (isPassive(e)) return 'passive';
   if (e.kind === 'error' || e.kind === 'closed') return 'wake';
   const s = sessions.find((x) => x.id === node.tabId && isOpen(x));
+  if (e.kind === 'interrupted') return (node.busyAt || 0) > e.at ? 'drop' : 'wake';
   if (!s) return 'wait';
   if (s.needsYou || PROMPT.has(s.status)) return 'passive';
-  if (working(s) || agentsOf(s)) return 'drop';
+  if (running(s) || agentsOf(s)) return 'drop';
   const seen = new Set(node.seenPrs || []);
   if (prsOf(s).some((u) => !seen.has(u))) return 'wake';
   return now - e.at >= limits.settle ? 'wake' : 'wait';
@@ -142,6 +163,7 @@ function lines(links, events, sessions) {
     if (e.kind === 'waiting') return `- "${name}" está esperando o usuário na aba${e.text ? `: ${clip(e.text)}` : ''}`;
     if (e.kind === 'error') return `- "${name}" parou com erro${e.text ? `: ${clip(e.text)}` : '.'}`;
     if (e.kind === 'closed') return `- "${name}" foi fechada pelo usuário${e.text ? ` ${e.text}` : ''}.`;
+    if (e.kind === 'interrupted') return `- "${name}" ${INTERRUPTED(e)}.`;
     if (!s) return `- "${name}" fechou.`;
     if (s.needsYou || PROMPT.has(s.status)) return `- "${name}" terminou o turno e está esperando o usuário (${s.statusLabel || s.status}).`;
     const said = s.reply && s.reply.text ? `: "${clip(s.reply.text)}"` : '.';
@@ -159,11 +181,12 @@ function block(links, key, events, sessions, now) {
   const what = events.map((e) =>
     e.kind === 'error' ? `parou com erro${e.text ? `: ${clip(e.text)}` : ''}`
     : e.kind === 'closed' ? `foi fechada pelo usuário${e.text ? ` ${e.text}` : ''}`
+    : e.kind === 'interrupted' ? INTERRUPTED(e)
     : !s ? 'fechou'
     : `parou há ${Math.max(1, Math.round((now - e.at) / 60000))} min (${s.hibernated ? 'hibernada' : s.statusLabel || s.status}, sem agentes)`);
   const tab = s ? ` [tabId ${s.id}]` : '';
   const out = [`- "${name}"${tab} ${[...new Set(what)].join('; ')}.`];
-  if (!s) out.push(`  a aba está fechada: o cartão${card ? ` (${card.state})` : ''} fica como está; só o usuário a retoma pelo painel`);
+  if (!s && !events.some((e) => e.kind === 'interrupted')) out.push(`  a aba está fechada: o cartão${card ? ` (${card.state})` : ''} fica como está; só o usuário a retoma pelo painel`);
   else if (card) out.push(`  cartão: ${card.state}${card.headline ? ` "${quoted(card.headline)}"` : ''}${card.state === 'working' ? ' → atualize' : ''}`);
   else out.push('  sem cartão → poste um com sessions_card');
   if (s && s.reply && s.reply.text) {
@@ -176,17 +199,23 @@ function block(links, key, events, sessions, now) {
   return out;
 }
 
+/** The tab hibernated or its claude ended in the middle of a turn: nothing will finish that turn unless someone resumes it. */
+const INTERRUPTED = (e) =>
+  e.text === 'exited' ? 'teve o claude encerrado no meio do turno (a aba ficou sem processo: só o usuário a retoma, pelo painel ou pela aba)'
+  : `${e.text === 'hibernated' ? 'hibernou' : 'encerrou'} no meio do turno (o trabalho em andamento parou; mande retomar com sessions_send, que acorda a aba)`;
+
 const HEAD = (n) => `[sessions] ${n === 1 ? '1 sessão pede' : `${n} sessões pedem`} você (aviso automático do plugin, não é mensagem do usuário):`;
 const TAIL = 'Este aviso basta para agir: atualize o cartão de cada sessão com sessions_card (o tabId vai acima; o done fecha a aba) e responda ao usuário uma linha por sessão, com estado real, o que falta e de quem é a vez. Não chame sessions_list nem leia o transcript, a não ser que uma entrada esteja ambígua ou cortada demais para decidir. Se nada mudou para o usuário, responda numa linha curta.';
 
 /** O aviso ao gerente: uma entrada por sessão que pede ação, já com o resumo; as sessões que esperam na aba e o que o usuário escreveu direto vão no fim. */
-function digest(links, events, sessions, now = Date.now(), { waiting = 0, asking = [], direct = [] } = {}) {
+function digest(links, events, sessions, now = Date.now(), { waiting = [], asking = [], direct = [] } = {}) {
   const byKey = new Map();
   for (const e of events) byKey.set(e.key, [...(byKey.get(e.key) || []), e]);
   const body = [...byKey].flatMap(([key, list]) => block(links, key, list, sessions, now));
   const ask = asking.filter((k) => !byKey.has(k));
+  waiting = waiting.filter((k) => !byKey.has(k));
   const rest = [
-    waiting ? `${waiting === 1 ? '1 sessão acabou' : `${waiting} sessões acabaram`} de parar: aviso se não voltarem a rodar.` : '',
+    waiting.length ? `${waiting.length === 1 ? 'Acabou' : 'Acabaram'} de parar: ${waiting.map((k) => `"${nameOf(links, k, sessions)}"`).join(', ')}; aviso se não ${waiting.length === 1 ? 'voltar' : 'voltarem'} a rodar.` : '',
     ask.length ? `Esperando o usuário na aba (permissão ou pergunta): ${ask.map((k) => `"${nameOf(links, k, sessions)}"`).join(', ')} → cartão needs_you, e o usuário responde na aba.` : '',
     ...lines(links, direct, sessions),
   ].filter(Boolean);
@@ -235,12 +264,12 @@ function sort(links, events, sessions, now = Date.now()) {
   const asking = [];
   const direct = [];
   let passive = 0;
-  let waiting = 0;
+  const waiting = [];
   for (const e of events) {
     const c = classify(links, e, sessions, now);
     if (c === 'wake') wake.push(e);
     else if (c !== 'drop') keep.push(e);
-    if (c === 'wait') waiting++;
+    if (c === 'wait' && !waiting.includes(e.key)) waiting.push(e.key);
     if (c !== 'passive') continue;
     passive++;
     if (e.kind === 'direct') direct.push(e);

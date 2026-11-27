@@ -6,7 +6,7 @@ const { tinted, colorOf, isOpen, bare } = require('./links');
 const history = require('./history');
 const closer = require('./closer');
 const { typeInto } = require('./wake');
-const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf } = require('./cards');
+const { STATES, MAX_BULLETS, RESTING, PROMPT, agentsOf, running, stateOf, flagOf } = require('./cards');
 const relay = require('./relay');
 const { proofOf, audioOf, ProofError } = require('./proof');
 
@@ -15,6 +15,8 @@ const LINK = 'maestria://maestria.sessions';
 const cardLink = (tabId) => `${LINK}/card/${tabId}`;
 const panelLink = (tabId) => `${LINK}/panel/${tabId}`;
 const MAX_OPTIONS = 6;
+const CONFIRM_STEPS = 20;
+const CONFIRM_STEP_MS = 250;
 
 const ok = (v) => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }] });
 const fail = (s) => ({ content: [{ type: 'text', text: String(s) }], isError: true });
@@ -32,6 +34,17 @@ function resolveCwd(cwd, { home, cwd: base, isDir }) {
 }
 
 const sessionsOf = async (ctx) => (await ctx.request('sessions.list')) || [];
+
+/** [tabId] as the caller gave it, or the tab that replaced it after a Maestria restart (tab ids change; the conversation does not). */
+async function currentTab(ctx, tabId) {
+  if (!tabId) return tabId;
+  const live = await sessionsOf(ctx);
+  if (live.some((s) => s.id === tabId)) return tabId;
+  if (ctx.links.reconcile(live)) ctx.save();
+  return ctx.links.current(tabId) || tabId;
+}
+
+const moved = (asked, tabId) => (asked && asked !== tabId ? { tabIdChanged: { from: asked, to: tabId, note: 'the Maestria restarted and this session got a new tabId; use the new one' } } : {});
 
 async function liveTab(ctx, tabId) {
   const s = (await sessionsOf(ctx)).find((x) => x.id === tabId && isOpen(x));
@@ -71,7 +84,7 @@ async function open({ cwd, name, prompt }, ctx) {
   return ok({ tabId, name: params.label, cwd: dir, prompted: Boolean(text), color: color ? colorOf(color).id : null });
 }
 
-function summary(s, links) {
+function summary(s, links, sent, replyOf) {
   const key = links.byTab(s.id);
   const n = links.node(key);
   const parent = n && links.node(n.parent);
@@ -92,16 +105,37 @@ function summary(s, links) {
     manager: Boolean(n && n.manager),
     lastPrompt: act.lastPrompt ?? null,
     lastMessage: act.lastMessage ?? null,
-    ...(n && n.card
-      ? { card: cardLink(s.id), cardState: n.card.state, cardHeadline: n.card.headline || null, doneBecause: n.card.doneBecause || null }
-      : {}),
+    ...(n && n.card ? cardSummary(n.card, withReply(s, replyOf)) : {}),
+    ...queuedOf(sent, s.id),
   };
+}
+
+/** The last reply joined to a stopped session, as the panel sees it (the card's state depends on it). */
+const withReply = (s, replyOf) => (replyOf && !s.reply && s.sessionId && !s.needsYou && (RESTING.has(s.status) || s.hibernated) ? { ...s, reply: replyOf(s) } : s);
+
+/** The card as the manager wrote it, and what the panel shows now when the tab says otherwise (it ended mid-turn, stalled, waits on the user). */
+function cardSummary(card, s) {
+  const shows = stateOf(card, s);
+  const flag = flagOf(card, s);
+  return {
+    card: cardLink(s.id),
+    cardState: card.state,
+    cardHeadline: card.headline || null,
+    doneBecause: card.doneBecause || null,
+    ...(shows !== card.state || flag ? { cardShows: shows, ...(flag ? { cardFlag: flag === 'interrupted' ? 'interrupted: the tab ended or hibernated mid-turn' : 'stalled: stopped while the card says working' } : {}) } : {}),
+  };
+}
+
+/** The messages sent with sessions_send that the session has not taken as a prompt yet (no prompt hook seen for them). */
+function queuedOf(sent, tabId) {
+  const q = sent ? sent.status(tabId).queued : [];
+  return q.length ? { unconfirmedSends: q.map((m) => ({ text: m.text.length > 200 ? `${m.text.slice(0, 200)}…` : m.text, at: new Date(m.at).toISOString() })) } : {};
 }
 
 async function list({ mine }, ctx) {
   const all = (await sessionsOf(ctx)).filter((s) => isOpen(s) && !s.embedded);
   if (ctx.links.reconcile(all)) ctx.save();
-  let out = all.map((s) => summary(s, ctx.links));
+  let out = all.map((s) => summary(s, ctx.links, ctx.sent, ctx.replyOf));
   if (mine) {
     const me = ctx.links.byTab(ctx.tabId);
     out = out.filter((s) => me && s.parentTabId === ctx.tabId);
@@ -126,12 +160,15 @@ function takeAnswers(ctx, sessions = []) {
   return out;
 }
 
-async function send({ tabId, text }, ctx) {
+async function send({ tabId: asked, text }, ctx) {
   const body = String(text || '').trim();
   if (!body) throw new ToolError('text é obrigatório.');
+  const tabId = await currentTab(ctx, asked);
   if (tabId === ctx.tabId) throw new ToolError('Não dá pra mandar mensagem pra própria sessão.');
   const s = await liveTab(ctx, tabId);
   if (s.kind !== 'claude') throw new ToolError(`A aba ${tabId} não é uma sessão do claude.`);
+  const before = ctx.sent ? ctx.sent.status(tabId).queued : [];
+  const sentAt = Date.now();
   let ready;
   try {
     ready = await typeInto({ request: ctx.request, list: () => sessionsOf(ctx) }, s, body);
@@ -143,10 +180,34 @@ async function send({ tabId, text }, ctx) {
     closer.disarm(ctx.links, key);
     ctx.save();
   }
-  return ok({ tabId, sent: true, woke: Boolean(s.hibernated), wasBusy: ready.status === 'working' || ready.status === 'tool' });
+  const busy = running(ready);
+  const delivered = await confirmed(ctx, tabId, body, sentAt);
+  return ok({
+    tabId,
+    ...moved(asked, tabId),
+    sent: true,
+    delivered,
+    ...(delivered && busy ? { intoRunningTurn: 'the session was mid-turn: Claude Code took the message at once and shows it to the model at its next step, after any earlier message' } : {}),
+    ...(delivered === false ? { notConfirmed: 'typed, but the session has not taken it as a prompt yet (it may still sit in its input box); sessions_list lists it under unconfirmedSends until it does' } : {}),
+    woke: Boolean(s.hibernated),
+    wasBusy: busy,
+    ...(before.length ? { earlierUnconfirmed: before.map((m) => m.text) } : {}),
+  });
 }
 
-async function rename({ tabId, name }, ctx) {
+/** Waits for the prompt hook that shows the session took [text], which fires at once even mid-turn (Claude Code 2.1.33, 2026-11-27, docs/technical/mensagem-com-sessao-ocupada.md); null without a sent log. */
+async function confirmed(ctx, tabId, text, since) {
+  if (!ctx.sent) return null;
+  const sleep = ctx.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (let i = 0; i < CONFIRM_STEPS; i++) {
+    if (ctx.sent.wasDelivered(tabId, text, since)) return true;
+    await sleep(CONFIRM_STEP_MS);
+  }
+  return ctx.sent.wasDelivered(tabId, text, since);
+}
+
+async function rename({ tabId: asked, name }, ctx) {
+  const tabId = await currentTab(ctx, asked);
   const label = String(name || '').trim();
   if (!label) throw new ToolError('name é obrigatório.');
   await liveTab(ctx, tabId);
@@ -157,11 +218,12 @@ async function rename({ tabId, name }, ctx) {
     n.name = label;
     ctx.save();
   }
-  return ok({ tabId, title: (r && r.title) || title });
+  return ok({ tabId, ...moved(asked, tabId), title: (r && r.title) || title });
 }
 
-async function close({ tabId }, ctx) {
+async function close({ tabId: asked }, ctx) {
   const { links } = ctx;
+  const tabId = await currentTab(ctx, asked);
   if (!tabId) throw new ToolError('tabId é obrigatório.');
   if (tabId === ctx.tabId) throw new ToolError('Não dá pra fechar a própria sessão.');
   const me = links.byTab(ctx.tabId);
@@ -185,7 +247,7 @@ async function close({ tabId }, ctx) {
   ctx.save();
   const body = `${entry.name}: ${history.whatOf(entry)}`;
   await ctx.request('window.notify', { title: 'Sessão fechada pelo gerente', body }).catch(() => ctx.request('window.showBanner', { text: `fechada: ${body}` }).catch(() => {}));
-  return ok({ tabId, closed: true });
+  return ok({ tabId, ...moved(asked, tabId), closed: true });
 }
 
 function optionsOf(raw) {
@@ -250,7 +312,7 @@ async function doneChecks(s, prs, ctx) {
   return { blockers, warnings };
 }
 
-async function card({ tabId, state, headline, bullets, action, proof, doneBecause, keepOpen }, ctx) {
+async function card({ tabId: asked, state, headline, bullets, action, proof, doneBecause, keepOpen }, ctx) {
   if (!STATES.includes(state)) throw new ToolError(`state precisa ser um de: ${STATES.join(', ')}.`);
   const because = String(doneBecause || '').trim();
   if (state === 'done' && !because) {
@@ -259,6 +321,7 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
   const list = (Array.isArray(bullets) ? bullets : []).map((b) => String(b).trim()).filter(Boolean);
   if (list.length > MAX_BULLETS) throw new ToolError(`No máximo ${MAX_BULLETS} bullets por cartão.`);
   const act = actionOf(action);
+  const tabId = await currentTab(ctx, asked);
   if (tabId === ctx.tabId) throw new ToolError('O cartão é de uma sessão que você abriu, não de você: passe o tabId dela.');
   const mine = ctx.links.byTab(ctx.tabId);
   const theirs = ctx.links.byTab(tabId);
@@ -266,7 +329,10 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
     throw new ToolError(`A aba ${tabId} está na árvore de outro gerente; só escreve cartão de quem você abriu ou ligou.`);
   }
   const s = await liveTab(ctx, tabId);
-  if (act && act.tabId) await liveTab(ctx, act.tabId);
+  if (act && act.tabId) {
+    act.tabId = await currentTab(ctx, act.tabId);
+    await liveTab(ctx, act.tabId);
+  }
   let staged;
   try {
     staged = proofOf(proof, ctx.dataDir);
@@ -312,7 +378,7 @@ async function card({ tabId, state, headline, bullets, action, proof, doneBecaus
   ctx.save();
   if (ctx.showPanel) await ctx.showPanel(links.rootOf(key));
   const closing = state === 'done' && keepOpen !== true ? { closes: 'a aba fecha sozinha quando a sessão parar e vai para o histórico; depois disso só você a retoma pelo painel (keepOpen: true mantém aberta)' } : {};
-  return ok({ tabId, state, ...closing, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
+  return ok({ tabId, ...moved(asked, tabId), state, ...closing, cards: links.subtree(links.rootOf(key)).length - 1, link: cardLink(tabId), panel: panelLink(ctx.tabId), ...(warnings.length ? { warnings } : {}), ...takeAnswers(ctx, await sessionsOf(ctx)) });
 }
 
 const HANDLERS = { sessions_open: open, sessions_list: list, sessions_send: send, sessions_rename: rename, sessions_card: card, sessions_close: close };

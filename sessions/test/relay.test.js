@@ -88,11 +88,11 @@ test('só acorda o gerente o que pede ação; o resto espera o sessions_list, e 
   assert.match(text, /- "docs" parou com erro: rate_limit/);
   assert.match(text, /\nEsperando o usuário na aba \(permissão ou pergunta\): "front" → cartão needs_you.*\n- O usuário escreveu direto para "TASK#1 api"/);
   assert.match(text, /"docs" parou com erro: rate_limit\.\n  a aba está fechada/);
-  const twice = digest(l, [ev(a, 'error', NOW, { text: 'um' }), ev(a, 'error', NOW, { text: 'dois' })], sessions, NOW, { waiting: 1, asking: [a] });
+  const twice = digest(l, [ev(a, 'error', NOW, { text: 'um' }), ev(a, 'error', NOW, { text: 'dois' })], sessions, NOW, { waiting: [e], asking: [a] });
   assert.equal(twice.split('\n')[0], '[sessions] 1 sessão pede você (aviso automático do plugin, não é mensagem do usuário):');
   assert.match(twice, /- "TASK#1 api" \[tabId a\] parou com erro: um; parou com erro: dois\./);
   assert.equal((twice.match(/cartão:/g) || []).length, 1);
-  assert.match(twice, /1 sessão acabou de parar: aviso se não voltarem a rodar\./);
+  assert.match(twice, /Acabou de parar: "pr"; aviso se não voltar a rodar\./, 'names who just stopped');
   assert.doesNotMatch(twice, /Esperando o usuário na aba/, 'a sessão com bloco próprio não se repete no fim');
   assert.deepEqual(sort(l, [ev(a, 'waiting')], sessions, NOW).asking, [], 'quem já não espera na aba não entra');
   markSeen(l, wake, sessions);
@@ -206,4 +206,47 @@ test('o aviso cita a resposta longa pelo começo e pelo fim, marcada como cortad
   assert.equal(excerpt('ele disse "oi"').text, "ele disse 'oi'");
   const emoji = excerpt(`${'a'.repeat(399)}😀${'b'.repeat(400)}`).text;
   assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(emoji), 'não parte um emoji ao meio');
+});
+
+test('each plugin send is delivered when its own prompt hook arrives, also mid-turn (Claude Code 2.1.33, measured 2026-11-27)', () => {
+  let now = 0;
+  const sent = new Sent(() => now);
+  sent.note('t', 'use v2');
+  now = 5;
+  sent.note('t', 'actually,\nuse v3');
+  assert.deepEqual(sent.status('t').queued.map((m) => m.text), ['use v2', 'actually, use v3']);
+  assert.equal(fromUser(sent, 't', 'use v2'), null);
+  assert.equal(sent.wasDelivered('t', 'use v2', 0), true);
+  assert.equal(sent.wasDelivered('t', 'actually,\nuse v3', 5), false);
+  assert.deepEqual(sent.status('t').queued.map((m) => m.text), ['actually, use v3']);
+  assert.equal(fromUser(sent, 't', 'actually,\nuse v3'), null);
+  assert.equal(sent.wasDelivered('t', 'actually, use v3', 5), true);
+  assert.equal(sent.wasDelivered('t', 'use v2', 1), false, 'an older send of the same text does not confirm a newer one');
+  assert.deepEqual(sent.status('t').queued, []);
+  sent.note('t', 'make deploy', false);
+  assert.deepEqual(sent.status('t').queued, [], 'text left in the prompt for the user is not pending');
+  assert.equal(fromUser(sent, 't', 'make deploy'), null, 'but it is still not typed by the user');
+});
+
+test('a session that ended or hibernated mid-turn wakes the manager, named, unless it is already running a newer turn', () => {
+  const { classify } = require('../lib/relay');
+  const l = new Links({}, () => 0);
+  const g = l.add({ tabId: 'g', name: 'g', manager: true });
+  const a = l.add({ tabId: 'a', parent: g, name: 'suite' });
+  l.nodes[a].card = { state: 'working', headline: 'rodando a suíte' };
+  l.nodes[a].busyAt = 100;
+  const e = { key: a, kind: 'interrupted', text: 'ended', at: 200 };
+  const ended = [{ id: 'a', title: 'suite', status: 'ended', exited: false }];
+  assert.equal(classify(l, e, ended, 300), 'wake');
+  l.nodes[a].busyAt = 250;
+  assert.equal(classify(l, e, [{ id: 'a', title: 'suite', status: 'tool' }], 300), 'drop', 'resumed after the event');
+  assert.equal(classify(l, e, [{ id: 'a', title: 'suite', status: 'idle' }], 300), 'drop', 'resumed and already finished');
+  l.nodes[a].busyAt = 100;
+  assert.equal(digest(l, [e], ended, 300, { waiting: [a] }).includes('Acabou de parar'), false, 'a session with its own block is not also listed as just stopped');
+  const text = digest(l, [e], ended, 300);
+  assert.match(text, /- "suite" \[tabId a\] encerrou no meio do turno/);
+  assert.match(lines(l, [{ ...e, text: 'hibernated' }], ended)[0], /"suite" hibernou no meio do turno/);
+  const exited = digest(l, [{ ...e, text: 'exited' }], [{ id: 'a', title: 'suite', status: 'ended', exited: true }], 300);
+  assert.match(exited, /teve o claude encerrado no meio do turno/);
+  assert.doesNotMatch(exited, /a aba está fechada/);
 });
