@@ -211,13 +211,13 @@ widget Card = Box(
     switch args.c.hasHeadline {
       true: Padding(
         padding: [0.0, 10.0, 0.0, 0.0],
-        child: Text(text: args.c.headline, style: { fontSize: 13.5, fontWeight: "w500", color: data.theme.fg, height: 1.35 }),
+        child: Text(text: args.c.headline, maxLines: 3, overflow: "ellipsis", style: { fontSize: 13.5, fontWeight: "w500", color: data.theme.fg, height: 1.35 }),
       ),
       default: SizedBox(),
     },
     switch args.c.context {
       "": SizedBox(),
-      default: Padding(padding: [0.0, 3.0, 0.0, 0.0], child: Text(text: args.c.context, style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 })),
+      default: Padding(padding: [0.0, 3.0, 0.0, 0.0], child: Text(text: args.c.context, maxLines: 3, overflow: "ellipsis", style: { fontSize: 12.0, color: data.theme.dim, height: 1.4 })),
     },
     switch args.c.hasTokens {
       true: Padding(padding: [0.0, 3.0, 0.0, 0.0], child: Text(text: args.c.tokens, style: { fontSize: 11.0, color: data.theme.faint })),

@@ -44,3 +44,14 @@ test('the read offset follows bytes, also with multibyte text', () => {
   fs.appendFileSync(file, line('b', now - 1000, { input_tokens: 5, output_tokens: 5 }));
   assert.equal(read('s', '/x').perHour, 12);
 });
+
+test('an idle tab keeps its context after the two hours of requests are dropped', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-'));
+  const file = path.join(dir, 'i.jsonl');
+  let now = Date.parse('2026-11-27T12:00:00Z');
+  fs.writeFileSync(file, line('a', now - 60000, { input_tokens: 5, cache_read_input_tokens: 80000, output_tokens: 9 }));
+  const read = reader(() => file, () => now);
+  assert.deepEqual(read('s', '/x'), { perHour: 80014, context: 80005 });
+  now += 5 * 60 * 60000;
+  assert.deepEqual(read('s', '/x'), { perHour: 0, context: 80005 });
+});

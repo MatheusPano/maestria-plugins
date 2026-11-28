@@ -63,12 +63,12 @@ function reader(fileOf, now = Date.now) {
       }
     }
     const t = now();
+    for (const e of c.entries.values()) if (!c.last || e.at >= c.last.at) c.last = e;
     for (const [id, e] of c.entries) if (t - e.at > KEEP) c.entries.delete(id);
-    const recent = [...c.entries.values()].sort((a, b) => a.at - b.at);
-    const last = recent[recent.length - 1];
+    const recent = [...c.entries.values()];
     return {
       perHour: recent.filter((e) => t - e.at <= HOUR).reduce((n, e) => n + e.tokens, 0),
-      context: last ? last.context : 0,
+      context: c.last ? c.last.context : 0,
     };
   };
 }

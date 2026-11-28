@@ -55,7 +55,7 @@ test('o quadro separa as três colunas (precisa de você: quem espera há mais t
   const b = board(l, g, sessions, {}, NOW);
   const c = cols(b);
   assert.deepEqual(c.needs_you.map((x) => x.title), ['b', 'a']);
-  assert.deepEqual(c.needs_you.map((x) => x.waiting), ['espera você há 1 h', 'espera você há 5 min']);
+  assert.deepEqual(c.needs_you.map((x) => x.waiting), ['há 1 h', 'há 5 min']);
   assert.deepEqual(c.working.map((x) => x.title), ['d', 'c']);
   assert.deepEqual(c.done.map((x) => x.title), ['e']);
   assert.equal(b.older, 'ontem e antes · 1');
@@ -472,12 +472,12 @@ test('a resposta guardada aparece no cartão, também com a aba no prompt, até 
   assert.match(card().context, /^Enviada às \d\d:\d\d: a vez é da sessão\.$/);
 });
 
-test('a card the plugin wrote from the last reply shows that reply and its headline, as "respondeu"', () => {
+test('a card the plugin wrote from the last reply shows that reply under a fixed headline, as "respondeu"', () => {
   const { l, g, kid } = setup();
   kid('s', { state: 'needs_you', headline: 'Suite is green', at: min(1), auto: true });
   const sessions = [{ id: 'g' }, { id: 's', title: 's', status: 'idle', reply: { text: 'Suite is green\nAll pass.', at: min(2) } }];
   const c = cols(board(l, g, sessions, {}, NOW));
-  assert.deepEqual(c.needs_you.map((x) => [x.kind, x.headline, x.reply, x.badge]), [['reply', 'Suite is green', 'Suite is green\nAll pass.', 'respondeu']]);
+  assert.deepEqual(c.needs_you.map((x) => [x.kind, x.headline, x.reply, x.badge]), [['reply', 'Respondeu, esperando você.', 'Suite is green\nAll pass.', 'respondeu']]);
 });
 
 test('every card has a way to the tab (or to resume it) and a menu with dismiss', () => {
@@ -505,6 +505,8 @@ test('tokens per hour show on the card and on the panel header, for the manager 
   ];
   const b = board(l, g, sessions, { archivable: 2 }, NOW);
   assert.equal(cols(b).working[0].tokens, '340k tokens/h · contexto 90k');
+  sessions[1].usage = { perHour: 0, context: 90000 };
+  assert.equal(cols(board(l, g, sessions, {}, NOW)).working[0].tokens, 'contexto 90k');
   assert.equal(b.usage, 'gerente 1.8M tokens/h, contexto 130k · sessões 340k tokens/h');
   assert.equal(b.archive, 'arquivar 2 paradas há mais de 3 dias');
 });
