@@ -92,6 +92,9 @@ const firstLine = (text) => plain(text).split('\n').map((l) => l.trim()).find(Bo
 /** The hint of the Answer box each card kind shows (ui/panel.rfwtxt); a kind without one has no Answer box. */
 const ANSWER_HINTS = { wait: 'responda aqui: vai para a aba quando ela sair da pergunta', question: 'ou responda com suas palavras…', reply: 'sua resposta' };
 
+/** "1.2M tokens/h · contexto 80k"; an idle tab shows only its context. */
+const tokensOf = (u) => (!u ? '' : [u.perHour ? `${compact(u.perHour)} tokens/h` : '', u.context ? `contexto ${compact(u.context)}` : ''].filter(Boolean).join(' · '));
+
 const UI = () => ({ picked: {}, rejecting: {}, clears: {}, open: {}, writing: {}, playing: null, expanded: null });
 
 /** Tira o "TASK#123" do começo do título: ele já vai na coluna do número. */
@@ -186,13 +189,15 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
   const options = action && action.options && !tabAsks ? action.options : [];
   const audible = options.some((o) => o.audio);
   const picked = ui.picked[key];
-  const canMessage = Boolean(session) && !['question', 'approve', 'reply'].includes(kind);
+  const asks = kind === 'wait' && (tabAsks || prompt);
+  const canMessage = Boolean(session) && !asks && !['question', 'approve', 'reply'].includes(kind);
   const playing = ui.playing && ui.playing.key === key ? ui.playing.id : null;
   const headline =
     (flag === 'stalled' && `Parada há ${Math.max(3, Math.round((now - idleSince(c, session)) / 60000))} min, mas o cartão dizia que estava trabalhando.`) ||
     (flag === 'interrupted' && (!session ? 'A aba fechou no meio do trabalho.' : session.hibernated ? 'A aba hibernou no meio do trabalho.' : 'A sessão encerrou no meio do trabalho.')) ||
     (tabAsks && waitOf(session)) ||
     (replied && (c.answered ? 'Respondeu, esperando você.' : 'Parou, esperando você.')) ||
+    (autoReply && 'Respondeu, esperando você.') ||
     c.headline ||
     (kind === 'question' || kind === 'approve' ? action.text : '') ||
     (kind === 'command' ? (target ? `Rode na aba ${bare(target.title)}.` : 'Rode este comando.') : '') ||
@@ -213,10 +218,10 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     task: short(task),
     title,
     color: node.free ? FREE : hex(colorOf(node.color).hex),
-    waiting: state === 'needs_you' ? `espera você ${ago(since, now)}` : '',
+    waiting: state === 'needs_you' ? ago(since, now) : '',
     waitingSince: since,
-    tokens: session && session.usage ? `${compact(session.usage.perHour)} tokens/h · contexto ${compact(session.usage.context)}` : '',
-    hasTokens: Boolean(session && session.usage),
+    tokens: tokensOf(session && session.usage),
+    hasTokens: Boolean(tokensOf(session && session.usage)),
     age: !card && !lastTurn ? '' : state === 'needs_you' ? ago(since, now) : state === 'working' ? `desde ${clock(since)}` : clock(c.doneAt || c.at || lastTurn || now),
     headline,
     context: node.pending && node.pending.length
@@ -263,6 +268,7 @@ function cardData({ key, node, session, card }, live, ui, now, thumbs = null) {
     rejecting: Boolean(ui.rejecting[key]),
     input: `answer-${key}`,
     canExpand: true,
+    asks,
     answerHint: state === 'done' ? '' : kind === 'approve' && ui.rejecting[key] ? 'por que rejeitar? (enter manda)' : ANSWER_HINTS[kind] || '',
     canDismiss: Boolean(card) && state !== 'done' && !String(key).startsWith('@'),
     goTip: session ? 'ir para a aba' : 'retomar a conversa',
